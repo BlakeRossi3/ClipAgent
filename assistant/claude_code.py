@@ -5,9 +5,20 @@ check-ins and briefs, dashboard chat, live evals, the improvement loop) a ``clau
 unmodified Claude Code CLI, signed in with the owner's own Claude account. The Shorts pipeline
 (``llm.py``) keeps using the Anthropic API key.
 
-How one agent run works (:func:`run_prompt`)::
+Two kinds of run:
 
-    claude -p --output-format json --model <alias> --system-prompt <persona>
+* **Full powers** (the main agent, ``ASSISTANT_CC_FULL=true``, default): Claude Code with its own
+  built-in tools (Read/Edit/Write/Glob/Grep/Bash/PowerShell/WebFetch/WebSearch/Agent/Skill...), its
+  own system prompt with the persona appended, cwd = the app checkout (its own code), ``--add-dir``
+  for the data dir and his folders, ``--permission-mode dontAsk`` + allow/deny rules in a generated
+  ``--settings`` file (secrets and destructive commands denied), our sub-agents as ``--agents`` and
+  our skills mirrored into ``<CLAUDE_CONFIG_DIR>/skills``, one resumed session per channel
+  (:func:`session_for`). Self-edit guardrails wrap the run (``assistant/selfedit.py``).
+* **Tools-only** (sub-agents run as scheduled tasks, evals, the sign-in test), below.
+
+How a tools-only run works::
+
+    claude -p --output-format stream-json --verbose --model <alias> --system-prompt <persona>
            --tools "" --setting-sources= --strict-mcp-config --mcp-config <file>
            --allowedTools mcp__clipagent__<tool>,... --permission-mode dontAsk
            --no-session-persistence --disable-slash-commands --max-turns N --effort E
@@ -464,10 +475,297 @@ class McpSpec:
     run_id: int | None = None
 
 
+# ---------------------------------------------------------------------------
+# full powers (main agent): Claude Code's own tools + ours, its own code, his folders
+# ---------------------------------------------------------------------------
+
+BUILTIN_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit", "Bash", "PowerShell", "Monitor",
+                 "WebFetch", "WebSearch", "Agent", "Skill", "TodoWrite", "TaskCreate", "TaskGet", "TaskList",
+                 "TaskUpdate", "TaskStop", "ToolSearch")
+CHROME_TOOLS = "mcp__claude-in-chrome__*"
+# Files no tool may read or change: ClipAgent's secrets, OAuth tokens, keys, Claude Code's own profile.
+SECRET_PATTERNS = ("//**/config.env", "//**/.env", "//**/*.env", "//**/*token*.json", "//**/client_secret*.json",
+                   "//**/*.pem", "//**/*.key", "//**/.ssh/**", "//**/.credentials.json")
+# Commands that are never run (deny rules beat allow rules in every mode). Deleting in bulk,
+# publishing code, rewriting history, powering the laptop off.
+DENY_COMMANDS = ("rm -rf *", "rm -fr *", "rm -r *", "rm -R *", "git push *", "git reset --hard *", "git clean *",
+                 "git checkout -- *", "shutdown *", "format *", "mkfs *", "dd *", "del /s *", "rd /s *",
+                 "rmdir /s *", "cmd /c del *", "cmd /c rd *", "reg delete *", "curl * | sh*", "curl * | bash*")
+DENY_POWERSHELL = ("Remove-Item * -Recurse*", "Remove-Item -Recurse *", "Remove-Item * -r *", "Format-Volume *",
+                   "Clear-Disk *", "Stop-Computer*", "Restart-Computer*", "git push *", "git reset --hard *",
+                   "git clean *", "Remove-ItemProperty *", "Invoke-Expression *", "iex *")
+SESSION_CHANNELS = ("dashboard", "sms")
+KV_SESSION = "assistant:cc:session:{channel}"
+DEFAULT_USER_DIRS = ("Desktop", "Documents", "Downloads", "Pictures", "Videos")
+
+
+def rule_path(p: Path | str) -> str:
+    """Absolute path in permission-rule form: ``//home/x`` or, on Windows, ``//c/Users/x``."""
+    s = str(p).replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", s):
+        s = "/" + s[0].lower() + s[2:]
+    if not s.startswith("/"):
+        s = "/" + s
+    return "/" + s.rstrip("/")
+
+
+def full_mode(agent: str = "main") -> bool:
+    s = get_assistant_settings()
+    return s.backend == "claude_code" and s.cc_full and agent == "main"
+
+
+def user_dirs() -> list[Path]:
+    """The owner's folders the assistant may use: ASSISTANT_USER_DIRS, else the usual ones that exist."""
+    s = get_assistant_settings()
+    if s.user_dirs:
+        return [Path(d).expanduser() for d in s.user_dirs if Path(d).expanduser().is_dir()]
+    home = Path.home()
+    out: list[Path] = []
+    for name in DEFAULT_USER_DIRS:
+        for base in (home, home / "OneDrive"):
+            if (base / name).is_dir() and (base / name) not in out:
+                out.append(base / name)
+    return out
+
+
+def uploads_dir() -> Path:
+    import config
+
+    p = config.get_settings().data_dir / "assistant" / "uploads"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def working_dirs() -> list[Path]:
+    """cwd first (the app checkout = its own code), then the data dir and his folders (--add-dir)."""
+    import config
+
+    out = [REPO_ROOT, config.get_settings().data_dir]
+    for d in user_dirs():
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = None) -> dict[str, Any]:
+    """The ``--settings`` JSON for a full-power run (pure apart from reading settings; tested)."""
+    dirs = working_dirs()
+    allow = [t for t in BUILTIN_TOOLS if t not in ("Edit", "Write", "NotebookEdit")]
+    for d in dirs:
+        allow += [f"Edit({rule_path(d)}/**)", f"Write({rule_path(d)}/**)", f"NotebookEdit({rule_path(d)}/**)"]
+    # Each of our tools by name (verified rule form) plus the server-wide glob.
+    allow += [TOOL_PREFIX + n for n in (mcp_tools or [])] + [TOOL_PREFIX + "*"]
+    if chrome:
+        allow.append(CHROME_TOOLS)
+    secret = list(SECRET_PATTERNS) + [rule_path(home_dir()) + "/**"]
+    deny = [f"Read({p})" for p in secret] + [f"Edit({p})" for p in secret]
+    deny += [f"Bash({c})" for c in DENY_COMMANDS] + [f"PowerShell({c})" for c in DENY_POWERSHELL]
+    return {"permissions": {"allow": allow, "deny": deny, "defaultMode": "dontAsk"},
+            # Keep the PowerShell tool on next to Bash deny rules (Windows with Git Bash).
+            "env": {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"}}
+
+
+def native_agents() -> dict[str, Any]:
+    """Our sub-agents (agents/*.md) as Claude Code ``--agents`` JSON: one source of truth."""
+    from assistant import registry, tools
+
+    s = get_assistant_settings()
+    skills = registry.load_skills(strict=False)
+    out: dict[str, Any] = {}
+    for name, spec in sorted(registry.load_agents(skills=skills, strict=False).items()):
+        if name == "main":
+            continue
+        own = [TOOL_PREFIX + t.name for t in tools.available(spec.tools)]
+        # Read-only built-ins: changes to files (and the self-edit guardrails) stay with the main agent.
+        builtin = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill"]
+        out[name] = {"description": spec.description, "prompt": spec.prompt, "tools": builtin + own,
+                     "model": s.cc_subagent_model}
+    return out
+
+
+def sync_native_skills() -> list[str]:
+    """Mirror skills/*/ into Claude Code's user skills folder (``<CLAUDE_CONFIG_DIR>/skills``).
+    skills/ stays the source of truth; stale mirrors are removed. Returns the names synced."""
+    from assistant import registry
+
+    dst_root = home_dir() / "skills"
+    dst_root.mkdir(parents=True, exist_ok=True)
+    names = []
+    for name, spec in sorted(registry.load_skills(strict=False).items()):
+        if name == "persona":  # already the system prompt
+            continue
+        src_dir = Path(spec.path).parent
+        dst = dst_root / name
+        dst.mkdir(exist_ok=True)
+        for f in src_dir.iterdir():
+            if f.is_file():
+                data = f.read_bytes()
+                target = dst / f.name
+                if not target.is_file() or target.read_bytes() != data:
+                    target.write_bytes(data)
+        names.append(name)
+    for old in dst_root.iterdir():
+        if old.is_dir() and old.name not in names and (old / ".clipagent").is_file():
+            shutil.rmtree(old, ignore_errors=True)
+    for n in names:
+        (dst_root / n / ".clipagent").write_text("mirrored from skills/ by ClipAgent\n", encoding="utf-8")
+    return names
+
+
+def full_note(*, chrome: bool) -> str:
+    s = get_assistant_settings()
+    dirs = working_dirs()
+    folders = "\n".join(f"- {d}" for d in dirs[2:]) or "- (none found)"
+    browser = ("Claude in Chrome is connected: use its browser tools (mcp__claude-in-chrome__*) to open pages, "
+               "read them, click and download in his own signed-in Chrome."
+               if chrome else
+               f"Use {TOOL_PREFIX}open_url to open a page in his default browser (his own signed-in Chrome).")
+    return f"""
+
+# Your powers (Claude Code on {s.owner_name}'s laptop)
+You have Claude Code's built-in tools: read/search/edit files, a shell (PowerShell on Windows, Bash
+where available), web search and fetch, skills, and sub-agents (the Agent tool; your specialists are
+listed there: where your instructions say `delegate`, use the Agent tool with that specialist). Your own
+tools come from the '{MCP_SERVER_NAME}' server ({TOOL_PREFIX}<name>).
+
+Folders:
+- Your own code (the ClipAgent app; the working directory): {dirs[0]}
+- Your data (database, vault, uploads, logs): {dirs[1]}
+{folders}
+
+Browser: you can open any URL in {s.owner_name}'s own signed-in browser on this laptop. {browser}
+Pages that need his login (claude.ai, YouTube, Instagram...) work that way because they use his own
+session, so do it yourself instead of saying you cannot access them. Never extract, read or store his
+cookies, passwords or session tokens.
+
+Images he attaches are files under {uploads_dir()}: open them with Read.
+
+Editing yourself: you may change any file in your own code. Before you do, read CLAUDE.md (the
+engineering contract) and docs/ASSISTANT.md, follow their conventions, and add or update tests.
+After your turn the app runs the full offline test suite: if it passes, your change is committed on
+the local branch '{s.self_edit_branch}' and the app restarts; if it fails, your change is rolled back
+and you will be told why. Do not commit, push, reset or switch branches yourself. He can text UNDO.
+
+Never answer "I can't" to something he asks: if no tool, skill, the shell or his browser covers it,
+give yourself the capability (a new tool module or skill in your own code, with tests) and then do
+the task. Follow the toolsmith skill. Modules such as assistant/history_import.py, reels.py,
+desktop_modes.py and twilio_doctor.py are yours to improve or rewrite when they fall short.
+
+Ask {s.owner_name} first (request_approval or just ask) before: texting or emailing anyone but him,
+spending money or buying anything, posting anything publicly, deleting files outside your own code and
+data folders, or changing system settings. Never print, copy or send secrets (API keys, tokens,
+passwords, config.env); those files are blocked for you anyway."""
+
+
+def build_full_argv(exe: str, *, model: str, system: str, mcp_config: str | None, settings_path: str,
+                    agents_path: str | None, add_dirs: list[str], resume: str | None, effort: str | None,
+                    max_turns: int, chrome: bool) -> list[str]:
+    """``claude -p`` with Claude Code's own tools and system prompt kept (pure; tested).
+
+    The persona is *appended* (``--append-system-prompt``) so Claude Code's tool instructions stay.
+    Only ClipAgent's own Claude Code profile is read (``--setting-sources user`` with
+    CLAUDE_CONFIG_DIR = <data>/claude-code): never his personal settings, nor the repo's CLAUDE.md.
+    """
+    argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+            "--append-system-prompt", system,
+            "--setting-sources", "user", "--settings", settings_path, "--permission-mode", "dontAsk",
+            "--strict-mcp-config"]
+    if mcp_config:
+        argv += ["--mcp-config", mcp_config]
+    if agents_path:
+        argv += ["--agents", agents_path]
+    for d in add_dirs:
+        argv += ["--add-dir", d]
+    if resume:
+        argv += ["--resume", resume]
+    argv += ["--chrome" if chrome else "--no-chrome", "--max-turns", str(max(1, int(max_turns)))]
+    if effort:
+        argv += ["--effort", effort]
+    return argv
+
+
+def prepare_full_run(tag: str, *, chrome: bool, mcp_tools: list[str] | None = None) -> tuple[Path, Path | None]:
+    """Write the run's settings and agents files (regenerated every run from the sources)."""
+    settings_path = runs_dir() / f"{tag}.settings.json"
+    settings_path.write_text(json.dumps(permission_settings(chrome=chrome, mcp_tools=mcp_tools), indent=1), encoding="utf-8")
+    agents_path: Path | None = None
+    try:
+        sync_native_skills()
+        agents = native_agents()
+        if agents:
+            agents_path = runs_dir() / f"{tag}.agents.json"
+            agents_path.write_text(json.dumps(agents), encoding="utf-8")
+    except Exception as exc:  # a broken skill/agent file must not silence the assistant
+        db.log_event("assistant", "skills/agents sync failed", level="warning", data={"error": repr(exc)[:300]})
+    return settings_path, agents_path
+
+
+# -- conversation memory: one resumable session per channel ------------------
+
+def session_state(channel: str) -> dict[str, Any] | None:
+    v = db.kv_get(KV_SESSION.format(channel=channel))
+    return v if isinstance(v, dict) and v.get("id") else None
+
+
+def session_for(channel: str) -> str | None:
+    """The session id to resume on ``channel``, or None (new session; the old one is rolled over
+    when it is from another day or too long)."""
+    if channel not in SESSION_CHANNELS:
+        return None
+    v = session_state(channel)
+    if v is None:
+        return None
+    s = get_assistant_settings()
+    reason = None
+    if v.get("day") != db.local_today().isoformat():
+        reason = "new day"
+    elif int(v.get("turns") or 0) >= s.session_max_turns:
+        reason = "long conversation"
+    elif int(v.get("tokens") or 0) >= s.session_max_tokens:
+        reason = "context full"
+    if reason is None:
+        return str(v["id"])
+    rollover(channel, reason)
+    return None
+
+
+def rollover(channel: str, reason: str = "manual") -> bool:
+    """End ``channel``'s session: a plain-code summary of it goes to the vault journal."""
+    v = session_state(channel)
+    db.kv_delete(KV_SESSION.format(channel=channel))
+    if v is None:
+        return False
+    try:
+        from assistant import store, vault
+
+        msgs = [m for m in store.list_messages(200, channel=channel, since=v.get("started")) if m.kind != "plan_limit"]
+        if msgs:
+            lines = [f"- {'He' if m.direction == 'in' else 'I'}: {' '.join(m.body.split())[:160]}"
+                     for m in reversed(msgs[:12])]
+            vault.append_journal(f"Conversation on {channel} closed ({reason}; {len(msgs)} messages since "
+                                 f"{v.get('started', '?')[:16]}Z). Last exchanges:\n" + "\n".join(lines),
+                                 source="claude_code")
+    except Exception as exc:
+        db.log_event("assistant", "session summary not written", level="warning", data={"error": repr(exc)[:300]})
+    db.log_event("assistant", f"{channel} conversation rolled over", data={"reason": reason, "session": v.get("id")})
+    return True
+
+
+def _record_session(channel: str, res: "CCResult", resumed: bool) -> None:
+    if channel not in SESSION_CHANNELS or not res.session_id:
+        return
+    prev = session_state(channel) if resumed else None
+    db.kv_set(KV_SESSION.format(channel=channel), {
+        "id": res.session_id, "day": db.local_today().isoformat(),
+        "started": (prev or {}).get("started") or db.now_iso(),
+        "turns": int((prev or {}).get("turns") or 0) + 1,
+        "tokens": res.input_tokens + res.cache_read_tokens + res.cache_write_tokens})
+
+
 def build_argv(exe: str, *, model: str, system: str, allowed_tools: list[str], mcp_config: str | None,
                effort: str | None, web_search: bool, max_turns: int) -> list[str]:
     """The fixed ``claude -p`` command line (pure; tested)."""
-    argv = [exe, "-p", "--output-format", "json", "--model", model, "--system-prompt", system,
+    argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model, "--system-prompt", system,
             "--tools", "WebSearch" if web_search else "",
             "--setting-sources=", "--strict-mcp-config"]
     if mcp_config:
@@ -533,37 +831,60 @@ def read_calls(path: Path) -> list[Any]:
 
 def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | None = None,
                effort: str | None = None, web_search: bool = False, max_turns: int | None = None,
-               count_turn: bool = True, alert_channel: str = "system", timeout: float | None = None) -> CCResult:
-    """One headless Claude Code run (tools via MCP when ``mcp`` is given). Raises
+               count_turn: bool = True, alert_channel: str = "system", timeout: float | None = None,
+               full: bool = False, channel: str = "system") -> CCResult:
+    """One headless Claude Code run (tools via MCP when ``mcp`` is given; Claude Code's own tools,
+    his folders and the channel's resumed session too when ``full``). Raises
     ``AssistantBudgetExceeded`` (paused | limit | turns) or :class:`ClaudeCodeError`."""
     s = get_assistant_settings()
     check_guards(count_turn=count_turn)
     exe = find_claude()
     if exe is None:
         raise ClaudeCodeError("not_installed", "Claude Code is not installed")
-    timeout = timeout or s.cc_timeout_sec
+    timeout = timeout or (s.cc_task_timeout_sec if full else s.cc_timeout_sec)
     run_tag = uuid.uuid4().hex[:12]
-    cfg_path = calls_path = None
+    cfg_path = calls_path = settings_path = agents_path = None
+    resume = session_for(channel) if full else None
     if mcp is not None:
         calls_path = runs_dir() / f"{run_tag}.calls.jsonl"
         cfg_path = runs_dir() / f"{run_tag}.mcp.json"
         cfg_path.write_text(json.dumps(mcp_config(mcp, calls_path)), encoding="utf-8")
+    if full:
+        settings_path, agents_path = prepare_full_run(run_tag, chrome=s.chrome,
+                                                      mcp_tools=list(mcp.allowed) if mcp else None)
     env = base_env(extra={"MCP_TIMEOUT": "30000", "MCP_TOOL_TIMEOUT": str(int(timeout * 1000))})
     try:
         models = model_candidates(role)
-        for i, alias in enumerate(models):
-            argv = build_argv(str(exe), model=alias, system=system + (TOOL_NOTE if mcp else ""),
-                              allowed_tools=list(mcp.allowed) if mcp else [], mcp_config=str(cfg_path) if cfg_path else None,
-                              effort=effort, web_search=web_search,
-                              max_turns=max_turns or (s.max_tool_rounds + 2))
+        i = 0
+        while i < len(models):
+            alias = models[i]
+            if full:
+                argv = build_full_argv(str(exe), model=alias, system=system + full_note(chrome=s.chrome),
+                                       mcp_config=str(cfg_path) if cfg_path else None,
+                                       settings_path=str(settings_path),
+                                       agents_path=str(agents_path) if agents_path else None,
+                                       add_dirs=[str(d) for d in working_dirs()[1:]], resume=resume,
+                                       effort=effort, max_turns=max_turns or s.cc_max_turns, chrome=s.chrome)
+            else:
+                argv = build_argv(str(exe), model=alias, system=system + (TOOL_NOTE if mcp else ""),
+                                  allowed_tools=list(mcp.allowed) if mcp else [],
+                                  mcp_config=str(cfg_path) if cfg_path else None, effort=effort,
+                                  web_search=web_search, max_turns=max_turns or (s.max_tool_rounds + 2))
             if count_turn:
                 db.kv_incr(KV_TURNS.format(day=db.local_today().isoformat()))
             try:
-                done = _runner(argv, input=prompt, env=env, cwd=str(work_dir()), timeout=timeout)
+                done = _runner(argv, input=prompt, env=env, cwd=str(REPO_ROOT if full else work_dir()),
+                               timeout=timeout)
             except subprocess.TimeoutExpired:
                 raise ClaudeCodeError("timeout", f"Claude Code took longer than {int(timeout)} s") from None
             except OSError as exc:
                 raise ClaudeCodeError("blocked", blocked_message(exc) or f"could not start Claude Code: {exc}") from exc
+            try:  # plan usage (rate_limit_event lines in the stream-json transcript)
+                from assistant import usage
+
+                usage.record_events(done.stdout)
+            except Exception as exc:
+                log.info("usage events not recorded: %s", exc)
             data = parse_output(done.stdout)
             if data is not None and ((not data.get("is_error") and done.returncode == 0)
                                      or data.get("subtype") == "error_max_turns"):
@@ -572,14 +893,22 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                     res.tool_calls = read_calls(calls_path)
                 _remember_model(role, alias, res.model)
                 db.kv_delete(KV_LAST_ERROR)
+                if full:
+                    _record_session(channel, res, resumed=resume is not None)
                 return res
             text = str((data or {}).get("result") or "") or (done.stderr or done.stdout or "").strip()
             kind = classify_error(text, data)
+            if resume and kind == "error" and re.search(r"no conversation found|session.{0,40}not found", text, re.I):
+                log.info("session %s cannot be resumed; starting a new one", resume)
+                db.kv_delete(KV_SESSION.format(channel=channel))
+                resume = None
+                continue
             if "pro plan" in text.lower():
                 db.kv_set(KV_PLAN_HINT, "Pro")
             last = i == len(models) - 1
             if kind in ("model", "model_limit") and not last:
                 log.info("claude model %s unavailable (%s); trying %s", alias, kind, models[i + 1])
+                i += 1
                 continue
             db.kv_set(KV_LAST_ERROR, {"kind": kind, "text": text[:300], "at": db.now_iso()})
             if kind in ("limit", "model_limit"):
@@ -594,10 +923,9 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
             exc.calls = read_calls(calls_path)
         raise
     finally:
-        if calls_path is not None:
-            calls_path.unlink(missing_ok=True)
-        if cfg_path is not None:
-            cfg_path.unlink(missing_ok=True)
+        for f in (calls_path, cfg_path, settings_path, agents_path):
+            if f is not None:
+                f.unlink(missing_ok=True)
 
 
 def _result(data: Mapping[str, Any], alias: str) -> CCResult:

@@ -549,3 +549,13 @@ goals_update, checkin_schedule, skill_read, lessons_propose, lessons_list, reque
 steps: str | `fake_tool(name, **input)` | list of them | `ModelReply` | callable(req)), `AnthropicBackend(client=None)`,
 `ModelRequest`, `ModelReply`, `Usage`, `ToolUse`, `AssistantBudgetExceeded(reason turn|daily|paused)`, `estimate_cost(req)`,
 `check_budget(est, turn, settings)`, `remaining_today()`, `price_for(model)`, `cost_of(model, usage)`, `wrap_untrusted(source, text)`.
+
+### Full-power Sterling (claude_code backend)
+Main agent = real Claude Code with built-in tools (`claude_code.build_full_argv`, `permission_settings`: dontAsk +
+allow/deny rules; secrets and destructive commands denied), our MCP tools, `--agents` from agents/*.md, skills mirrored to
+`<data>/claude-code/skills`, one resumed session per channel (`session_for`, daily rollover -> journal). Self-edits:
+`assistant/selfedit.py` (branch `sterling/self`, test -> commit + restart + /healthz, else reset; `undo()`; tests use
+`selfedit.set_app_dir/set_runners`, conftest points it at a non-repo dir). Kill switch `runtime.set_stopped`
+(SMS STOP/START STERLING, UNDO). Plan usage + deferred queue: `assistant/usage.py` (`as_deferred`, store v2;
+tools `usage_status`, `schedule_prompt`; `usage.should_defer(kind, prompt)` for non-urgent jobs). `open_url` opens his
+browser. Chat images: `home.save_upload` -> paths passed to the turn (`runtime.run_turn(attachments=)`). Details: docs/ASSISTANT.md.

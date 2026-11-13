@@ -35,6 +35,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from collections import Counter
@@ -613,6 +614,15 @@ class JobSpec:
     description: str
 
 
+def _weekly_improvement() -> Any:
+    """Non-urgent: waits for the Claude plan's window to reset when usage is high."""
+    from assistant import improve, usage
+
+    if usage.should_defer("improve", "Run the weekly self-improvement review (assistant.improve).") is not None:
+        return None
+    return improve.weekly_improvement()
+
+
 def job_specs() -> list[JobSpec]:
     """Jobs and their local times (``settings.timezone``), off the hour on purpose."""
     import analytics  # noqa: F401  (import errors surface at startup, not at 07:25)
@@ -652,8 +662,10 @@ def assistant_job_specs() -> list[JobSpec]:
         JobSpec("assistant_checkins", checkins.send_due, "interval", {"minutes": 5}, "send due check-ins"),
         JobSpec("assistant_tidy", tidy, "cron", {"day_of_week": "sun", "hour": 4, "minute": 15},
                 "archivist memory tidy"),
-        JobSpec("assistant_improve", lambda: __import__("assistant.improve", fromlist=["x"]).weekly_improvement(),
+        JobSpec("assistant_improve", _weekly_improvement,
                 "cron", {"day_of_week": "sun", "hour": 19, "minute": 25}, "weekly self-improvement proposals"),
+        JobSpec("assistant_deferred", lambda: __import__("assistant.usage", fromlist=["x"]).run_due(),
+                "interval", {"minutes": 10}, "run prompts queued for after the Claude plan resets"),
         JobSpec("assistant_evals", lambda: __import__("assistant.evals", fromlist=["x"]).run_evals_isolated(),
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
     ]
@@ -1106,6 +1118,19 @@ def _install_stop_signals() -> list[int]:
     return done
 
 
+def _start_selfedit_check(port: int) -> None:
+    """After a restart caused by the assistant editing its own code: verify /healthz, else roll back."""
+    try:
+        from assistant import selfedit
+
+        if db.kv_get(selfedit.KV_PENDING) is None:
+            return
+        threading.Thread(target=selfedit.verify_after_restart, args=(port,), name="selfedit-verify",
+                         daemon=True).start()
+    except Exception as exc:  # the guard must never stop the app from starting
+        log.warning("self-edit check not started: %s", exc)
+
+
 def _relaunch() -> None:
     """Start this same command again (after Restart / an update). Never returns on POSIX."""
     argv = [sys.executable, *sys.argv]
@@ -1136,6 +1161,7 @@ def schedule(host: str, port: int) -> int:
                                         log_level=get_settings().log_level.lower()))
     _install_stop_signals()
     _control.update(server=srv, restart=False)
+    _start_selfedit_check(port)
     if __name__ == "__main__":  # `python main.py`: the web pages `import main`, a second module copy
         import main as importable
 

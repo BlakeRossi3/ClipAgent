@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 import config
 
 COOKIE_BROWSERS = ("chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi")
-ENV_PREFIXES = ("REELS_", "HISTORY_IMPORT_", "DESKTOP_MODES_")
+ENV_PREFIXES = ("REELS_", "HISTORY_IMPORT_", "DESKTOP_MODES_", "SKILLS_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +30,10 @@ class ToolkitSettings:
     history_batch_size: int = 15           # conversations distilled per run
     history_reserve_turns: int = 10        # Claude-plan runs always left for the owner's own chats
     history_max_upload_mb: int = 1024      # one uploaded export zip
+    history_downloads_dir: Path | None = None   # where the browser saves the export zips (default ~/Downloads)
+    history_watch_minutes: int = 30        # how long the Downloads watcher waits for the files
     desktop_modes_dry_run: bool = False    # plan only, even on Windows
+    skills_trusted_repos: tuple[str, ...] = ()   # extra owner/repo names trusted like anthropics/skills
 
     def replace(self, **changes: Any) -> "ToolkitSettings":
         return replace(self, **changes)
@@ -63,7 +67,11 @@ def load_toolkit_settings(environ: Mapping[str, str] | None = None) -> ToolkitSe
         history_batch_size=_int(env.get("HISTORY_IMPORT_BATCH"), 15, 1, 200),
         history_reserve_turns=_int(env.get("HISTORY_IMPORT_RESERVE_TURNS"), 10, 0, 1000),
         history_max_upload_mb=_int(env.get("HISTORY_IMPORT_MAX_UPLOAD_MB"), 1024, 1, 8192),
+        history_downloads_dir=Path(env["HISTORY_IMPORT_DOWNLOADS_DIR"]).expanduser()
+        if (env.get("HISTORY_IMPORT_DOWNLOADS_DIR") or "").strip() else None,
+        history_watch_minutes=_int(env.get("HISTORY_IMPORT_WATCH_MINUTES"), 30, 1, 24 * 60),
         desktop_modes_dry_run=config._bool(env.get("DESKTOP_MODES_DRY_RUN"), False),
+        skills_trusted_repos=tuple(r.strip() for r in (env.get("SKILLS_TRUSTED_REPOS") or "").split(",") if r.strip()),
     )
 
 

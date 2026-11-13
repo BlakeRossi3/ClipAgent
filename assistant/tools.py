@@ -24,6 +24,9 @@ import importlib
 import importlib.util
 import json
 import logging
+import os
+import re
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -95,10 +98,27 @@ PLANNED_TOOLS: dict[str, str] = {
     "improvement_propose": "assistant.improve",
     "eval_results": "assistant.improve",
     "improvement_read": "assistant.improve",
+    "usage_status": "assistant.usage",
+    "schedule_prompt": "assistant.usage",
+    # assistant toolkit (each module also has a CLI: python -m assistant.<module>)
+    "reel_watch": "assistant.reels",
+    "desktop_modes_list": "assistant.desktop_modes",
+    "desktop_mode_run": "assistant.desktop_modes",
+    "history_search": "assistant.history_import",
+    "history_import_status": "assistant.history_import",
+    "history_import_from_manifest": "assistant.history_import",
+    "history_distil": "assistant.history_import",
+    "twilio_diagnose": "assistant.twilio_doctor",
+    "twilio_fix": "assistant.twilio_doctor",
+    "skill_vet": "assistant.skill_vetting",
+    "skill_install": "assistant.skill_vetting",
+    "skill_third_party": "assistant.skill_vetting",
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
-EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve")
+EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve", "assistant.usage",
+                     "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
+                     "assistant.skill_vetting")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 
 
@@ -456,6 +476,36 @@ def _message_owner(ctx: ToolContext, a: dict[str, Any]) -> Any:
     return send_to_owner(a["text"], kind=kind, agent=ctx.agent)
 
 
+def _default_url_opener(url: str) -> bool:
+    import webbrowser
+
+    if sys.platform == "win32":
+        os.startfile(url)  # type: ignore[attr-defined]  # noqa: S606 - his default browser
+        return True
+    return webbrowser.open(url, new=2)
+
+
+_url_opener: Callable[[str], bool] = _default_url_opener
+
+
+def set_url_opener(fn: Callable[[str], bool] | None) -> None:
+    """Tests: replace the browser launcher (``None`` restores the real one)."""
+    global _url_opener
+    _url_opener = fn or _default_url_opener
+
+
+def _open_url(ctx: ToolContext, a: dict[str, Any]) -> Any:
+    url = str(a.get("url") or "").strip()
+    if not re.match(r"^https?://[^\s\"'<>]+$", url, re.I) or len(url) > 2000:
+        raise ToolError("only a single http(s) URL can be opened")
+    try:
+        ok = bool(_url_opener(url))
+    except Exception as exc:  # no browser on this machine, headless server...
+        raise ToolError(f"could not open the browser: {type(exc).__name__}") from exc
+    db.log_event("assistant", "opened a page in the owner's browser", data={"url": url[:300], "agent": ctx.agent})
+    return {"opened": ok, "url": url}
+
+
 # ---------------------------------------------------------------------------
 # built-in registry
 # ---------------------------------------------------------------------------
@@ -510,6 +560,9 @@ def _builtin() -> list[Tool]:
                                  "answers YES/NO <id>). Use for spending, strategy changes, anything irreversible.",
              _obj({"summary": {"type": "string"}, "details": {"type": "object"},
                    "handler": {"type": "string"}}, ["summary"]), _request_approval, side_effects=True),
+        Tool("open_url", "Open a web page (e.g. a YouTube video, a claude.ai export link) in a new tab of the "
+                         "owner's own default browser on his laptop, signed in as him.",
+             _obj({"url": {"type": "string"}}, ["url"]), _open_url, side_effects=True),
         Tool("message_owner", "Send the owner a separate proactive text message (not for replying: your reply is "
                               "delivered automatically). Daily cap and quiet hours apply.",
              _obj({"text": {"type": "string"}, "kind": {"type": "string"}}, ["text"]), _message_owner,

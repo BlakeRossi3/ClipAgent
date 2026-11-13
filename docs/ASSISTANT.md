@@ -45,6 +45,64 @@ Model calls: adaptive thinking (model default), `output_config.effort`, the syst
 (breakpoint on the last stable block; time, history and memory go in the user message), and
 server-side refusal fallbacks (`fallbacks: "default"`, beta) when `LLM_SERVER_FALLBACKS` is on.
 
+## Sterling on the Claude plan: full powers (ASSISTANT_BACKEND=claude_code)
+
+With the Claude Code backend the **main agent** (dashboard chat, texts, scheduled main tasks) runs as
+real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=true` by default):
+
+* **Tools**: Claude Code's own built-ins (Read, Edit, Write, Glob, Grep, Bash, PowerShell, WebFetch,
+  WebSearch, Agent, Skill, tasks) plus every ClipAgent tool over MCP (`mcp__clipagent__*`).
+  Run as `claude -p --output-format stream-json --verbose --append-system-prompt <persona> --setting-sources user
+  --settings <generated> --permission-mode dontAsk --agents <generated> --add-dir <data> --add-dir <his folders>
+  [--resume <session>] [--chrome]`, cwd = the app checkout. `--append-system-prompt` (not `--system-prompt`)
+  keeps Claude Code's own tool instructions; the persona and a "your powers" note are appended.
+  The repo's CLAUDE.md is not auto-loaded (only ClipAgent's own Claude Code profile is read, which keeps
+  every chat turn small); the system prompt tells Sterling to read CLAUDE.md before editing itself.
+* **Folders**: its own code (cwd), its data dir, and `ASSISTANT_USER_DIRS` (default Desktop, Documents,
+  Downloads, Pictures, Videos, incl. OneDrive copies). Reads anywhere else are allowed by Claude Code,
+  edits only inside these folders.
+* **Sub-agents and skills, one source of truth**: `agents/*.md` (minus main) become `--agents` JSON every
+  run (each with its own MCP tools + read-only built-ins); `skills/*/` are mirrored into
+  `<data>/claude-code/skills/` (the persona skill is already the system prompt). Sub-agents launched
+  through Claude Code's Agent tool share the run's MCP server, so tool calls are audited as `main`.
+* **Conversation memory**: one resumed Claude Code session per channel (dashboard, sms), stored in
+  kv `assistant:cc:session:<channel>`. A new session starts each local day, after
+  `ASSISTANT_SESSION_MAX_TURNS` turns or once the context passes `ASSISTANT_SESSION_MAX_TOKENS`; the old
+  one's last exchanges go to the vault journal (plain code, no extra model run). A session Claude Code
+  no longer knows is replaced silently.
+* **Images**: the dashboard chat takes uploads and pasted images (PNG/JPEG/WebP/GIF by content,
+  8 MB, 4 per message) into `<data>/assistant/uploads/`; the turn gets their paths and opens them
+  with the Read tool (Claude Code returns images as visual content). Thumbnails are served owner-only.
+* **Long tasks**: chat turns run in the background (`POST /dashboard/chat` with `async=1`, then
+  `GET /dashboard/chat/job/<id>`); a run may take `ASSISTANT_CC_TASK_TIMEOUT_SEC` (900) and
+  `ASSISTANT_CC_MAX_TURNS` (40) tool rounds. The daily run cap and plan-limit backoff still apply.
+* **Browser**: `open_url` opens any page in his default (signed-in) browser, so pages that need his
+  login work; Sterling is told to do this itself and never to extract cookies or passwords.
+  `ASSISTANT_CHROME=true` also passes `--chrome` (Claude in Chrome extension; one-time setup: install
+  the extension in Chrome, sign it in to the same Claude account, restart Chrome). Whether `--chrome`
+  connects in `-p` mode is not verified; `open_url` works either way.
+* **Plan usage** (`assistant/usage.py`, skill `usage-aware`): Claude Code's stream-json output carries
+  `rate_limit_event` lines (`status`, `utilization`, `resetsAt`, `rateLimitType` five_hour / seven_day...)
+  when the limit state changes; they are recorded and shown by `usage_status` and on the dashboard.
+  Non-urgent work (`usage.should_defer`) and his requests during a plan limit are queued in
+  `as_deferred` and run oldest-first a few minutes after the reset (`assistant_deferred` job, every 10
+  min); `schedule_prompt` queues any prompt for a time or for after the reset.
+
+### Guardrails for full powers
+
+| Risk | What enforces it |
+|---|---|
+| Reading/printing secrets | Permission deny rules (Read and Edit): `config.env`, `*.env`, `*token*.json`, `client_secret*.json`, `*.pem`, `*.key`, `.ssh/`, `.credentials.json`, and ClipAgent's Claude Code profile. They cover the file tools and the shell commands Claude Code recognises (cat, head, redirects), **not** a script that opens files itself (e.g. `python -c open(...)`); the persona forbids it. |
+| Destructive commands | Deny rules: recursive `rm`/`Remove-Item`, `git push`, `git reset --hard`, `git clean`, format/shutdown, `iex`. Command-pattern rules are bypassable (aliases, scripts); they stop accidents, not a determined model. |
+| Texting others, purchases, public posts, deleting his files | Instructed to ask first (`request_approval`); ClipAgent's own tools only ever text him. Not technically enforceable for the browser or shell. |
+| Breaking itself | `assistant/selfedit.py`: each turn starts on the local branch `sterling/self` (created from the installed branch, which is remembered as `clipagent.upstream`); afterwards changed files -> offline test suite (`pytest -q -x`) -> pass: commit (trailer `Sterling-Self-Edit: yes`) and restart, then `/healthz` is checked; fail or unhealthy: `git reset --hard` to the pre-turn commit and he is told what failed. A tree that was already dirty is never reset. If the restarted app cannot even start, the Windows launcher resets to the commit in `data/assistant/selfedit_pending.txt`. |
+| Unwanted change | Dashboard "Undo last change" or SMS `UNDO`: `git revert` of the newest self-edit commit (never anyone else's), then restart. |
+| Runaway | SMS `STOP STERLING` / dashboard Stop: no assistant model runs until `START STERLING`. `PAUSE` still stops all AI spending. |
+| Updates | On `sterling/self`, the launcher and Settings > Update merge `origin/<upstream>` with `git pull --no-rebase --no-edit`; a conflict is aborted and the local version kept. |
+
+The weekly `engineer` proposal flow (assistant/improve.py) still exists and is the only self-change path
+on the API backend; nightly evals remain the regression check.
+
 ## How memory works
 
 * **Vault** (`assistant/vault.py`): the long-term memory, an Obsidian folder. Notes have YAML

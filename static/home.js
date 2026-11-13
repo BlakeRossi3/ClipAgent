@@ -78,24 +78,64 @@
       if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); chat.requestSubmit ? chat.requestSubmit() : chat.submit(); }
     });
     ta.addEventListener('input', function () { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
+    var fileIn = chat.querySelector('[data-chat-file]');
+    var previews = document.querySelector('[data-chat-previews]');
+    function showPreviews() {
+      if (!previews || !fileIn) return;
+      previews.innerHTML = '';
+      Array.prototype.forEach.call(fileIn.files, function (f) {
+        var img = document.createElement('img'); img.alt = f.name; img.src = URL.createObjectURL(f); previews.appendChild(img);
+      });
+    }
+    if (fileIn) fileIn.addEventListener('change', showPreviews);
+    ta.addEventListener('paste', function (ev) {
+      if (!fileIn || !window.DataTransfer || !ev.clipboardData) return;
+      var imgs = Array.prototype.filter.call(ev.clipboardData.files || [], function (f) { return /^image\//.test(f.type); });
+      if (!imgs.length) return;
+      ev.preventDefault();
+      var dt = new DataTransfer();
+      Array.prototype.forEach.call(fileIn.files, function (f) { dt.items.add(f); });
+      imgs.forEach(function (f) { dt.items.add(f); });
+      fileIn.files = dt.files; showPreviews();
+    });
+    function finish(wait, j) {
+      wait.remove();
+      if (j.ok) bubble('them', j.reply, 'dashboard · just now · ' + (j.fake ? 'practice' : (j.cost_text || '$0')));
+      else bubble('them', j.reason || j.msg || 'That did not go through. Try again in a moment.', 'not sent');
+    }
+    function poll(job, wait, fake, tries) {
+      setTimeout(function () {
+        fetch('/dashboard/chat/job/' + job, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (j) {
+            if (j.done) { j.fake = fake; finish(wait, j); }
+            else if (tries > 0) poll(job, wait, fake, tries - 1);
+            else finish(wait, { ok: false, msg: 'Still working on it; the answer will appear here when it is ready.' });
+          })
+          .catch(function () { if (tries > 0) poll(job, wait, fake, tries - 1); });
+      }, 2500);
+    }
     chat.addEventListener('submit', function (ev) {
       if (!window.fetch) return;
       ev.preventDefault();
       var text = ta.value.trim();
-      if (!text) return;
-      bubble('me', text, 'dashboard · just now');
+      var nfiles = fileIn ? fileIn.files.length : 0;
+      if (!text && !nfiles) return;
+      var mine = bubble('me', text || '(image attached)', 'dashboard · just now');
+      if (nfiles && previews) { var box = previews.cloneNode(true); box.className = 'msg-images'; mine.insertBefore(box, mine.lastChild); }
       var wait = bubble('them', '', '');
       wait.classList.add('is-typing');
       wait.querySelector('.msg-body').innerHTML = '<i></i><i></i><i></i>';
       var fd = new FormData(chat);
+      fd.append('async', '1');
       ta.value = ''; ta.style.height = '';
-      var btn = chat.querySelector('button'); btn.disabled = true;
+      if (fileIn) { fileIn.value = ''; showPreviews(); }
+      var btn = chat.querySelector('button[type=submit]'); btn.disabled = true;
       fetch(chat.action, { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (j) {
-          wait.remove();
-          if (j.ok) bubble('them', j.reply, 'dashboard · just now · ' + (j.fake ? 'practice' : j.cost_text));
-          else bubble('them', j.reason || j.msg || 'That did not go through. Try again in a moment.', 'not sent');
+          if (j.ok && j.pending) poll(j.job, wait, j.fake, 480);
+          else finish(wait, j);
         })
         .catch(function () { wait.remove(); bubble('them', 'The connection dropped. Try again in a moment.', 'not sent'); })
         .then(function () { btn.disabled = false; ta.focus(); });

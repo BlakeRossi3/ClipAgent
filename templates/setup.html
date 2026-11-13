@@ -61,6 +61,9 @@
   <a class="card s-tile" href="/setup/memory"><strong>Memory</strong><span>{{ sm.memory.notes }} notes</span></a>
   <a class="card s-tile" href="/setup/power"><strong>Power &amp; privacy</strong><span>{{ "GPU" if sm.power.whisper_device == "cuda" else "CPU" }} · {{ "Practice (dry run)" if sm.power.dry_run else "Live" }}{% if secrets.dashboard_token %} · phone password set{% endif %}</span></a>
   <a class="card s-tile" href="/setup/done"><strong>Health check</strong><span>Run the checklist</span></a>
+  <a class="card s-tile" href="/dashboard/modes"><strong>Desktop modes</strong><span>Gaming, Work, Wind down</span></a>
+  <a class="card s-tile" href="/dashboard/history"><strong>Claude history</strong><span>Import your claude.ai chats into memory</span></a>
+  <a class="card s-tile" href="/dashboard/twilio-check"><strong>Twilio check</strong><span>Why texts fail, and the fix</span></a>
 </div>
 <section class="card s-maint">
   <h2 class="sec-title">Maintenance</h2>
@@ -167,6 +170,35 @@
     {{ buttons() }}
   </form>
 </section>
+{# ===== Sterling's powers (self-editing assistant; setup_web.sterling_powers) ===== #}
+{% if powers and not powers.get("error") %}
+<section class="card s-step" id="powers">
+  <h2>{{ a.name }}'s powers</h2>
+  {% if powers.full %}
+  <p class="f-help">{{ a.name }} runs as Claude Code on this laptop with its normal tools on:
+    {{ powers.tools | join(", ") }}, plus its own memory and studio tools{% if powers.chrome %} and your Chrome (Claude in Chrome){% else %}; it opens pages in your default browser{% endif %}.</p>
+  <p class="f-help">Folders it can read and change:</p>
+  <ul>{% for f in powers.folders %}<li><code>{{ f }}</code>{% if loop.first %} (its own code){% elif loop.index == 2 %} (its data){% endif %}</li>{% endfor %}</ul>
+  <p class="f-help">It never reads config.env, tokens or keys, never pushes code, and asks you before texting anyone else, spending money, posting publicly or deleting your files.</p>
+  {% else %}
+  <p class="f-help">Full powers need {{ a.name }} on your Claude account (sign in above){% if powers.backend == "claude_code" %} and ASSISTANT_CC_FULL=true{% endif %}.</p>
+  {% endif %}
+  {% set se = powers.self_edit %}
+  <h3>Changes to its own code</h3>
+  {% if se.repo %}
+  <p class="f-help">Branch <code>{{ se.branch }}</code>{% if se.upstream %} (updates merged from <code>{{ se.upstream }}</code>){% endif %}. Each change must pass the test suite, is saved as a commit and the app restarts; a failure is rolled back.</p>
+  {% if se.last %}<p class="f-help">Last: {{ se.last.summary }}</p>{% endif %}
+  <ul>{% for c in se.commits %}<li>{{ c.title }} <small>{{ c.at[:16] }}{% if c.reverted %} · undone{% endif %}</small></li>{% else %}<li>No changes yet.</li>{% endfor %}</ul>
+  {% else %}<p class="f-help">This app folder is not a git checkout, so self-editing is off.</p>{% endif %}
+  {% if powers.usage and powers.usage.known %}<p class="f-help">Claude plan: {% for k, w in powers.usage.windows.items() %}{{ k | replace("_", " ") }} {{ w.left_pct if w.left_pct is not none else "?" }}% left{% if w.resets_text %} (resets {{ w.resets_text }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %} · {{ powers.usage.queued }} queued</p>{% endif %}
+  <div class="s-actions">
+    <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not se.commits %} disabled{% endif %}>Undo last change</button></form>
+    <form method="post" action="/dashboard/sterling/{{ 'start' if powers.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">{{ ('Start ' if powers.stopped else 'Stop ') ~ a.name }}</button></form>
+  </div>
+  <p class="f-help">By text: UNDO, STOP STERLING, START STERLING; PAUSE / RESUME stop all AI spending.{% if powers.paused %} Spending is paused now.{% endif %}</p>
+</section>
+{% endif %}
+{# ===== end Sterling's powers ===== #}
 
 {% elif step == "money" %}
 <section class="card s-step">

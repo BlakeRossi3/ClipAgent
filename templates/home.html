@@ -50,19 +50,28 @@
         {% for m in h.history %}
         <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
           <p class="msg-body">{{ m.body }}</p>
+          {% if m.meta and m.meta.attachments %}<p class="msg-images">{% for f in m.meta.attachments %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
           <p class="msg-meta">{{ m.channel }} · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
         </li>
         {% else %}
         <li class="msg msg-them msg-hint" data-empty><p class="msg-body">{% if a.can_chat %}Ask me anything, {{ a.honorific }} — or tell me something worth remembering.{% else %}{{ a.reason }}{% endif %}</p></li>
         {% endfor %}
       </ol>
-      <form class="chat-form" method="post" action="/dashboard/chat" data-chat data-name="{{ a.name }}">
+      <form class="chat-form" method="post" action="/dashboard/chat" enctype="multipart/form-data" data-chat data-name="{{ a.name }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <label class="sr-only" for="chat-input">Message to {{ a.name }}</label>
         <textarea id="chat-input" name="message" rows="1" maxlength="{{ chat_max }}" placeholder="{{ 'Message ' ~ a.name ~ '…' if a.can_chat else 'Unavailable just now' }}" {% if not a.can_chat %}disabled{% endif %}></textarea>
+        <label class="hbtn chat-attach" title="Attach images (or paste one)"><span aria-hidden="true">+</span><span class="sr-only">Attach images</span><input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden data-chat-file {% if not a.can_chat %}disabled{% endif %}></label>
         <button type="submit" class="hbtn hbtn-accent" {% if not a.can_chat %}disabled{% endif %}>Send</button>
       </form>
+      <div class="chat-previews" data-chat-previews></div>
       <p class="chat-note">{% if not a.can_chat %}{% if h.history %}{{ a.reason }}{% else %}Chat opens once I am switched on.{% endif %}{% elif a.fake %}Practice mode: replies are scripted and cost nothing.{% else %}{{ a.remaining | usd }} left of today's {{ a.budget | usd }} allowance.{% endif %}</p>
+      {# --- Sterling's controls (self-edit undo, stop switch, plan usage) --- #}
+      {% if a.usage %}<p class="chat-note chat-usage">Claude plan: {{ a.usage.line }}</p>{% endif %}
+      {% if a.enabled %}<div class="chat-controls">
+        <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
+        <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn" title="Revert {{ a.name }}'s last change to its own code">Undo last change</button></form>
+      </div>{% endif %}
     </section>
   </div>
 

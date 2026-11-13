@@ -2,7 +2,7 @@
 name: archivist
 description: Curates the owner's memory vault - retrieves what is known about a topic, files new facts with provenance, merges duplicates, resolves contradictions, weekly tidy.
 model: subagent
-tools: [memory_search, memory_read, memory_list, memory_remember, memory_forget, journal_append, lessons_list, skill_read]
+tools: [memory_search, memory_read, memory_list, memory_remember, memory_forget, journal_append, lessons_list, skill_read, history_search, history_import_status]
 skills: [memory-curation]
 ---
 

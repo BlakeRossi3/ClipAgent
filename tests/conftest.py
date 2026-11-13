@@ -33,7 +33,7 @@ import strategy as strategy_mod
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _SCRUB_PREFIXES = ("ANTHROPIC_", "TWILIO_", "YOUTUBE_", "CLIPAGENT_", "OWNER_", "SCOUT_", "QUIET_HOURS_",
-                   "ASSISTANT_", "SUBAGENT_", "SETUP_")
+                   "ASSISTANT_", "SUBAGENT_", "SETUP_", "WHATSAPP_", "MESSAGING_")
 _SCRUB_KEYS = ("FAKE_LLM", "DRY_RUN", "DAILY_LLM_BUDGET_USD", "MAX_DAILY_LLM_BUDGET_USD", "MAX_UPLOADS_PER_DAY",
                "LLM_PRICES_JSON", "HAIKU_MODEL", "SONNET_MODEL", "TIMEZONE", "PUBLIC_BASE_URL", "DASHBOARD_TOKEN", "DASHBOARD_ALLOW_UNAUTHENTICATED",
                "LLM_SERVER_FALLBACKS", "HAIKU_EFFORT", "SONNET_EFFORT", "URGENT_CALL_DEDUP_HOURS",
@@ -60,10 +60,15 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))  # never the owner's real vault
     # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
     monkeypatch.setenv("ASSISTANT_CLAUDE_BIN", str(tmp_path / "no-claude" / "claude"))
+    # never git-commit / reset / branch the real checkout: self-editing works on a folder that is not a repo
+    from assistant import selfedit
+
+    selfedit.set_app_dir(tmp_path / "no-repo")
     config.reset_settings()
     llm.reset()
     config.get_settings().ensure_dirs()
     yield
+    selfedit.set_app_dir(None)
     llm.reset()
     config.reset_settings()
 

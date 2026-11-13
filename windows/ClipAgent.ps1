@@ -3,8 +3,9 @@
   ClipAgent launcher (what the "ClipAgent" shortcut runs).
 
   - Already running?  Just open the browser.
-  - Otherwise: quietly update the app (git pull --ff-only, and pip install when requirements.txt
-    changed), start "main.py schedule" (scheduler + web page on 127.0.0.1) in a minimized window,
+  - Otherwise: quietly update the app (git pull --ff-only; on the assistant's own branch
+    sterling/self, merge the published branch in and abort on conflicts), pip install when
+    requirements.txt changed, start "main.py schedule" (scheduler + web page on 127.0.0.1) in a minimized window,
     wait until it answers, then open the browser.
   Everything is logged to %LOCALAPPDATA%\ClipAgent\data\logs\. Closing the minimized
   "ClipAgent" window (or Settings > Stop) stops ClipAgent.
@@ -79,11 +80,31 @@ function Update-App {
     }
     $ErrorActionPreference = 'Continue'
     $local = (& $gitExe -C $App rev-parse HEAD 2>$null | Out-String).Trim()
-    $remote = (& $gitExe -C $App rev-parse '@{u}' 2>$null | Out-String).Trim()
+    $branch = (& $gitExe -C $App rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim()
+    $upstream = (& $gitExe -C $App config --get clipagent.upstream 2>$null | Out-String).Trim()
+    if ($upstream -and $branch -ne $upstream -and $upstream -match '^[A-Za-z0-9._/-]+$') {
+        $remote = (& $gitExe -C $App rev-parse "origin/$upstream" 2>$null | Out-String).Trim()
+        if (-not $remote) { Write-Log 'up to date'; return }
+        & $gitExe -C $App merge-base --is-ancestor $remote HEAD 2>$null
+        if ($LASTEXITCODE -eq 0) { Write-Log 'up to date'; return }
+    }
+    else {
+        $upstream = ''
+        $remote = (& $gitExe -C $App rev-parse '@{u}' 2>$null | Out-String).Trim()
+    }
     if (-not $remote -or $local -eq $remote) { Write-Log 'up to date'; return }
     $reqFile = Join-Path -Path $App -ChildPath 'requirements.txt'
     $before = Get-FileHashOrEmpty $reqFile
-    if ((Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'pull', '--ff-only')) -ne 0) {
+    if ($upstream) {
+        # The assistant's own branch (sterling/self): merge the published branch in, keep its commits.
+        $code = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'pull', '--no-rebase', '--no-edit', 'origin', $upstream)
+        if ($code -ne 0) {
+            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'merge', '--abort')
+            Write-Log "merging origin/$upstream conflicted with the assistant's changes; kept the local version"
+            return
+        }
+    }
+    elseif ((Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'pull', '--ff-only')) -ne 0) {
         Write-Log 'git pull --ff-only failed; starting the current version'
         return
     }
@@ -140,6 +161,30 @@ try {
             exit 0
         }
         if ($proc.HasExited) { break }
+    }
+    # A change the assistant made to its own code may stop the app from starting: put the version
+    # before that change back (recorded in data\assistant\selfedit_pending.txt) and try once more.
+    $marker = Join-Path -Path $Data -ChildPath 'assistant\selfedit_pending.txt'
+    $git = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ((Test-Path -LiteralPath $marker) -and $git) {
+        $prev = (Get-Content -LiteralPath $marker -TotalCount 1).Trim()
+        Remove-Item -LiteralPath $marker -Force
+        if ($prev -match '^[0-9a-f]{40}$') {
+            Write-Log "start failed after a self-edit; resetting to $prev"
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            $null = Invoke-Logged -FilePath $git.Source -ArgumentList @('-C', $App, 'reset', '--hard', $prev)
+            $proc = Start-Process -FilePath (Join-Path -Path $env:SystemRoot -ChildPath 'System32\cmd.exe') -ArgumentList $cmdLine -WorkingDirectory $App -WindowStyle Minimized -PassThru
+            $deadline = (Get-Date).AddSeconds(120)
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Seconds 2
+                if (Test-Running) {
+                    Write-Log 'ClipAgent is up (previous version restored)'
+                    if (-not $NoBrowser) { Start-Process -FilePath "$Url/" }
+                    exit 0
+                }
+                if ($proc.HasExited) { break }
+            }
+        }
     }
     Show-Problem ("ClipAgent did not start. Another program may be using port $Port, or something " +
         "went wrong while starting. The details are in:`n$AppLog")

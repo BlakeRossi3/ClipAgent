@@ -250,25 +250,36 @@ def scene_times(path: Path, threshold: float = SCENE_THRESHOLD) -> list[float]:
     return [float(m) for m in re.findall(r"pts_time:([\d.]+)", proc.stderr or "")]
 
 
-def choose_frame_times(duration: float, scenes: list[float], max_frames: int, *, min_frames: int = 8) -> list[float]:
-    """Pick up to ``max_frames`` timestamps: the opening frame, scene cuts and a 1 fps fill, spread evenly."""
+def choose_frame_times(duration: float, scenes: list[float], max_frames: int) -> list[float]:
+    """Up to ``max_frames`` timestamps: the opening frame and scene cuts first (that is where something
+    new appears), then ~1 fps samples that fill the biggest gaps. At least 0.8 s apart."""
     if duration <= 0:
         return [0.0]
     end = max(0.0, duration - 0.15)
-    cands = sorted({round(min(end, max(0.0, t)), 2) for t in [min(0.3, end)] + [s + 0.25 for s in scenes]})
-    uniform = [round(min(end, i + 0.5), 2) for i in range(int(duration))]
-    target = max(1, min(max_frames, max(min_frames, len(cands)), int(duration / MIN_FRAME_GAP_SEC) or 1))
-    # scene cuts first (they are where something new appears), then 1 fps fill
-    picked: list[float] = []
-    for t in cands + uniform:
-        if all(abs(t - p) >= MIN_FRAME_GAP_SEC for p in picked):
-            picked.append(t)
-    picked.sort()
-    if len(picked) <= target:
+    target = max(1, min(max_frames, int(duration / MIN_FRAME_GAP_SEC) or 1))
+
+    def spaced(ts: list[float], picked: list[float]) -> list[float]:
+        for t in ts:
+            if all(abs(t - p) >= MIN_FRAME_GAP_SEC for p in picked):
+                picked.append(t)
         return picked
-    # thin evenly but keep the first frame
-    step = (len(picked) - 1) / (target - 1) if target > 1 else 0
-    return sorted({picked[round(i * step)] for i in range(target)})
+
+    first = round(min(0.3, end), 2)
+    scene = spaced(sorted({round(min(end, max(0.0, s + 0.25)), 2) for s in scenes}), [first])
+    if len(scene) > target:  # more cuts than slots: keep the first frame, thin the cuts evenly
+        rest = scene[1:]
+        step = len(rest) / (target - 1) if target > 1 else 0
+        scene = [first] + [rest[int(i * step)] for i in range(target - 1)]
+    picked = sorted(scene)
+    uniform = [round(min(end, i + 0.5), 2) for i in range(int(duration) + 1)]
+    while len(picked) < target:
+        cands = [t for t in uniform if all(abs(t - p) >= MIN_FRAME_GAP_SEC for p in picked)]
+        if not cands:
+            break
+        best = max(cands, key=lambda t: min(abs(t - p) for p in picked))
+        picked.append(best)
+        picked.sort()
+    return picked
 
 
 def extract_frame(path: Path, t: float, out: Path, px: int) -> bool:

@@ -86,6 +86,13 @@ def create_app() -> FastAPI:
     setup = _setup_router() if dashboard is not None else None
     if setup is not None:
         app.include_router(setup)
+    if dashboard is not None:
+        try:  # desktop modes / Claude history / Twilio check pages (optional, like the wizard)
+            from assistant import toolkit_web
+
+            app.include_router(toolkit_web.router)
+        except Exception as exc:
+            log.warning("toolkit pages unavailable: %s: %s", type(exc).__name__, exc)
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, Any]:

@@ -309,3 +309,12 @@ body.section-home .page, body.section-memory .page { padding-top: 14px; }
   .sprite-body, .px-eyes, .dot-working, .status-working i, .is-typing i, .sheet[open], .mood-alert .avatar-alert .sprite-body { animation: none !important; }
   .hbtn { transition: none; }
 }
+
+/* chat images + Sterling controls */
+.msg-images { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.msg-images img, .chat-previews img { max-width: 120px; max-height: 120px; border-radius: 6px; object-fit: cover; }
+.chat-previews { display: flex; gap: 6px; flex-wrap: wrap; }
+.chat-previews:empty { display: none; }
+.chat-attach { cursor: pointer; }
+.chat-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.chat-controls form { margin: 0; }

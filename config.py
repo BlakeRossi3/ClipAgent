@@ -99,6 +99,11 @@ class Settings:
     urgent_call_dedup_hours: float = 6.0   # at most one call per urgent kind in this window
     twilio_voice: str = "Polly.Joanna-Neural"
     twilio_language: str = "en-US"
+    # Texting channel (assistant/messaging.py): auto | sms | whatsapp. WhatsApp via Twilio uses the
+    # same account; WHATSAPP_FROM is the sandbox (or approved sender) number, E.164.
+    messaging_channel: str = "auto"
+    whatsapp_from: str = ""
+    whatsapp_join_code: str = ""
 
     # --- misc ----------------------------------------------------------------
     timezone: str = "America/New_York"
@@ -246,6 +251,10 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         urgent_call_dedup_hours=float(s("URGENT_CALL_DEDUP_HOURS", "6")),
         twilio_voice=s("TWILIO_VOICE", "Polly.Joanna-Neural"),
         twilio_language=s("TWILIO_LANGUAGE", "en-US"),
+        messaging_channel=(s("MESSAGING_CHANNEL", "auto").lower()
+                           if s("MESSAGING_CHANNEL", "auto").lower() in ("auto", "sms", "whatsapp") else "auto"),
+        whatsapp_from=s("WHATSAPP_FROM", ""),
+        whatsapp_join_code=s("WHATSAPP_JOIN_CODE", ""),
         timezone=s("TIMEZONE", "America/New_York"),
         whisper_model=s("WHISPER_MODEL", "small.en"),
         whisper_device=s("WHISPER_DEVICE", "auto"),

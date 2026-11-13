@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ {"modes": "Desktop modes", "history": "Claude history", "twilio": "Twilio check"}[page] }}{% endblock %}
+{% block content %}
+<div class="home">
+<div class="page-head-h">
+  <p class="muted"><a href="/setup/">Settings</a> · <a href="/dashboard/modes">Desktop modes</a> · <a href="/dashboard/history">Claude history</a> · <a href="/dashboard/twilio-check">Twilio check</a></p>
+{% if page == "modes" %}
+  <h1>Desktop modes</h1>
+  <p class="lede-h">One click sets the PC up. {% if not windows %}This server is not Windows, so a run only shows the plan.{% endif %}</p>
+</div>
+{% if run %}<section class="card"><h2 class="sec-title">{{ run.mode }}: {% if run.dry_run %}plan only{% elif run.ok %}done{% else %}done, with problems{% endif %}</h2>
+  <ul class="plain">{% for r in run.results %}<li>{% if r.skipped %}·{% elif r.ok %}✓{% else %}✗{% endif %} {{ r.step }}{% if r.detail and not r.skipped %} <span class="muted">— {{ r.detail }}</span>{% endif %}{% if r.optional and not r.ok %} <span class="chip">optional</span>{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+{% if run_error %}<p class="card voice">{{ run_error }}</p>{% endif %}
+{% if modes_error %}<p class="card voice">The modes note has a problem: {{ modes_error }}</p>{% endif %}
+<section class="card"><h2 class="sec-title">Modes</h2>
+  <div class="s-btnrow">{% for m in modes %}
+    <form method="post" action="/dashboard/modes/run"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ m.name }}"><button class="hbtn hbtn-accent" type="submit" title="{{ m.steps | join(', ') }}">{{ m.name }}</button></form>
+  {% endfor %}</div>
+  <ul class="plain">{% for m in modes %}<li><strong>{{ m.name }}</strong>{% if m.description %} — {{ m.description }}{% endif %}<br><span class="muted">{{ m.steps | join(' · ') }}</span></li>{% endfor %}</ul>
+</section>
+<section class="card"><h2 class="sec-title">Edit modes</h2>
+  {% if saved %}<p class="voice">Saved.</p>{% endif %}{% if save_error %}<p class="voice">Not saved: {{ save_error }}</p>{% endif %}
+  <p class="f-help">Steps: launch, close, open_folder, open_url, power_plan (balanced, high_performance, power_saver, ultimate), volume 0-100, mute, notifications on/off, wait seconds. Add <code>optional: true</code> to a step that may not apply. Also editable in Obsidian: <code>{{ note_path }}</code>.</p>
+  <form method="post" action="/dashboard/modes/save"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="sha" value="{{ sha }}">
+    <textarea name="yaml" rows="22" style="width:100%;font-family:monospace" spellcheck="false">{{ yaml_draft or yaml_text }}</textarea>
+    <p><button class="hbtn" type="submit">Check and save</button></p></form>
+</section>
+
+{% elif page == "history" %}
+  <h1>Claude history</h1>
+  <p class="lede-h">Your past claude.ai chats, searchable and distilled into memory a batch at a time.</p>
+</div>
+{% set p = progress %}
+{% if error %}<p class="card voice">{{ error }}</p>{% endif %}
+<section class="card"><h2 class="sec-title">Progress</h2>
+  <p>{{ p.conversations }} conversations · {{ p.messages }} messages · {{ p.projects }} projects{% if p.metadata_only %} · {{ p.metadata_only }} titles only{% endif %}</p>
+  <p><strong>{{ p.pct }}%</strong> distilled: {{ p.done }} done, {{ p.skipped }} too short, {{ p.pending }} waiting{% if p.failed %}, {{ p.failed }} failed{% endif %} · {{ p.facts_added }} facts added to memory</p>
+  {% if p.watch and p.watch.files %}<h3 class="mini-head">Downloads watcher ({{ p.watch.status }})</h3><ul class="plain">{% for f, st in p.watch.files.items() %}<li>{{ f }}: {{ st.state }}{% if st.detail %} <span class="muted">— {{ st.detail }}</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if p.pending %}<form method="post" action="/dashboard/history/distil"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Distil the next batch now</button></form>{% endif %}
+  {% if distil %}<p class="voice">Distilled {{ distil.processed }}, {{ distil.facts_added }} new facts{% if distil.stopped %}; stopped early ({{ distil.stopped }}) to leave room for your own chats{% endif %}.</p>{% endif %}
+</section>
+<section class="card"><h2 class="sec-title">1. Paste the export manifest (easiest)</h2>
+  <p class="f-help">claude.ai → Settings → Privacy → Export data. Paste the whole JSON you receive (it lists data_files). On Windows each download opens in your browser and I import the files from <code>{{ downloads }}</code> as they finish. Links expire after 24 hours.</p>
+  <form method="post" action="/dashboard/history/manifest"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <textarea name="manifest" rows="6" style="width:100%;font-family:monospace" placeholder='{"instructions": ..., "data_files": [...]}'></textarea>
+    <p><button class="hbtn hbtn-accent" type="submit">Start the import</button></p></form>
+  {% if manifest %}<div class="voice">
+    <p>{{ manifest.listed }} file(s) in the manifest{% if manifest.total_files %} of {{ manifest.total_files }}{% endif %}.{% if manifest.opened %} Opened {{ manifest.opened | length }} download(s).{% endif %}</p>
+    {% for n in manifest.notes %}<p>{{ n }}</p>{% endfor %}
+    {% if manifest.links %}<ul class="plain">{% for l in manifest.links %}<li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.filename }}</a></li>{% endfor %}</ul>{% endif %}
+  </div>{% endif %}
+</section>
+<section class="card"><h2 class="sec-title">2. Or upload the downloaded files</h2>
+  <form method="post" action="/dashboard/history/upload" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="file" name="files" multiple accept=".zip,.json,.jsonl"> <button class="hbtn" type="submit">Import</button></form>
+  <p class="f-help">Any parts, any order; re-uploading a file is harmless.</p>
+  {% if results %}<ul class="plain">{% for r in results %}<li>{{ r.file }}: {{ r.status }}{% if r.error %} — {{ r.error }}{% elif r.conversations is defined %} ({{ r.conversations }} conversations, {{ r.messages }} messages{% if r.projects %}, {{ r.projects }} projects{% endif %}{% if r.memories %}, {{ r.memories }} memories{% endif %}){% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if p.files %}<h3 class="mini-head">Imported files</h3><ul class="plain">{% for f in p.files %}<li>{{ f.filename }} <span class="muted">{{ f.category }}</span></li>{% endfor %}</ul>{% endif %}
+</section>
+
+{% else %}
+  <h1>Twilio check</h1>
+  <p class="lede-h">Why texts or calls fail, and how to fix it.</p>
+</div>
+{% if fixed %}<p class="card voice">{{ fixed }}</p>{% endif %}
+{% if fix_error %}<p class="card voice">{{ fix_error }}</p>{% endif %}
+<section class="card">
+  <form method="post" action="/dashboard/twilio-check/run"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn hbtn-accent" type="submit">Run the check</button></form>
+  {% if last and not diag %}<p class="muted">Last check {{ last.at }}: {{ "healthy" if last.ok else "problems: " ~ (last.fails | join(", ")) }}</p>{% endif %}
+</section>
+{% if diag %}
+<section class="card"><h2 class="sec-title">{{ "Healthy" if diag.ok else "Problems found" }}</h2>
+  <ul class="plain">{% for c in diag.checks %}<li><span class="chip">{{ c.status }}</span> <strong>{{ c.title }}</strong>{% if c.detail %} — {{ c.detail }}{% endif %}
+    {% if c.fix and c.status != "pass" %}<br>Fix: {{ c.fix }}{% if c.docs %} <a href="{{ c.docs }}" target="_blank" rel="noopener">docs</a>{% endif %}{% endif %}
+    {% if c.action %}<form method="post" action="/dashboard/twilio-check/fix" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="{{ c.action }}"><button class="hbtn" type="submit">Fix it</button></form>{% endif %}</li>{% endfor %}</ul>
+  {% if diag.number.sms_url is defined %}<p class="muted">SMS webhook now: {{ diag.number.sms_url or "none" }} · expected: {{ diag.number.expected_sms_url }}{% if diag.number.sms_url %} · <form method="post" action="/dashboard/twilio-check/fix" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="revert_sms_webhook"><button class="linkbtn" type="submit">undo last webhook change</button></form>{% endif %}</p>{% endif %}
+</section>
+{% if diag.messages %}<section class="card"><h2 class="sec-title">Recent texts</h2><ul class="plain">{% for m in diag.messages[:10] %}<li>{{ m.date or "" }} {{ m.direction }} {{ m.status }}{% if m.error_code %} — <strong>{{ m.error_code }}</strong> {{ m.explain.cause if m.explain else m.error_message }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}

@@ -33,7 +33,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -395,6 +395,9 @@ def assistant_state() -> dict[str, Any]:
     if not s.enabled:
         reason = (f"I am switched off for now, {s.owner_honorific}. Set ASSISTANT_ENABLED=true in config.env "
                   "and restart, and I will answer here and by text.")
+    elif _safe(lambda: __import__("assistant.runtime", fromlist=["x"]).is_stopped(), False, "stop switch"):
+        reason = (f"I am switched off for now, {s.owner_honorific}. Press Start below or text START STERLING "
+                  "to bring me back.")
     elif paused:
         reason = "Spending is paused, so I am staying quiet. Text RESUME (or clear the pause) to bring me back."
     elif remaining <= 0.0:
@@ -414,7 +417,28 @@ def assistant_state() -> dict[str, Any]:
             "budget": s.daily_budget_usd, "remaining": round(remaining, 4),
             "model": _main_model(s),
             "backend": s.backend,
-            "subagent_model": s.subagent_model}
+            "subagent_model": s.subagent_model,
+            "stopped": _safe(lambda: __import__("assistant.runtime", fromlist=["x"]).is_stopped(), False, "stop"),
+            "usage": _safe(_usage_meter, None, "usage") if s.backend == "claude_code" else None}
+
+
+def _usage_meter() -> dict[str, Any] | None:
+    """Plan usage for the chat card (only when Claude Code has reported something, or work is queued)."""
+    from assistant import usage
+
+    u = usage.usage_status()
+    if not u["known"] and not u["queued"] and not u["limited"]:
+        return None
+    labels = {"five_hour": "5-hour", "seven_day": "week", "seven_day_opus": "week (Opus)",
+              "seven_day_sonnet": "week (Sonnet)"}
+    parts = [f"{labels.get(k, k)}: {w['left_pct']}% left" + (f", resets {w['resets_text']}" if w["resets_text"] else "")
+             for k, w in u["windows"].items() if w["left_pct"] is not None]
+    if u["limited"]:
+        parts.insert(0, f"plan limit reached, back {u['limited_text']}")
+    if u["queued"]:
+        parts.append(f"{u['queued']} queued for after the reset")
+    parts.append(f"{u['runs_today']}/{u['runs_cap']} runs today")
+    return {**u, "line": " · ".join(parts)}
 
 
 def _ledger_summary() -> dict[str, Any] | None:
@@ -957,25 +981,154 @@ def api_home(request: Request) -> Response:
     })
 
 
+# --- images in chat -----------------------------------------------------------------
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_MAX_COUNT = 4
+_IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", "png"), (b"\xff\xd8\xff", "jpg"), (b"GIF87a", "gif"), (b"GIF89a", "gif"))
+UPLOAD_NAME = re.compile(r"^[0-9a-f]{32}\.(png|jpg|gif|webp)$")
+_MIME = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+
+
+def image_kind(data: bytes) -> str | None:
+    """png | jpg | gif | webp by content (never by file name or browser-claimed type)."""
+    for magic, kind in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return kind
+    if len(data) > 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def save_upload(data: bytes) -> Path:
+    """Validate and store one chat image in data/assistant/uploads; returns its absolute path."""
+    import uuid
+
+    from assistant import claude_code
+
+    if not data:
+        raise ValueError("empty file")
+    if len(data) > IMAGE_MAX_BYTES:
+        raise ValueError(f"image larger than {IMAGE_MAX_BYTES // (1024 * 1024)} MB")
+    kind = image_kind(data)
+    if kind is None:
+        raise ValueError("only PNG, JPEG, WebP or GIF images")
+    path = claude_code.uploads_dir() / f"{uuid.uuid4().hex}.{kind}"
+    path.write_bytes(data)
+    return path
+
+
+def upload_get(request: Request, name: str) -> Response:
+    """A chat image thumbnail (owner only; names are random and validated)."""
+    from fastapi.responses import FileResponse
+
+    from assistant import claude_code
+
+    d = _d()
+    resp, _ = d._guard(request)
+    if resp is not None:
+        return resp
+    if not UPLOAD_NAME.match(name):
+        return Response(status_code=404)
+    path = claude_code.uploads_dir() / name
+    if not path.is_file():
+        return Response(status_code=404)
+    return d._security_headers(FileResponse(path, media_type=_MIME[name.rsplit(".", 1)[1]],
+                                            headers={"Cache-Control": "private, max-age=86400"}))
+
+
+# --- background chat turns (long Claude Code tasks must not hold the request) -------------
+_chat_jobs: dict[str, dict[str, Any]] = {}
+_chat_lock = threading.Lock()
+CHAT_JOB_KEEP = 50
+
+
+def _start_job(message: str, attachments: list[str]) -> str:
+    import uuid
+
+    from assistant import runtime
+
+    jid = uuid.uuid4().hex
+    with _chat_lock:
+        _chat_jobs[jid] = {"done": False, "started": time.monotonic()}
+        for old in list(_chat_jobs)[:-CHAT_JOB_KEEP]:
+            _chat_jobs.pop(old, None)
+
+    def work() -> None:
+        try:
+            res = runtime.run_turn(message, channel="dashboard", attachments=attachments or None)
+            out = {"done": True, "ok": True, "reply": res.text, "status": res.status, "cost_usd": res.cost_usd}
+        except Exception as exc:
+            db.log_event("dashboard", "chat turn failed", level="error", data={"error": repr(exc)[:300]})
+            out = {"done": True, "ok": False, "msg": "That did not go through. Try again in a moment."}
+        with _chat_lock:
+            _chat_jobs[jid] = out
+
+    threading.Thread(target=work, name=f"chat-{jid[:6]}", daemon=True).start()
+    return jid
+
+
+def chat_job(request: Request, job_id: str) -> Response:
+    d = _d()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    with _chat_lock:
+        job = _chat_jobs.get(job_id)
+    if job is None:
+        return d._json({"ok": False, "done": True, "msg": "unknown job"}, status_code=404)
+    out = dict(job)
+    out.pop("started", None)
+    if out.get("done") and out.get("ok"):
+        out["cost_text"] = d.fmt_usd(out["cost_usd"]) if out.get("cost_usd") else "$0"
+    return d._json(out)
+
+
 async def chat_post(request: Request) -> Response:
     d = _d()
+    try:
+        size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        size = 0
+    if size > IMAGE_MAX_BYTES * IMAGE_MAX_COUNT + 65536:
+        return _post_reply(request, False, "chat_long", status=413, anchor="talk")
+    if "multipart/form-data" in request.headers.get("content-type", ""):
+        await request.form(max_files=IMAGE_MAX_COUNT, max_part_size=IMAGE_MAX_BYTES + 1024)  # cached for the guard
     err, form = await _post_guard(request, bucket="chat", limits=CHAT_LIMITS)
     if err is not None:
         return err
     message = str(form.get("message") or "").strip()
-    if not message:
+    images = [f for f in form.getlist("image") if hasattr(f, "read")]
+    images = [f for f in images if getattr(f, "filename", "")]
+    if not message and not images:
         return _post_reply(request, False, "chat_empty", status=400, anchor="talk")
     if len(message) > CHAT_MAX_CHARS:
         return _post_reply(request, False, "chat_long", status=413, anchor="talk")
+    if len(images) > IMAGE_MAX_COUNT:
+        return _post_reply(request, False, "chat_bad_image", status=400, anchor="talk",
+                           data={"reason": f"At most {IMAGE_MAX_COUNT} images per message."})
     a = assistant_state()
     if not a["can_chat"]:
         return _post_reply(request, False, "chat_off", status=503, anchor="talk", data={"reason": a["reason"]})
+    attachments: list[str] = []
+    for f in images:
+        try:
+            attachments.append(str(save_upload(await f.read())))
+        except ValueError as exc:
+            return _post_reply(request, False, "chat_bad_image", status=400, anchor="talk",
+                               data={"reason": f"That image was not accepted: {exc}."})
+    message = message or "(image attached)"
+    if str(form.get("async") or "") == "1":
+        jid = _start_job(message, attachments)
+        return _post_reply(request, True, "chat_sent", anchor="talk",
+                           data={"pending": True, "job": jid, "fake": a["fake"], "name": a["name"],
+                                 "images": [Path(p).name for p in attachments]})
     from fastapi.concurrency import run_in_threadpool
 
     from assistant import runtime
 
     try:
-        res = await run_in_threadpool(runtime.run_turn, message, channel="dashboard")
+        res = await run_in_threadpool(runtime.run_turn, message, channel="dashboard",
+                                      attachments=attachments or None)
     except Exception as exc:  # run_turn already turns model failures into a reply; this is the backstop
         db.log_event("dashboard", "chat turn failed", level="error", data={"error": repr(exc)[:300]})
         return _post_reply(request, False, "chat_failed", status=500, anchor="talk")
@@ -985,6 +1138,28 @@ async def chat_post(request: Request) -> Response:
                        data={"reply": res.text, "status": res.status, "cost_usd": res.cost_usd,
                              "cost_text": d.fmt_usd(res.cost_usd) if res.cost_usd else "$0",
                              "fake": a["fake"], "name": a["name"]})
+
+
+async def sterling_control(request: Request, action: str) -> Response:
+    """Owner controls on the home page: stop / start the assistant, undo its last code change."""
+    from fastapi.concurrency import run_in_threadpool
+
+    from assistant import runtime, selfedit
+
+    err, _form = await _post_guard(request)
+    if err is not None:
+        return err
+    if action == "stop":
+        runtime.set_stopped(True, via="dashboard")
+        return _post_reply(request, True, "sterling_stopped", anchor="talk")
+    if action == "start":
+        runtime.set_stopped(False, via="dashboard")
+        return _post_reply(request, True, "sterling_started", anchor="talk")
+    if action == "undo":
+        res = await run_in_threadpool(selfedit.undo)
+        return _post_reply(request, res["ok"], "sterling_undone" if res["ok"] else "sterling_undo_failed",
+                           status=200 if res["ok"] else 409, anchor="talk", data={"reason": res["message"]})
+    return Response(status_code=404)
 
 
 _HOURS = re.compile(r"(\d+(?:\.\d+)?)")
@@ -1129,6 +1304,9 @@ def register(router: Any) -> None:
     router.add_api_route("/memory", memory_page, methods=["GET"])
     router.add_api_route("/agents/{name}", agent_page, methods=["GET"])
     router.add_api_route("/chat", chat_post, methods=["POST"])
+    router.add_api_route("/chat/job/{job_id}", chat_job, methods=["GET"])
+    router.add_api_route("/uploads/{name}", upload_get, methods=["GET"], include_in_schema=False)
+    router.add_api_route("/sterling/{action}", sterling_control, methods=["POST"])
     router.add_api_route("/checkins/{checkin_id}/answer", checkin_answer, methods=["POST"])
     router.add_api_route("/meals/{meal_id}/{action}", meal_feedback, methods=["POST"])
     router.add_api_route("/jobs", job_post, methods=["POST"])

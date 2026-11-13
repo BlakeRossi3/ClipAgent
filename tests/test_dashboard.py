@@ -729,3 +729,39 @@ def test_seed_demo_vault_stays_inside_demo_dir(seeded):
     assert store.list_jobs()[0].name == "Spoke & Chain"
     assert any(r.status == "error" for r in store.list_agent_runs(200))
     assert store.list_checkins("pending")
+
+
+def test_chat_images_and_background_turns(client, clock, monkeypatch, fake_model):
+    import time as _time
+
+    _enable(monkeypatch)
+    monkeypatch.setattr(home, "_hits", {})
+    c = _csrf(client.get("/dashboard/").text)
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+    r = client.post("/dashboard/chat", data={"csrf": c, "message": "look", "async": "1"},
+                    files=[("image", ("shot.png", png, "image/png"))], headers={"Accept": "application/json"})
+    assert r.status_code == 200 and r.json()["pending"] is True
+    name = r.json()["images"][0]
+    assert home.UPLOAD_NAME.match(name)
+    for _ in range(100):
+        j = client.get(f"/dashboard/chat/job/{r.json()['job']}").json()
+        if j["done"]:
+            break
+        _time.sleep(0.05)
+    assert j["done"] and j["ok"]
+    msg = store.list_messages(channel="dashboard", direction="in")[0]
+    assert msg.meta == {"attachments": [name]}
+    img = client.get(f"/dashboard/uploads/{name}")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/png"
+    assert client.get("/dashboard/uploads/..%2Fconfig.env").status_code == 404
+    assert f"/dashboard/uploads/{name}" in client.get("/dashboard/").text
+    bad = client.post("/dashboard/chat", data={"csrf": c, "message": "x"},
+                      files=[("image", ("evil.png", b"<script>", "image/png"))], headers={"Accept": "application/json"})
+    assert bad.status_code == 400 and "not accepted" in bad.json()["reason"]
+    stop = _json_post(client, "/dashboard/sterling/stop", {"csrf": c})
+    assert stop.status_code == 200
+    from assistant import runtime as _rt
+
+    assert _rt.is_stopped() and "switched off" in _json_post(client, "/dashboard/chat", {"csrf": c, "message": "hi"}).json()["reason"]
+    _json_post(client, "/dashboard/sterling/start", {"csrf": c})
+    assert not _rt.is_stopped()

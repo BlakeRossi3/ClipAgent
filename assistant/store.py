@@ -42,7 +42,8 @@ import db
 VERSION_KEY = "assistant:schema_version"
 
 DIRECTIONS = ("in", "out")
-CHANNELS = ("sms", "dashboard", "call", "system")
+CHANNELS = ("sms", "dashboard", "call", "system", "voice", "whatsapp")
+_V1_CHANNELS = ("sms", "dashboard", "call", "system")   # the CHECK shipped in migration v1 (never edit)
 CHECKIN_STATUSES = ("pending", "answered", "skipped", "expired")
 PAY_SCHEDULES = ("weekly", "biweekly", "semimonthly", "monthly")
 INCOME_SOURCES = ("job", "reels", "other")
@@ -60,12 +61,14 @@ def _in(col: str, values: Sequence[str]) -> str:
 
 
 # Each migration is a list of single statements (no splitting on ';'). Append only.
+DEFERRED_STATUSES = ("queued", "running", "done", "failed", "cancelled")
+
 MIGRATIONS: list[list[str]] = [
     [
         f"""CREATE TABLE as_messages (
             id INTEGER PRIMARY KEY, ts TEXT NOT NULL,
             direction TEXT NOT NULL {_in('direction', DIRECTIONS)},
-            channel TEXT NOT NULL {_in('channel', CHANNELS)},
+            channel TEXT NOT NULL {_in('channel', _V1_CHANNELS)},
             body TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'chat', agent TEXT,
             cost_usd REAL NOT NULL DEFAULT 0,
             reply_to INTEGER REFERENCES as_messages(id) ON DELETE SET NULL,
@@ -119,6 +122,40 @@ MIGRATIONS: list[list[str]] = [
             path TEXT PRIMARY KEY, mtime REAL NOT NULL, sha TEXT NOT NULL, title TEXT NOT NULL,
             indexed_at TEXT NOT NULL)""",
         "CREATE VIRTUAL TABLE as_vault_fts USING fts5(path UNINDEXED, title, body, tokenize = 'porter unicode61')",
+    ],
+    [   # v2: deferred prompts (run after the Claude plan's usage window resets, or at a set time)
+        f"""CREATE TABLE as_deferred (
+            id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL, prompt TEXT NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'system', agent TEXT NOT NULL DEFAULT 'main',
+            run_after TEXT, after_reset INTEGER NOT NULL DEFAULT 0, reason TEXT,
+            status TEXT NOT NULL DEFAULT 'queued' {_in('status', DEFERRED_STATUSES)},
+            started_at TEXT, finished_at TEXT, result TEXT, message_id INTEGER)""",
+        "CREATE INDEX idx_as_deferred_status ON as_deferred(status, run_after)",
+    ],
+    [   # v3: as_messages accepts the "voice" (voice/ package) and "whatsapp" channels.
+        # SQLite cannot alter a CHECK, so the table is rebuilt. DROP TABLE fires ON DELETE SET NULL
+        # on the links into it (as_checkins.message_id, as_messages.reply_to): save and restore them.
+        "CREATE TEMP TABLE _as_v3_links AS SELECT id, message_id FROM as_checkins WHERE message_id IS NOT NULL",
+        "CREATE TEMP TABLE _as_v3_replies AS SELECT id, reply_to FROM as_messages WHERE reply_to IS NOT NULL",
+        f"""CREATE TABLE as_messages_v3 (
+            id INTEGER PRIMARY KEY, ts TEXT NOT NULL,
+            direction TEXT NOT NULL {_in('direction', DIRECTIONS)},
+            channel TEXT NOT NULL {_in('channel', ("sms", "dashboard", "call", "system", "voice", "whatsapp"))},
+            body TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'chat', agent TEXT,
+            cost_usd REAL NOT NULL DEFAULT 0,
+            reply_to INTEGER REFERENCES as_messages(id) ON DELETE SET NULL,
+            meta TEXT)""",
+        "INSERT INTO as_messages_v3 (id, ts, direction, channel, body, kind, agent, cost_usd, reply_to, meta) "
+        "SELECT id, ts, direction, channel, body, kind, agent, cost_usd, reply_to, meta FROM as_messages",
+        "DROP TABLE as_messages",
+        "ALTER TABLE as_messages_v3 RENAME TO as_messages",
+        "CREATE INDEX idx_as_messages_ts ON as_messages(ts)",
+        "UPDATE as_messages SET reply_to = (SELECT r.reply_to FROM _as_v3_replies r WHERE r.id = as_messages.id) "
+        "WHERE id IN (SELECT id FROM _as_v3_replies)",
+        "UPDATE as_checkins SET message_id = (SELECT l.message_id FROM _as_v3_links l WHERE l.id = as_checkins.id) "
+        "WHERE id IN (SELECT id FROM _as_v3_links)",
+        "DROP TABLE _as_v3_replies",
+        "DROP TABLE _as_v3_links",
     ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -787,3 +824,69 @@ def list_lessons(status: str | None = None, *, area: str | None = None, limit: i
     with transaction(conn) as c:
         return _many(c, Lesson, f"SELECT * FROM as_lessons WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?",
                      (*params, limit))
+
+
+# ---------------------------------------------------------------------------
+# deferred prompts (assistant/usage.py)
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class Deferred(_Row):
+    _BOOL: ClassVar[tuple[str, ...]] = ("after_reset",)
+    id: int
+    created_at: str
+    kind: str
+    prompt: str
+    channel: str
+    agent: str
+    run_after: str | None
+    after_reset: bool
+    reason: str | None
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    result: str | None = None
+    message_id: int | None = None
+
+
+def add_deferred(prompt: str, *, kind: str = "prompt", channel: str = "system", agent: str = "main",
+                 run_after: str | None = None, after_reset: bool = False, reason: str | None = None,
+                 conn: sqlite3.Connection | None = None) -> int:
+    with transaction(conn) as c:
+        cur = c.execute("INSERT INTO as_deferred (created_at, kind, prompt, channel, agent, run_after, after_reset, "
+                        "reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (db.now_iso(), kind, prompt, channel, agent, run_after, int(after_reset), reason))
+        return int(cur.lastrowid)
+
+
+def get_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> Deferred | None:
+    with transaction(conn) as c:
+        row = c.execute("SELECT * FROM as_deferred WHERE id = ?", (did,)).fetchone()
+    return Deferred.from_row(row) if row else None
+
+
+def list_deferred(status: str | None = "queued", *, limit: int = 50,
+                  conn: sqlite3.Connection | None = None) -> list[Deferred]:
+    """Oldest first."""
+    with transaction(conn) as c:
+        if status is None:
+            rows = c.execute("SELECT * FROM as_deferred ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            rows = list(reversed(rows))
+        else:
+            _check(status, DEFERRED_STATUSES, "status")
+            rows = c.execute("SELECT * FROM as_deferred WHERE status = ? ORDER BY id LIMIT ?", (status, limit)).fetchall()
+    return [Deferred.from_row(r) for r in rows]
+
+
+def set_deferred_status(did: int, status: str, *, result: str | None = None, message_id: int | None = None,
+                        conn: sqlite3.Connection | None = None) -> bool:
+    _check(status, DEFERRED_STATUSES, "status")
+    now = db.now_iso()
+    with transaction(conn) as c:
+        if status == "running":
+            cur = c.execute("UPDATE as_deferred SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                            (now, did))
+        else:
+            cur = c.execute("UPDATE as_deferred SET status = ?, finished_at = ?, result = COALESCE(?, result), "
+                            "message_id = COALESCE(?, message_id) WHERE id = ?", (status, now, result, message_id, did))
+        return cur.rowcount > 0

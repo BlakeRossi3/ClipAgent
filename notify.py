@@ -103,9 +103,15 @@ def normalize_phone(raw: str | None) -> str:
     return "+" + digits
 
 
+def _strip_channel(number: str | None) -> str:
+    """``whatsapp:+1555...`` -> ``+1555...`` (WhatsApp webhooks prefix every address)."""
+    s = (number or "").strip()
+    return s.split(":", 1)[1] if s.lower().startswith("whatsapp:") else s
+
+
 def _is_owner(number: str | None) -> bool:
     owner = normalize_phone(config.get_settings().owner_phone)
-    return bool(owner) and normalize_phone(number) == owner
+    return bool(owner) and normalize_phone(_strip_channel(number)) == owner
 
 
 def _mask(number: str | None) -> str:
@@ -227,15 +233,40 @@ def _new_row(kind: str, text: str, channel: str, decision_id: int | None) -> int
     return nid
 
 
-def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_id: int | None) -> str:
-    """Send an already-claimed row now. Returns the final status: sent | dry_run | failed."""
+def _route(kind: str, transport: str | None) -> Any:
+    """Texting channel for an ``sms``-channel row (assistant/messaging.py: SMS or WhatsApp)."""
+    from assistant import messaging
+
+    return messaging.route_text(kind, transport=transport)
+
+
+def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_id: int | None,
+             transport: str | None = None) -> str:
+    """Send an already-claimed row now. Returns the final status: sent | dry_run | failed | skipped | queued.
+
+    ``channel="sms"`` means "a text": :func:`_route` picks SMS or WhatsApp (``MESSAGING_CHANNEL``);
+    a WhatsApp text that cannot go out now (24-hour window closed, SMS not usable) is held
+    (row back to ``queued``) and :func:`send_queued` sends it after the owner's next message.
+    """
     s = config.get_settings()
+    route = None
+    if channel == "sms":
+        try:
+            route = _route(kind, transport)
+        except Exception:  # routing must never stop a text: plain SMS as before
+            log.exception("texting route failed; using SMS")
     if s.dry_run or not s.twilio_configured:
         why = "DRY_RUN" if s.dry_run else "Twilio not configured"
         db.update_notification(notification_id, status="dry_run", error=None)
         db.log_event(MODULE, f"[dry run] would {channel} owner ({kind})", data={
-            "notification_id": notification_id, "reason": why, "decision_id": decision_id, "text": text[:300]})
+            "notification_id": notification_id, "reason": why, "decision_id": decision_id, "text": text[:300],
+            **({"transport": route.transport, "route": route.reason, "would_hold": route.hold} if route else {})})
         return "dry_run"
+    if route is not None and route.hold:
+        from assistant import messaging
+
+        messaging.hold(notification_id, route.reason)
+        return "queued"
     day_start, day_end = db.local_day_bounds()
     used = db.count_notifications_between(day_start, day_end, status=("sent", "failed"), channels=("call", "sms"))
     if used >= MAX_NOTIFICATIONS_PER_DAY:
@@ -264,9 +295,10 @@ def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_
             if decision_id is not None:
                 db.set_decision_call_sid(decision_id, res.sid)
         else:
-            res = client.messages.create(to=normalize_phone(s.owner_phone),
-                                         from_=normalize_phone(s.twilio_from_number), body=_sms_text(text))
+            res = _send_text(client, s, notification_id, text, route)
     except Exception as exc:  # Twilio REST errors, network, misconfiguration
+        if channel == "sms" and route is not None and _text_failed_now(notification_id, kind, exc, route):
+            return "queued"
         db.update_notification(notification_id, status="failed", error=str(exc)[:500])
         db.log_event(MODULE, f"{channel} to owner failed ({kind})", level="error",
                      data={"notification_id": notification_id, "error": str(exc)[:500]})
@@ -276,6 +308,60 @@ def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_
                  data={"notification_id": notification_id, "sid": getattr(res, "sid", None),
                        "decision_id": decision_id})
     return "sent"
+
+
+# ---------------------------------------------------------------------------
+# Texting transports (SMS / WhatsApp) - see assistant/messaging.py
+# ---------------------------------------------------------------------------
+
+def _callback_ok() -> bool:
+    """Twilio needs a public https host for status callbacks; skip them for localhost setups."""
+    from urllib.parse import urlparse
+
+    p = urlparse(_base_url())
+    host = (p.hostname or "").lower()
+    return p.scheme == "https" and bool(host) and "." in host and not host.endswith(".local")
+
+
+def _send_text(client: Any, s: config.Settings, notification_id: int, text: str, route: Any) -> Any:
+    transport = route.transport if route is not None else "sms"
+    to, from_ = normalize_phone(s.owner_phone), normalize_phone(s.twilio_from_number)
+    if transport == "whatsapp":
+        to, from_ = f"whatsapp:{to}", f"whatsapp:{normalize_phone(_strip_channel(s.whatsapp_from))}"
+    kw: dict[str, Any] = {"to": to, "from_": from_, "body": _sms_text(text)}
+    if _callback_ok():
+        kw["status_callback"] = _url("/twilio/message-status", notification_id=notification_id)
+    res = client.messages.create(**kw)
+    try:
+        from assistant import messaging
+
+        messaging.set_transport(notification_id, transport)
+        messaging.release(notification_id)
+    except Exception:
+        log.exception("could not record the texting transport")
+    if transport != "sms" or (route is not None and route.reason != "auto: SMS works"):
+        db.log_event(MODULE, f"text goes by {transport}", data={"notification_id": notification_id,
+                                                               "why": getattr(route, "reason", "")})
+    return res
+
+
+def _text_failed_now(notification_id: int, kind: str, exc: Exception, route: Any) -> bool:
+    """A WhatsApp send refused at once (63016 window / 63015 not joined): hold it. True = handled."""
+    from assistant import messaging
+
+    try:
+        code = int(getattr(exc, "code", None) or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if route.transport == "whatsapp" and code in messaging.WA_WINDOW_CODES | messaging.WA_NOT_JOINED_CODES:
+        messaging.record_whatsapp_error(code)
+        if code in messaging.WA_WINDOW_CODES:   # our window clock was wrong: treat it as closed
+            db.kv_delete(messaging.K_WA_LAST_IN)
+        messaging.hold(notification_id, f"WhatsApp refused it (error {code})")
+        return True
+    if route.transport == "sms" and code in messaging.SMS_BLOCK_CODES:
+        messaging.record_sms_error(code)
+    return False
 
 
 def call(text: str, *, kind: str = "call", decision_id: int | None = None) -> int:
@@ -289,10 +375,13 @@ def call(text: str, *, kind: str = "call", decision_id: int | None = None) -> in
     return nid
 
 
-def sms(text: str, *, kind: str = "sms", decision_id: int | None = None) -> int:
-    """Text the owner now (no quiet-hours policy). Returns the notification id."""
+def sms(text: str, *, kind: str = "sms", decision_id: int | None = None, transport: str | None = None) -> int:
+    """Text the owner now (no quiet-hours policy). Returns the notification id.
+
+    The pipe (SMS or WhatsApp) follows ``MESSAGING_CHANNEL`` unless ``transport`` forces one.
+    """
     nid = _new_row(kind, text, "sms", decision_id)
-    _deliver(nid, "sms", kind, text, decision_id)
+    _deliver(nid, "sms", kind, text, decision_id, transport)
     return nid
 
 
@@ -474,6 +563,8 @@ def send_queued() -> int:
         urgent_call = row.channel == "call" and row.kind in URGENT_KINDS
         if quiet and not urgent_call:
             continue
+        if row.channel == "sms" and _still_held(row):
+            continue
         if row.decision_id is not None:
             d = _current_decision(row.decision_id)
             if d is None or d.status != "pending":
@@ -606,10 +697,26 @@ def status_line() -> str:
 # Webhooks
 # ---------------------------------------------------------------------------
 
+def _still_held(row: db.Notification) -> bool:
+    """A held text waits until the route no longer says hold (window reopened, SMS approved...)."""
+    try:
+        from assistant import messaging
+
+        if not messaging.is_held(row.id):
+            return False
+        if messaging.expire_if_stale(row.id):
+            return True
+        return _route(row.kind, None).hold
+    except Exception:
+        log.exception("held-text check failed")
+        return False
+
+
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 
 HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval, "
-             "STATUS, PAUSE (stop AI spending), RESUME, HELP.")
+             "STATUS, PAUSE (stop AI spending), RESUME, UNDO (assistant's last code change), STOP STERLING, "
+             "START STERLING, HELP.")
 
 
 def _xml(twiml: Any) -> Response:
@@ -846,6 +953,48 @@ async def status_webhook(request: Request, notification_id: int | None = None) -
     return _xml(_voice())
 
 
+@router.post("/message-status")
+async def message_status_webhook(request: Request, notification_id: int | None = None) -> Response:
+    """Status callback for texts (SMS and WhatsApp). Learns which pipe works:
+
+    * SMS ``undelivered``/``failed`` with 30034 (unregistered 10DLC) -> SMS marked blocked; the text
+      is re-queued once so ``auto`` resends it on WhatsApp;
+    * SMS ``delivered`` -> SMS marked working;
+    * WhatsApp 63016 (window closed) / 63015 (not joined) -> the text is held for his next message.
+    """
+    p = await _twilio_params(request)
+    status = (p.get("MessageStatus") or p.get("SmsStatus") or "").lower()
+    try:
+        code = int(p.get("ErrorCode") or 0)
+    except ValueError:
+        code = 0
+    via_wa = (p.get("To") or "").lower().startswith("whatsapp:")
+    n = db.get_notification(notification_id) if notification_id is not None else None
+    if n is None and p.get("MessageSid"):
+        n = db.get_notification_by_sid(p["MessageSid"])
+    from assistant import messaging
+
+    if status == "delivered":
+        if not via_wa:
+            messaging.record_sms_ok()
+    elif status in ("undelivered", "failed"):
+        db.log_event(MODULE, f"{'WhatsApp' if via_wa else 'SMS'} {status} (error {code or '?'})", level="warning",
+                     data={"notification_id": n.id if n else None, "code": code, "sid": p.get("MessageSid")})
+        if via_wa and code in messaging.WA_WINDOW_CODES | messaging.WA_NOT_JOINED_CODES:
+            messaging.record_whatsapp_error(code, sid=p.get("MessageSid"))
+            if code in messaging.WA_WINDOW_CODES:
+                db.kv_delete(messaging.K_WA_LAST_IN)
+            if n is not None:
+                messaging.requeue_once(n.id, f"WhatsApp error {code}; resent after your next WhatsApp message")
+        elif not via_wa and code in messaging.SMS_BLOCK_CODES:
+            messaging.record_sms_error(code, sid=p.get("MessageSid"))
+            if n is not None and messaging.whatsapp_configured():
+                messaging.requeue_once(n.id, f"SMS blocked (error {code}); resending by WhatsApp")
+        elif n is not None:
+            db.update_notification(n.id, status="failed", sid=n.sid, error=f"{status} (error {code})")
+    return Response(status_code=204)
+
+
 _ANSWER_RE = re.compile(r"^\s*(yes|y|approve|no|n|reject)\b[\s#:.,-]*([0-9]{1,9})?\s*[.!]?\s*$",
                         re.IGNORECASE | re.ASCII)
 
@@ -880,6 +1029,9 @@ def handle_sms_command(body: str) -> str:
             return f"No request #{decision_id}. Reply STATUS to see pending ones."
         return f"#{decision_id} is already {d.status}" + (f" (via {d.resolved_via})" if d.resolved_via else "") + \
             ". Nothing changed."
+    phrase = " ".join(text.upper().split())
+    if phrase in ASSISTANT_PHRASES:
+        return _assistant_command(phrase)
     if word == "PAUSE":
         budget.set_paused(True, "paused by owner via SMS")
         return "Paused. No AI spending until you text RESUME."
@@ -895,26 +1047,54 @@ def handle_sms_command(body: str) -> str:
 async def sms_webhook(request: Request, background_tasks: BackgroundTasks) -> Response:
     """Inbound SMS from the owner: YES/NO <id>, PAUSE, RESUME, STATUS, HELP. With the assistant
     enabled, anything else is handed to it in the background (signature, owner-number and
-    MessageSid checks above still apply to every message)."""
+    MessageSid checks above still apply to every message). WhatsApp messages posted here
+    (``From=whatsapp:+1...``) are handled exactly like :func:`whatsapp_webhook`."""
+    return await _inbound_message(request, background_tasks)
+
+
+@router.post("/whatsapp")
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks) -> Response:
+    """Inbound WhatsApp (sandbox "When a message comes in" URL). Same checks and commands as SMS:
+    Twilio signature, owner number only (``whatsapp:`` prefix stripped), MessageSid de-dup,
+    YES/NO need the request id. Each message reopens the 24-hour window and releases held texts."""
+    return await _inbound_message(request, background_tasks)
+
+
+async def _inbound_message(request: Request, background_tasks: BackgroundTasks) -> Response:
     p = await _twilio_params(request)
     from twilio.twiml.messaging_response import MessagingResponse
 
     resp = MessagingResponse()
     sender = p.get("From")
+    via_wa = (sender or "").strip().lower().startswith("whatsapp:")
+    label = "WhatsApp" if via_wa else "SMS"
     if not _is_owner(sender):
-        db.log_event(MODULE, "ignored SMS from non-owner number", level="warning",
-                     data={"from": _mask(sender), "body": (p.get("Body") or "")[:40]})
+        db.log_event(MODULE, f"ignored {label} from non-owner number", level="warning",
+                     data={"from": _mask(_strip_channel(sender)), "body": (p.get("Body") or "")[:40]})
         return _xml(resp)
     body = p.get("Body") or ""
     msid = p.get("MessageSid") or p.get("SmsSid") or ""
     if msid and not db.kv_set_if_absent(f"notify:sms_in:{msid}", db.now_iso()):
-        db.log_event(MODULE, "duplicate inbound SMS ignored (replay or Twilio retry)", level="warning",
+        db.log_event(MODULE, f"duplicate inbound {label} ignored (replay or Twilio retry)", level="warning",
                      data={"message_sid": msid})
+        return _xml(resp)
+    if via_wa:
+        try:
+            from assistant import messaging
+
+            messaging.record_inbound_whatsapp(body)
+            background_tasks.add_task(send_queued)   # held texts can go now that the window is open
+        except Exception:
+            log.exception("could not record the WhatsApp window")
+    has_media = (p.get("NumMedia") or "0").strip() not in ("", "0")
+    if has_media and _assistant_enabled():
+        db.log_event(MODULE, f"owner {label} with attachments handed to the assistant", data={"chars": len(body)})
+        background_tasks.add_task(assistant_inbound, body, dict(p))
         return _xml(resp)
     if _assistant_enabled() and not is_pipeline_command(body):
         # Hand off: reply with empty TwiML now (Twilio times out after 15 s), answer in the
         # background - check-in answers in plain code first, else the conversational agent.
-        db.log_event(MODULE, "owner SMS handed to the assistant", data={"chars": len(body)})
+        db.log_event(MODULE, f"owner {label} handed to the assistant", data={"chars": len(body)})
         background_tasks.add_task(assistant_inbound, body)
         return _xml(resp)
     reply = handle_sms_command(body)
@@ -928,6 +1108,24 @@ async def sms_webhook(request: Request, background_tasks: BackgroundTasks) -> Re
 ASSISTANT_HELP = ("Check-ins: SNOOZE [2h], QUIET (rest of today), STOP CHECK-INS, START CHECK-INS. "
                   "Anything else goes to your assistant.")
 _COMMAND_WORDS = frozenset({"PAUSE", "RESUME", "UNPAUSE", "STATUS", "HELP"})
+
+
+ASSISTANT_PHRASES = frozenset({"UNDO", "STOP STERLING", "START STERLING"})
+
+
+def _assistant_command(phrase: str) -> str:
+    """UNDO (revert the assistant's last change to its own code), STOP/START STERLING (kill switch)."""
+    try:
+        from assistant import runtime, selfedit
+
+        if phrase == "UNDO":
+            return selfedit.undo()["message"]
+        runtime.set_stopped(phrase == "STOP STERLING", via="sms")
+        return ("Stopped. Your assistant will not run until you text START STERLING."
+                if phrase == "STOP STERLING" else "Started. Your assistant is back.")
+    except Exception as exc:
+        log.exception("assistant command failed")
+        return f"That did not work: {type(exc).__name__}. See the dashboard."
 
 
 def _assistant_enabled() -> bool:
@@ -950,14 +1148,29 @@ def is_pipeline_command(body: str) -> bool:
     m = _ANSWER_RE.match(text)
     if m:
         return bool(m.group(2)) or bool(db.list_decisions("pending", limit=1))
+    if " ".join(text.upper().split()) in ASSISTANT_PHRASES:
+        return True
     return bool(text) and text.split()[0].upper() in _COMMAND_WORDS
 
 
-def assistant_inbound(body: str) -> None:
-    """Background: an owner text the pipeline does not handle (already authenticated + de-duplicated)."""
+def assistant_inbound(body: str, media_params: dict[str, str] | None = None) -> None:
+    """Background: an owner text the pipeline does not handle (already authenticated + de-duplicated).
+
+    ``media_params``: the webhook form of a message with ``MediaUrlN`` attachments; they are
+    downloaded (Twilio auth) into data/assistant/uploads and handed to the assistant.
+    """
     try:
         from assistant import checkins, runtime
 
+        if media_params:
+            from assistant import messaging
+
+            media = messaging.download_media(media_params)
+            images = [m["path"] for m in media if m["type"].startswith("image/")]
+            note = messaging.media_note(media)
+            text = "\n\n".join(x for x in (body.strip(), note) if x) or "(sent an attachment)"
+            runtime.run_turn(text, channel="sms", deliver=True, attachments=images or None)
+            return
         if checkins.handle_reply(body):
             return
         runtime.handle_inbound_sms(body)

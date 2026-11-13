@@ -170,6 +170,8 @@ def _render(request: Request, step: str, ctx: Mapping[str, Any] | None = None, *
     base.update(ctx or {})
     if step in ("brain", "hub") and "cc" not in base:
         base["cc"] = claude_status(probe=False)
+    if step == "brain" and "powers" not in base:
+        base["powers"] = sterling_powers()
     return _d()._render(request, "setup.html", base, status_code=status, nav="settings")
 
 
@@ -774,10 +776,19 @@ def update_app() -> dict[str, Any]:
             return out
         before = _run([git, "rev-parse", "HEAD"], 30).stdout.strip()
         req_before = _req_digest()
-        pull = _run([git, "pull", "--ff-only", "origin", branch], 300)
+        upstream = _self_edit_upstream(git, branch)
+        if upstream:  # the assistant's own branch: merge the published branch into it, keep its changes
+            pull = _run([git, *SELF_EDIT_GIT_ID, "pull", "--no-rebase", "--no-edit", "origin", upstream], 300)
+        else:
+            pull = _run([git, "pull", "--ff-only", "origin", branch], 300)
         out["log"].append((pull.stdout + pull.stderr).strip()[-1500:])
         if pull.returncode != 0:
-            out["log"].append("The update could not be applied automatically (see above). Nothing was changed.")
+            if upstream:
+                _run([git, "merge", "--abort"], 60)
+                out["log"].append("The update conflicts with the assistant's own changes; kept the local version. "
+                                  "Undo its changes (Settings > The brain) to take the update.")
+            else:
+                out["log"].append("The update could not be applied automatically (see above). Nothing was changed.")
             return out
         after = _run([git, "rev-parse", "HEAD"], 30).stdout.strip()
         out["updated"] = before != after
@@ -794,6 +805,43 @@ def update_app() -> dict[str, Any]:
     out["ok"] = True
     db.log_event("setup", "update checked", data={"updated": out["updated"]})
     return out
+
+
+# ===========================================================================
+# Sterling's powers (self-editing assistant) - kept in one block; see assistant/selfedit.py
+# ===========================================================================
+
+SELF_EDIT_GIT_ID = ["-c", "user.name=Sterling", "-c", "user.email=sterling@clipagent.local"]
+
+
+def _self_edit_upstream(git: str, branch: str) -> str:
+    """On the assistant's self-edit branch: the published branch to merge updates from, else ''."""
+    try:
+        from assistant.settings import get_assistant_settings
+
+        if branch != get_assistant_settings().self_edit_branch:
+            return ""
+        up = _run([git, "config", "--get", "clipagent.upstream"], 30).stdout.strip()
+    except Exception:
+        return ""
+    return up if up and BRANCH_RE.match(up) and ".." not in up else ""
+
+
+def sterling_powers() -> dict[str, Any]:
+    """What the assistant can do right now (Settings > The brain)."""
+    try:
+        from assistant import claude_code, runtime, selfedit, usage
+
+        a = _asettings()
+        full = a.backend == "claude_code" and a.cc_full
+        return {"full": full, "backend": a.backend, "chrome": a.chrome,
+                "tools": list(claude_code.BUILTIN_TOOLS) if full else [],
+                "folders": [str(p) for p in claude_code.working_dirs()] if full else [],
+                "self_edit": selfedit.powers_status(), "stopped": runtime.is_stopped(),
+                "paused": db.kv_get("budget:paused") is not None, "usage": usage.usage_status()}
+    except Exception as exc:
+        log.warning("powers status failed: %s", exc)
+        return {"error": str(exc)[:200]}
 
 
 def doctor_rows() -> list[dict[str, Any]]:
