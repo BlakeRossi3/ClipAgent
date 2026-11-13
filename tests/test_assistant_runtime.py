@@ -101,7 +101,8 @@ def test_invalid_arguments_and_crashing_tools_do_not_kill_the_turn(fake_model, c
     def boom(ctx, args):
         raise RuntimeError("bug")
 
-    tools.register(tools.Tool("ledger_summary", "test", {"type": "object", "properties": {}}, boom))
+    tools.load_extensions()  # the real ledger module registers first; this test swaps in a crashing stand-in
+    tools.register(tools.Tool("ledger_summary", "test", {"type": "object", "properties": {}}, boom), replace=True)
     fake_model.queue([fake_tool("memory_search"), fake_tool("ledger_summary")], "Fine.")
     res = runtime.run_turn("summary", channel="sms")
     assert res.status == "ok" and res.text == "Fine."
@@ -113,9 +114,10 @@ def test_registered_extension_tools_are_offered(fake_model, clock):
     def log_hours(ctx, args):
         return {"logged": args["hours"]}
 
+    tools.load_extensions()  # the real ledger registers first; this test swaps in a stand-in
     tools.register(tools.Tool("ledger_log_hours", "Log hours", {
         "type": "object", "properties": {"hours": {"type": "number"}}, "required": ["hours"]}, log_hours,
-        owner="assistant.ledger"))
+        owner="assistant.ledger"), replace=True)
     with pytest.raises(ValueError):
         tools.register(tools.Tool("ledger_log_hours", "dup", {"type": "object"}, lambda c, a: None))
     with pytest.raises(ValueError):
