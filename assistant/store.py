@@ -36,6 +36,7 @@ from dataclasses import dataclass, fields
 from datetime import date, timedelta
 from typing import Any, ClassVar, Iterator, Sequence, TypeVar
 
+import config
 import db
 
 VERSION_KEY = "assistant:schema_version"
@@ -162,7 +163,7 @@ def schema_version() -> int:
 def transaction(conn: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
     """``db.transaction`` that first makes sure the assistant tables exist."""
     if conn is None:
-        key = str(db.get_settings().db_path.resolve()) if hasattr(db, "get_settings") else ""
+        key = str(config.get_settings().db_path.resolve())
         if key not in _migrated:
             with _lock:
                 if key not in _migrated:
