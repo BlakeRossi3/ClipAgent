@@ -80,6 +80,8 @@ def test_default_fake_runs_offline_without_script(assistant_env, clock):
 def test_tool_allowlist_is_enforced(fake_model, clock):
     vault.ensure_vault()
     vault.remember("Has a dog called Max", area="about", source="sms")
+    tools.load_extensions()
+    tools.unregister("ledger_log_hours")  # simulate a planned tool whose module is not installed
     fake_model.queue([fake_tool("memory_forget", fact="Has a dog called Max"), fake_tool("shell", cmd="rm -rf /"),
                       fake_tool("ledger_log_hours", hours=40)], "Done.")
     res = runtime.run_turn("forget my dog", channel="sms")

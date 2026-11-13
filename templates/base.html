@@ -7,10 +7,13 @@
 <meta name="robots" content="noindex, nofollow">
 <title>{% block title %}Dashboard{% endblock %} · Shorts Agent</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%232a78d6'/%3E%3Cpath d='M6 4.5v7l5.5-3.5z' fill='white'/%3E%3C/svg%3E">
+<script src="/dashboard/static/theme.js"></script>
 <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+<link rel="stylesheet" href="/dashboard/static/home.css">
 <script src="/dashboard/static/charts.js" defer></script>
+{% block head %}{% endblock %}
 </head>
-<body>
+<body class="section-{{ section }}">
 <a class="skip" href="#main">Skip to content</a>
 {% if demo %}
 <div class="banner banner-demo" role="alert">
@@ -21,21 +24,29 @@
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/dashboard/">
-      <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" class="brand-mark"/><path d="M6 4.5v7l5.5-3.5z" fill="#fff"/></svg>
-      <span>Shorts Agent</span>
+      <svg class="brand-px" width="22" height="22" viewBox="0 0 8 8" shape-rendering="crispEdges" aria-hidden="true"><rect x="2" y="0" width="4" height="1"/><rect x="1" y="1" width="6" height="2"/><rect x="2" y="3" width="4" height="2" class="brand-face"/><rect x="1" y="5" width="6" height="3"/><rect x="3" y="5" width="2" height="1" class="brand-tie"/></svg>
+      <span>{{ assistant_name }}</span>
     </a>
     {% if active != "login" %}
-    <nav class="nav" aria-label="Dashboard sections">
-      {% for key, label, href in nav %}
-      <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ label }}</a>
+    <nav class="nav nav-sections" aria-label="Sections">
+      {% for key, label, href in sections %}
+      <a href="{{ href }}"{% if key == section %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
+    <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch colour theme" title="Theme"><span aria-hidden="true">◐</span></button>
     {% endif %}
   </div>
+  {% if section == "studio" and active != "login" %}
+  <div class="subnav-wrap"><nav class="nav subnav" aria-label="Studio pages">
+    {% for key, label, href in nav %}
+    <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav></div>
+  {% endif %}
 </header>
 {% if active != "login" %}
 <div class="notices">
-  {% if dry_run %}<p class="notice"><span class="dot dot-info" aria-hidden="true"></span><strong>Dry-run mode.</strong> Uploads, calls and texts are simulated; set <code>DRY_RUN=false</code> to go live.</p>{% endif %}
+  {% if dry_run and section == "studio" %}<p class="notice"><span class="dot dot-info" aria-hidden="true"></span><strong>Dry-run mode.</strong> Uploads, calls and texts are simulated; set <code>DRY_RUN=false</code> to go live.</p>{% endif %}
   {% if open_remote %}<p class="notice notice-warning"><span class="dot dot-warning" aria-hidden="true"></span><strong>No dashboard token set.</strong> Anyone who can reach this address can approve changes. Set <code>DASHBOARD_TOKEN</code>.</p>{% endif %}
 </div>
 {% endif %}
@@ -55,5 +66,6 @@
   {% endif %}
 </footer>
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+{% block scripts %}{% endblock %}
 </body>
 </html>
