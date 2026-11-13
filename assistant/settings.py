@@ -50,6 +50,17 @@ class AssistantSettings:
     cc_timeout_sec: int = 240                # one claude -p run (tool calls included)
     claude_bin: str = ""                     # explicit path to the claude executable (else PATH / ~/.local/bin)
     cc_oauth_token: str = ""                 # optional CLAUDE_CODE_OAUTH_TOKEN the owner set himself (never shown)
+    # --- full Claude Code powers for the main agent (claude_code backend; see docs/ASSISTANT.md)
+    cc_full: bool = True                     # built-in tools on (files, shell, web, skills, sub-agents)
+    user_dirs: tuple[str, ...] = ()          # extra folders it may read/edit (empty = Desktop, Documents...)
+    chrome: bool = False                     # pass --chrome (Claude in Chrome extension; one-time setup)
+    cc_task_timeout_sec: int = 900           # one full-power run (long tasks, test runs)
+    cc_max_turns: int = 40                   # tool round trips per full-power run
+    session_max_turns: int = 30              # resume one session per channel; roll over after this many
+    session_max_tokens: int = 150_000        # ... or once a run's context passes this many input tokens
+    self_edit: bool = True                   # test + commit (or roll back) its own code changes
+    self_edit_branch: str = "sterling/self"
+    self_edit_test_timeout_sec: int = 1200
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -94,6 +105,16 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         cc_timeout_sec=max(30, int(s("ASSISTANT_CC_TIMEOUT_SEC", "240"))),
         claude_bin=s("ASSISTANT_CLAUDE_BIN", ""),
         cc_oauth_token=s("CLAUDE_CODE_OAUTH_TOKEN", ""),
+        cc_full=config._bool(env.get("ASSISTANT_CC_FULL"), True),
+        user_dirs=tuple(d.strip() for d in s("ASSISTANT_USER_DIRS", "").split(";") if d.strip()),
+        chrome=config._bool(env.get("ASSISTANT_CHROME"), False),
+        cc_task_timeout_sec=max(60, int(s("ASSISTANT_CC_TASK_TIMEOUT_SEC", "900"))),
+        cc_max_turns=max(2, int(s("ASSISTANT_CC_MAX_TURNS", "40"))),
+        session_max_turns=max(1, int(s("ASSISTANT_SESSION_MAX_TURNS", "30"))),
+        session_max_tokens=max(10_000, int(s("ASSISTANT_SESSION_MAX_TOKENS", "150000"))),
+        self_edit=config._bool(env.get("ASSISTANT_SELF_EDIT"), True),
+        self_edit_branch=s("ASSISTANT_SELF_EDIT_BRANCH", "sterling/self"),
+        self_edit_test_timeout_sec=max(60, int(s("ASSISTANT_SELF_EDIT_TEST_TIMEOUT_SEC", "1200"))),
     )
 
 
