@@ -231,7 +231,11 @@ def base_env(*, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
     env["CLAUDE_CONFIG_DIR"] = str(home_dir())
     home_dir().mkdir(parents=True, exist_ok=True)
-    if s.cc_oauth_token:
+    if api_fallback_active():
+        import config
+
+        env["ANTHROPIC_API_KEY"] = config.get_settings().anthropic_api_key  # the plan is limited: bill the API
+    elif s.cc_oauth_token:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = s.cc_oauth_token
     if extra:
         env.update(extra)
@@ -381,8 +385,10 @@ def check_guards(*, count_turn: bool = True) -> None:
     if db.kv_get("budget:paused") is not None:
         raise _budget_exc("paused", "AI spending is paused by the owner")
     until = backoff_until()
-    if until is not None:
+    if until is not None and not api_fallback_active():
         raise _budget_exc("limit", f"Claude plan limit; back {friendly_time(until)}", friendly_time(until))
+    if until is not None and _api_budget_left() <= 0.0:
+        raise _budget_exc("daily", "today's API allowance for the plan-limit fallback is spent")
     if count_turn:
         cap = get_assistant_settings().max_turns_per_day
         if turns_today() >= cap:
@@ -458,6 +464,7 @@ class CCResult:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     notional_usd: float = 0.0
+    billed_to_api: bool = False              # ran on the API-key fallback: notional_usd is a real charge
     session_id: str | None = None
     num_turns: int = 0
     status: str = "ok"             # ok | rounds | denied
@@ -510,9 +517,9 @@ def rule_path(p: Path | str) -> str:
 
 
 def api_fallback_active() -> bool:
-    """True while the Claude plan is limited and Sterling should use the saved Anthropic API key
-    instead (ASSISTANT_API_FALLBACK, default on). Conversation-only: no Claude Code powers meanwhile;
-    spend counts against ASSISTANT_DAILY_BUDGET_USD like any API turn."""
+    """True while the Claude plan is limited and Sterling should run Claude Code on the saved Anthropic
+    API key instead (ASSISTANT_API_FALLBACK, default on). Same full powers; billed per token, capped by
+    ASSISTANT_DAILY_BUDGET_USD (passed to Claude Code as --max-budget-usd)."""
     s = get_assistant_settings()
     if s.fake or s.backend != "claude_code" or not s.api_fallback:
         return False
@@ -523,9 +530,18 @@ def api_fallback_active() -> bool:
     return backoff_until() is not None
 
 
+def _api_budget_left() -> float:
+    from assistant import runtime
+
+    try:
+        return float(runtime.remaining_today())
+    except Exception:  # pragma: no cover - defensive
+        return 0.0
+
+
 def full_mode(agent: str = "main") -> bool:
     s = get_assistant_settings()
-    return s.backend == "claude_code" and s.cc_full and agent == "main" and not api_fallback_active()
+    return s.backend == "claude_code" and s.cc_full and agent == "main"
 
 
 def user_dirs() -> list[Path]:
@@ -884,6 +900,9 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                                   allowed_tools=list(mcp.allowed) if mcp else [],
                                   mcp_config=str(cfg_path) if cfg_path else None, effort=effort,
                                   web_search=web_search, max_turns=max_turns or (s.max_tool_rounds + 2))
+            on_api = api_fallback_active()
+            if on_api:
+                argv += ["--max-budget-usd", f"{max(_api_budget_left(), 0.01):.2f}"]
             if count_turn:
                 db.kv_incr(KV_TURNS.format(day=db.local_today().isoformat()))
             try:
@@ -903,6 +922,7 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
             if data is not None and ((not data.get("is_error") and done.returncode == 0)
                                      or data.get("subtype") == "error_max_turns"):
                 res = _result(data, alias)
+                res.billed_to_api = on_api
                 if calls_path is not None:
                     res.tool_calls = read_calls(calls_path)
                 _remember_model(role, alias, res.model)
@@ -925,6 +945,8 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                 i += 1
                 continue
             db.kv_set(KV_LAST_ERROR, {"kind": kind, "text": text[:300], "at": db.now_iso()})
+            if kind in ("limit", "model_limit") and on_api:
+                raise _budget_exc("daily", f"API fallback stopped: {text[:120]}")
             if kind in ("limit", "model_limit"):
                 until = _set_backoff(text, alert_channel=alert_channel)
                 raise _budget_exc("limit", f"Claude plan limit: {text[:120]}", friendly_time(until))

@@ -343,8 +343,6 @@ def get_backend() -> Backend:
     if s.backend == "claude_code":
         from assistant import claude_code
 
-        if claude_code.api_fallback_active():
-            return AnthropicBackend()
         return claude_code.ClaudeCodeBackend()  # type: ignore[return-value]
     return AnthropicBackend()
 
@@ -561,11 +559,14 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
             raise
         calls = list(res.tool_calls)
         model = res.model
+        # On the API-key fallback the run is billed per token: count it against the assistant's budget.
+        real_cost = res.notional_usd if res.billed_to_api else 0.0
         db.insert_llm_usage(model=res.model, purpose=f"{PURPOSE_PREFIX}{agent_name}", tier=TIER,
                             input_tokens=res.input_tokens, output_tokens=res.output_tokens,
                             cache_read_tokens=res.cache_read_tokens, cache_write_tokens=res.cache_write_tokens,
-                            cost_usd=0.0, request_id=res.session_id, fake=False)
-        claude_code.record_notional(res.notional_usd)
+                            cost_usd=real_cost, request_id=res.session_id, fake=False)
+        if not real_cost:
+            claude_code.record_notional(res.notional_usd)
         text, status = res.text, res.status
         if snap is not None:
             outcome = selfedit.finish(snap, summary=_commit_title(user_content, text))
@@ -588,7 +589,8 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
         r.ctx.calls.extend(calls)
         store.finish_agent_run(run_id, status="ok" if status in ("ok", "rounds") else
                                ("denied" if status == "denied" else status),
-                               duration_ms=int((time.monotonic() - started) * 1000), cost_usd=0.0,
+                               duration_ms=int((time.monotonic() - started) * 1000),
+                               cost_usd=real_cost if status in ("ok", "rounds", "denied") else 0.0,
                                summary=text[:500], tool_calls=[tc.to_dict() for tc in calls])
     return text, status
 

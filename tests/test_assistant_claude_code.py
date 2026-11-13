@@ -212,7 +212,7 @@ def test_schedule_prompt_tool(cc, clock):
 
 
 def test_plan_limit_falls_back_to_api_key(cc, monkeypatch, clock):
-    """While the Claude plan is limited, Sterling uses the saved API key (conversation only)."""
+    """While the Claude plan is limited, Sterling runs full Claude Code on the saved API key."""
     import config
 
     db.kv_set(claude_code.KV_BACKOFF, {"until": db.to_iso(db.utcnow() + timedelta(hours=3)), "reason": "limit"})
@@ -223,8 +223,12 @@ def test_plan_limit_falls_back_to_api_key(cc, monkeypatch, clock):
     config.reset_settings()
     asettings.reset_assistant_settings()
     assert claude_code.api_fallback_active()
-    assert isinstance(runtime.get_backend(), runtime.AnthropicBackend)
-    assert not claude_code.full_mode("main")
+    # Still the full Claude Code agent, now billed to the API key with a budget ceiling.
+    assert isinstance(runtime.get_backend(), claude_code.ClaudeCodeBackend)
+    assert claude_code.full_mode("main")
+    env = claude_code.base_env()
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-test" and "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    claude_code.check_guards(count_turn=False)            # the plan backoff no longer blocks
 
     monkeypatch.setenv("ASSISTANT_API_FALLBACK", "false")
     asettings.reset_assistant_settings()
