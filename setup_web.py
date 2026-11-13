@@ -460,6 +460,11 @@ def test_api_key() -> dict[str, Any]:
             "text": f"Anthropic answered ({res.model}, cost ${res.cost_usd:.4f})."}
 
 
+OPT_IN_CONFIRMATION = ("{name}: You're signed up for personal assistant texts (check-ins, reminders, daily "
+                       "summaries). Msg frequency varies, up to 8/day. Msg & data rates may apply. "
+                       "Reply HELP for help, STOP to opt out.")
+
+
 def test_text() -> dict[str, Any]:
     import notify
 
@@ -467,8 +472,8 @@ def test_text() -> dict[str, Any]:
     if not s.owner_phone:
         return {"ok": False, "title": "No phone number", "text": "Enter your mobile number above first."}
     a = _asettings()
-    nid = notify.sms(f"{a.name} here, {a.owner_honorific}: this is the test text from ClipAgent setup.",
-                     kind="setup_test")
+    # Exactly the opt-in confirmation described in the SMS registration (docs/sms-opt-in.md) - keep in sync.
+    nid = notify.sms(OPT_IN_CONFIRMATION.format(name=a.name), kind="setup_test")
     row = db.get_notification(nid)
     status = row.status if row else "failed"
     if status == "dry_run":
