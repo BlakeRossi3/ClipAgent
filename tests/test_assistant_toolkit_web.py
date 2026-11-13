@@ -72,3 +72,21 @@ def test_history_upload_and_manifest(client, monkeypatch):
 def test_twilio_check_runs_offline(client):
     r = client.post("/dashboard/twilio-check/run", headers=H)
     assert r.status_code == 200 and "Twilio settings missing" in r.text
+
+
+def test_twilio_check_with_problems_and_fix_button(client, monkeypatch):
+    from assistant import twilio_doctor as td
+    from test_assistant_twilio_doctor import FakeClient, configure
+
+    configure(monkeypatch)
+    monkeypatch.setenv("DASHBOARD_TOKEN", "tok-123456")
+    config.reset_settings()
+    fc = FakeClient()
+    td.set_client(fc)
+    try:
+        r = client.post("/dashboard/twilio-check/run", headers=H)
+        assert r.status_code == 200 and "Fix it" in r.text and "A2P" in r.text
+        r = client.post("/dashboard/twilio-check/fix", data={"action": "set_sms_webhook"}, headers=H)
+        assert r.status_code == 200 and "now go to" in r.text and fc.updates
+    finally:
+        td.set_client(None)

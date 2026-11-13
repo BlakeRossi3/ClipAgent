@@ -224,3 +224,44 @@ conversations in `as_messages`, agent runs in `as_agent_runs`. None of it is in 
 the adopted lessons, the approved/rejected proposals and the owner's conversations with their
 corrections are exactly the dataset one would use - all already in the places above. No exporter
 is built yet. Model ids are settings, so newer models drop in without code changes.
+
+## Toolkit: reels, skill vetting, desktop modes, Claude history, Twilio doctor
+
+Each is a plain module with `register_tools(register)` (tools reach Sterling in-process and over MCP)
+and a CLI for Claude Code's shell: `python -m assistant.<module> --help`. Settings: "Assistant
+toolkit" in `config.env.example` (`assistant/toolkit_settings.py`). Pages: Settings -> Desktop modes /
+Claude history / Twilio check (`assistant/toolkit_web.py`, `templates/toolkit.html`).
+
+* **Watch a reel** (`assistant/reels.py`, skill `watch-reel`, tool `reel_watch`): yt-dlp download into
+  `<data_dir>/assistant/reels/<id>/` (optional browser cookies, falls back without), whisper transcript,
+  8-12 ffmpeg keyframes (scene cuts + 1 fps fill, ~768 px JPEG), metadata, vault note
+  `Inbox/Reels/<date>-<slug>.md`. The model looks at the frames (Read) and follows the skill: improve
+  Sterling (default for AI/tool reels) or content feedback for the channel.
+* **Skill vetting** (`assistant/skill_vetting.py`, tools `skill_vet`, `skill_install`, `skill_third_party`):
+  fetch into quarantine pinned to a commit (never executed), static checks, GitHub reputation, then the
+  model's SAFE/CAUTION/UNSAFE verdict. Decision table: trusted repo (anthropics/skills, the official
+  plugin marketplace, `SKILLS_TRUSTED_REPOS`) + SAFE + no red flag -> installed via the self-edit flow
+  (tests, commit, UNDO); CAUTION or unknown source -> owner approval (`YES <id>`); UNSAFE -> never.
+  Installed skills are recorded in `skills/third_party.json` (source, commit, verdict, file hashes)
+  and are reference text only. **Limits, plainly:** static scanners are easy to evade (published
+  research shows one-line bypasses) and a model's reading can miss things; the verdict is advisory,
+  the allowlist and the owner's YES are the gate. Under the full-power Claude Code backend the agent
+  has a shell, so a skill it follows can do whatever the agent can - another reason unknown sources
+  always need approval.
+* **Desktop modes** (`assistant/desktop_modes.py`, skill `desktop-modes`): modes in the vault note
+  `Agent/Desktop Modes.md` (YAML block), fixed step vocabulary only (launch, close, open_folder,
+  open_url, power_plan, volume, mute, notifications, wait), argv lists, values passed to PowerShell
+  through an environment variable (no interpolation). Windows only; elsewhere a run is a plan.
+  Armoury Crate profiles have no supported CLI; Focus/DND likewise (the `notifications` step flips
+  the "Get notifications from apps" switch instead).
+* **Claude history** (`assistant/history_import.py`, skill `memory-import`): claude.ai export manifest ->
+  links opened in his browser (Windows) -> detached watcher imports the zips from Downloads (handles
+  `(1)` names, `.crdownload` partials) -> `as_import_*` tables + FTS (`history_search`) -> nightly
+  distillation (15 per run, newest first, `HISTORY_IMPORT_RESERVE_TURNS` left for him) through the
+  archivist, facts filed with `vault.remember` and provenance. Export links are never fetched or logged.
+  Any number of zips, any category, any order, re-uploadable; unknown JSON shapes are logged.
+* **Twilio doctor** (`assistant/twilio_doctor.py`, skill `twilio-doctor`): read-only diagnosis
+  (config, account type, caller-ID verification on trial, number capabilities and SMS webhook,
+  Messaging Service override, A2P 10DLC brand/campaign status, recent error codes mapped to cause +
+  fix + docs link). Fixes only on his click or YES, all reversible: `set_sms_webhook`
+  (`revert_sms_webhook`), `service_use_number_webhook`, `normalise_numbers`.

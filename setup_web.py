@@ -216,7 +216,7 @@ def current_values(step: str) -> dict[str, Any]:
                 "tax": f"{j.est_tax_rate * 100:g}" if j else "20"}
     if step == "phone":
         return {"owner_phone": s.owner_phone, "twilio_sid": s.twilio_account_sid, "twilio_from": s.twilio_from_number,
-                "public_url": s.public_base_url}
+                "public_url": s.public_base_url, **texting_values()}
     if step == "youtube":
         return youtube_status()
     if step == "memory":
@@ -400,7 +400,8 @@ def save_phone(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
         changes["TWILIO_AUTH_TOKEN"] = token
     elif form.get("clear_twilio_token"):
         changes["TWILIO_AUTH_TOKEN"] = ""
-    return errors, changes
+    _save_texting(form, errors, changes)
+    return (errors, {}) if errors else (errors, changes)
 
 
 def save_power(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
@@ -487,6 +488,90 @@ def test_text() -> dict[str, Any]:
         return {"ok": True, "title": "Text sent", "text": "Check your phone - it should arrive within a minute."}
     return {"ok": False, "title": "Twilio refused it",
             "text": ((row.error if row else "") or "unknown error")[:200]}
+
+
+# ===========================================================================
+# Texting channel: SMS / WhatsApp (Phone step) - kept in one block; see assistant/messaging.py
+# ===========================================================================
+
+TEXT_TEST_ACTIONS = {"test_sms": "sms", "test_whatsapp": "whatsapp"}
+
+
+def texting_values() -> dict[str, Any]:
+    s = config.get_settings()
+    try:
+        from assistant import messaging
+
+        wa = messaging.whatsapp_state()
+        sms = messaging.sms_state()
+        route = messaging.route_text(refresh=False)
+        status = {"sms_state": sms, "sms_text": messaging.SMS_STATE_TEXT.get(sms, sms), "wa": wa,
+                  "route": route.transport, "route_hold": route.hold, "route_reason": route.reason,
+                  "a2p": messaging.a2p_status(), "sandbox_hint": messaging.SANDBOX_NUMBER_HINT}
+    except Exception as exc:  # status is decoration; the form must still render
+        log.warning("texting status failed: %s", exc)
+        status = {"error": str(exc)[:200]}
+    return {"messaging_channel": s.messaging_channel, "whatsapp_from": s.whatsapp_from,
+            "whatsapp_join_code": s.whatsapp_join_code, "texting": status}
+
+
+def _save_texting(form: Any, errors: dict[str, str], changes: dict[str, str | None]) -> None:
+    """Only fields present in the form change (older forms / API posts leave them alone)."""
+    if "messaging_channel" in form:
+        ch = str(form.get("messaging_channel") or "auto").strip().lower()
+        if ch not in ("auto", "sms", "whatsapp"):
+            errors["messaging_channel"] = "Choose Auto, SMS or WhatsApp."
+        else:
+            changes["MESSAGING_CHANNEL"] = ch
+    if "whatsapp_from" in form:
+        raw = _f(form, "whatsapp_from", 40)
+        raw = raw.split(":", 1)[1] if raw.lower().startswith("whatsapp:") else raw
+        num = normalize_phone(raw) if raw else ""
+        if num is None:
+            errors["whatsapp_from"] = "The WhatsApp number from the Twilio sandbox page, e.g. +1 415 523 8886"
+        else:
+            changes["WHATSAPP_FROM"] = num
+    if "whatsapp_join_code" in form:
+        code = _f(form, "whatsapp_join_code", 60)
+        code = code[5:].strip() if code.lower().startswith("join ") else code
+        if code and not re.fullmatch(r"[A-Za-z0-9-]+(?: [A-Za-z0-9-]+)?", code):
+            errors["whatsapp_join_code"] = "Just the words after 'join', e.g. orange-tiger"
+        else:
+            changes["WHATSAPP_JOIN_CODE"] = code
+
+
+def test_text_via(transport: str) -> dict[str, Any]:
+    s = config.get_settings()
+    if not s.owner_phone:
+        return {"ok": False, "title": "No phone number", "text": "Enter your mobile number above first."}
+    if transport == "whatsapp" and not s.whatsapp_from:
+        return {"ok": False, "title": "No WhatsApp number", "text": "Enter the sandbox's WhatsApp number above first."}
+    from assistant import messaging
+
+    a = _asettings()
+    label = "WhatsApp message" if transport == "whatsapp" else "text"
+    res = messaging.send_test(transport, f"{a.name}: test {label} from ClipAgent. Reply HELP for commands.")
+    st, err = res["status"], (res.get("error") or "")
+    if st == "dry_run":
+        why = "practice mode (dry run) is on" if s.dry_run else "Twilio is not fully set up"
+        return {"ok": True, "title": "Recorded, not sent", "text": f"Nothing was sent because {why}."}
+    if st == "sent":
+        hint = (" If it does not arrive: SMS from a US local number is blocked until the A2P campaign is approved "
+                "(error 30034) - use WhatsApp until then." if transport == "sms" else
+                " If it does not arrive, send the join message again from WhatsApp, then retry.")
+        return {"ok": True, "title": f"{label.capitalize()} sent", "text": "Twilio accepted it." + hint}
+    if st == "queued":
+        return {"ok": False, "title": "Held, not sent",
+                "text": err.replace("held: ", "") + ". Send any WhatsApp message to the sandbox number, then retry."}
+    try:
+        from assistant import twilio_doctor
+
+        m = re.search(r"\b(2\d{4}|3\d{4}|6\d{4})\b", err)
+        e = twilio_doctor.explain(int(m.group(1))) if m else None
+    except Exception:
+        e = None
+    return {"ok": False, "title": "Twilio refused it",
+            "text": (f"{e['cause']} Fix: {e['fix']}" if e else err[:200] or "unknown error")}
 
 
 # ===========================================================================
@@ -1135,6 +1220,9 @@ async def step_post(request: Request, step: str) -> Response:
         return _render(request, step, {"errors": errors, "values": {**current_values(step), **submitted}},
                        status=400)
     restart = _save(changes) if changes else []
+    if form.get("action") in TEXT_TEST_ACTIONS and step == "phone":
+        result = await run_in_threadpool(test_text_via, TEXT_TEST_ACTIONS[str(form.get("action"))])
+        return _render(request, step, {"result": result})
     if form.get("action") == "test" and step in ("brain", "phone"):
         result = await run_in_threadpool(test_api_key if step == "brain" else test_text)
         return _render(request, step, {"result": result})

@@ -668,6 +668,10 @@ def assistant_job_specs() -> list[JobSpec]:
                 "interval", {"minutes": 10}, "run prompts queued for after the Claude plan resets"),
         JobSpec("assistant_evals", lambda: __import__("assistant.evals", fromlist=["x"]).run_evals_isolated(),
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
+        JobSpec("assistant_history", lambda: __import__("assistant.history_import", fromlist=["x"]).nightly(),
+                "cron", {"hour": 1, "minute": 37}, "distil the next batch of imported Claude chats"),
+        JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
+                "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
     ]
 
 

@@ -227,6 +227,37 @@
     {{ secret_field("twilio_token", "Twilio Auth Token", secrets.twilio_token, "32 letters and numbers", "clear_twilio_token") }}
     <label class="f">Twilio phone number<input name="twilio_from" value="{{ values.twilio_from }}" inputmode="tel" placeholder="+1 555 000 1111">{{ err("twilio_from") }}</label>
     <label class="f">Public web address (for replies and approvals)<input name="public_url" value="{{ values.public_url }}" inputmode="url" spellcheck="false">{{ help("Only needed so Twilio can reach this laptop when you text back. Leave it as is until you set that up.") }}{{ err("public_url") }}</label>
+    {# ===== Texting channel: SMS / WhatsApp (setup_web.texting_values, assistant/messaging.py) ===== #}
+    {% set tx = values.texting or {} %}
+    <fieldset class="f" id="texting">
+      <legend><strong>Texting</strong></legend>
+      {% if not tx.get("error") %}
+      <p class="f-help">SMS: <strong>{{ tx.sms_text }}</strong>{% if tx.a2p %} (campaign: {{ tx.a2p | lower | replace("_", " ") }}){% endif %}<br>
+        WhatsApp: <strong>{{ tx.wa.text }}</strong>{% if tx.wa.rejoin_by_local %} · sandbox join ends {{ tx.wa.rejoin_by_local }}{% endif %}<br>
+        Texts go by <strong>{{ tx.route | upper }}</strong>{% if tx.route_hold %} - held until you next message on WhatsApp{% endif %} ({{ tx.route_reason }}).</p>
+      {% endif %}
+      <label class="f">Send my texts by
+        <select name="messaging_channel">
+          <option value="auto"{% if values.messaging_channel == "auto" %} selected{% endif %}>Auto - WhatsApp until SMS is approved, then SMS</option>
+          <option value="whatsapp"{% if values.messaging_channel == "whatsapp" %} selected{% endif %}>WhatsApp</option>
+          <option value="sms"{% if values.messaging_channel == "sms" %} selected{% endif %}>SMS</option>
+        </select>{{ err("messaging_channel") }}</label>
+      <label class="f">WhatsApp number (Twilio sandbox)<input name="whatsapp_from" value="{{ values.whatsapp_from }}" inputmode="tel" spellcheck="false" placeholder="{{ tx.get('sandbox_hint', '') }}">{{ help("Copy it from the Twilio sandbox page (step 2 below). Leave empty to turn WhatsApp off.") }}{{ err("whatsapp_from") }}</label>
+      <label class="f">Sandbox join code<input name="whatsapp_join_code" value="{{ values.whatsapp_join_code }}" spellcheck="false" placeholder="two-words">{{ help("The words after \"join\" on the sandbox page. Only used to show you the exact message.") }}{{ err("whatsapp_join_code") }}</label>
+      <ol class="f-help">
+        <li>On this laptop open <a href="https://console.twilio.com" target="_blank" rel="noopener">console.twilio.com</a> and sign in.</li>
+        <li>Left menu: <strong>Messaging → Try it out → Send a WhatsApp message</strong> (if you don't see it, search the console for "WhatsApp sandbox"). Copy the <strong>sandbox number</strong> and the <strong>join code</strong> into the two boxes above.</li>
+        <li>On that page open <strong>Sandbox settings</strong>. In <strong>When a message comes in</strong> paste <code>{{ (values.public_url or "https://YOUR-ADDRESS") }}/twilio/whatsapp</code>, method <strong>POST</strong>, then <strong>Save</strong>.</li>
+        <li>On your phone, in WhatsApp, start a chat with {{ values.whatsapp_from or "the sandbox number" }} and send exactly: <code>join {{ values.whatsapp_join_code or "your-code" }}</code>. Twilio replies that you joined.</li>
+        <li>Press <strong>Save &amp; send me a WhatsApp test</strong> below.</li>
+      </ol>
+      <p class="f-help">WhatsApp rules: {{ a.name }} can write freely for 24 hours after your last WhatsApp message; outside that it holds messages and sends them the moment you write again. The sandbox join lasts 3 days - then send the join message again. SMS switches on by itself once Twilio approves your A2P 10DLC campaign (Auto).</p>
+      <div class="s-actions">
+        <button type="submit" name="action" value="test_whatsapp" class="hbtn">Save &amp; send me a WhatsApp test</button>
+        <button type="submit" name="action" value="test_sms" class="hbtn">Save &amp; send me an SMS test</button>
+      </div>
+    </fieldset>
+    {# ===== end texting channel ===== #}
     <p class="f-help">Where do I get these? <a href="/setup/help/twilio">The Twilio guide</a> walks through it step by step.{% if s.dry_run %} Practice mode (dry run) is on, so the test text is only recorded - you can switch it off under <a href="/setup/power#dry-run">Power &amp; privacy</a>.{% endif %}</p>
     <div class="s-actions"><button type="submit" name="action" value="test" class="hbtn">Save &amp; send me a test text</button></div>
     {{ buttons() }}

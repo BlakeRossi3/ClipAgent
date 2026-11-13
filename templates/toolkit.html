@@ -35,7 +35,7 @@
 <section class="card"><h2 class="sec-title">Progress</h2>
   <p>{{ p.conversations }} conversations · {{ p.messages }} messages · {{ p.projects }} projects{% if p.metadata_only %} · {{ p.metadata_only }} titles only{% endif %}</p>
   <p><strong>{{ p.pct }}%</strong> distilled: {{ p.done }} done, {{ p.skipped }} too short, {{ p.pending }} waiting{% if p.failed %}, {{ p.failed }} failed{% endif %} · {{ p.facts_added }} facts added to memory</p>
-  {% if p.watch and p.watch.files %}<h3 class="mini-head">Downloads watcher ({{ p.watch.status }})</h3><ul class="plain">{% for f, st in p.watch.files.items() %}<li>{{ f }}: {{ st.state }}{% if st.detail %} <span class="muted">— {{ st.detail }}</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if p.watch and p.watch.files %}<h3 class="mini-head">Downloads watcher ({{ p.watch.status }})</h3><ul class="plain">{% for f, st in p.watch.files.items() %}<li>{{ f }}: {{ st.state }}{% if st.get('detail') %} <span class="muted">— {{ st.detail }}</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
   {% if p.pending %}<form method="post" action="/dashboard/history/distil"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Distil the next batch now</button></form>{% endif %}
   {% if distil %}<p class="voice">Distilled {{ distil.processed }}, {{ distil.facts_added }} new facts{% if distil.stopped %}; stopped early ({{ distil.stopped }}) to leave room for your own chats{% endif %}.</p>{% endif %}
 </section>
@@ -54,7 +54,7 @@
   <form method="post" action="/dashboard/history/upload" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="file" name="files" multiple accept=".zip,.json,.jsonl"> <button class="hbtn" type="submit">Import</button></form>
   <p class="f-help">Any parts, any order; re-uploading a file is harmless.</p>
-  {% if results %}<ul class="plain">{% for r in results %}<li>{{ r.file }}: {{ r.status }}{% if r.error %} — {{ r.error }}{% elif r.conversations is defined %} ({{ r.conversations }} conversations, {{ r.messages }} messages{% if r.projects %}, {{ r.projects }} projects{% endif %}{% if r.memories %}, {{ r.memories }} memories{% endif %}){% endif %}</li>{% endfor %}</ul>{% endif %}
+  {% if results %}<ul class="plain">{% for r in results %}<li>{{ r.file }}: {{ r.status }}{% if r.get('error') %} — {{ r.error }}{% elif r.get('conversations') is not none %} ({{ r.conversations }} conversations, {{ r.messages }} messages{% if r.get('projects') %}, {{ r.projects }} projects{% endif %}{% if r.get('memories') %}, {{ r.memories }} memories{% endif %}){% endif %}</li>{% endfor %}</ul>{% endif %}
   {% if p.files %}<h3 class="mini-head">Imported files</h3><ul class="plain">{% for f in p.files %}<li>{{ f.filename }} <span class="muted">{{ f.category }}</span></li>{% endfor %}</ul>{% endif %}
 </section>
 
@@ -73,9 +73,9 @@
   <ul class="plain">{% for c in diag.checks %}<li><span class="chip">{{ c.status }}</span> <strong>{{ c.title }}</strong>{% if c.detail %} — {{ c.detail }}{% endif %}
     {% if c.fix and c.status != "pass" %}<br>Fix: {{ c.fix }}{% if c.docs %} <a href="{{ c.docs }}" target="_blank" rel="noopener">docs</a>{% endif %}{% endif %}
     {% if c.action %}<form method="post" action="/dashboard/twilio-check/fix" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="{{ c.action }}"><button class="hbtn" type="submit">Fix it</button></form>{% endif %}</li>{% endfor %}</ul>
-  {% if diag.number.sms_url is defined %}<p class="muted">SMS webhook now: {{ diag.number.sms_url or "none" }} · expected: {{ diag.number.expected_sms_url }}{% if diag.number.sms_url %} · <form method="post" action="/dashboard/twilio-check/fix" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="revert_sms_webhook"><button class="linkbtn" type="submit">undo last webhook change</button></form>{% endif %}</p>{% endif %}
+  {% if diag.number.get('expected_sms_url') %}<p class="muted">SMS webhook now: {{ diag.number.sms_url or "none" }} · expected: {{ diag.number.expected_sms_url }}{% if diag.number.sms_url %} · <form method="post" action="/dashboard/twilio-check/fix" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="revert_sms_webhook"><button class="linkbtn" type="submit">undo last webhook change</button></form>{% endif %}</p>{% endif %}
 </section>
-{% if diag.messages %}<section class="card"><h2 class="sec-title">Recent texts</h2><ul class="plain">{% for m in diag.messages[:10] %}<li>{{ m.date or "" }} {{ m.direction }} {{ m.status }}{% if m.error_code %} — <strong>{{ m.error_code }}</strong> {{ m.explain.cause if m.explain else m.error_message }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
+{% if diag.messages %}<section class="card"><h2 class="sec-title">Recent texts</h2><ul class="plain">{% for m in diag.messages[:10] %}<li>{{ m.date or "" }} {{ m.direction }} {{ m.status }}{% if m.error_code %} — <strong>{{ m.error_code }}</strong> {{ m.explain.cause if m.get('explain') else m.error_message }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
 {% endif %}
 {% endif %}
 </div>
