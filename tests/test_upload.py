@@ -611,3 +611,29 @@ def test_concurrent_claim_blocks_second_insert(clock, live, fake_yt, rendered_cl
     with pytest.raises(upload.UploadError, match="already being uploaded"):
         upload.upload_clip(cid)
     assert fake_yt.insert_calls == []
+
+
+def test_metadata_strips_links_from_hand_edited_text(make_clip, make_source):
+    sid = make_source(status="picked", licence="cc_by", source_type="cc_by_youtube", channel="Prof X",
+                      title="Great lecture - full course at https://evil.example/buy")
+    cid = make_clip(sid, title="Watch this www.spam.example now", description="Line one\nvisit spam.example @promo",
+                    credit_text="Video: Prof X (CC BY)")
+    clip, src = db.require_clip(cid), db.get_source(sid)
+    title = upload.build_title(clip.title)
+    desc = upload.build_description(clip, src)
+    assert "spam.example" not in title and title.endswith("#Shorts")
+    assert "spam.example" not in desc and "@promo" not in desc and "evil.example" not in desc
+    assert "Line one\n" in desc and clip.source_url in desc          # credit + source link kept
+
+
+@pytest.mark.parametrize("case", ["licence", "rejected"])
+def test_unlicensed_or_rejected_source_is_never_uploaded(clock, live, fake_yt, rendered_clip, make_source, case):
+    sid = make_source(status="picked")
+    cid = rendered_clip(source_id=sid)
+    if case == "licence":
+        db.connect().execute("UPDATE clips SET licence = 'cc_by_nc' WHERE id = ?", (cid,)).connection.commit()
+    else:
+        db.set_source_status(sid, "rejected", "publisher not allowlisted", force=True)
+    with pytest.raises(upload.UploadError, match="refused"):
+        upload.upload_clip(cid)
+    assert db.require_clip(cid).status == "failed" and fake_yt.insert_calls == []

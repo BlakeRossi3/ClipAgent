@@ -26,13 +26,16 @@ text is saved as a `notifications` row with status `dry_run` and shows up on the
 | `TIMEZONE` | `America/New_York` | Sets quiet hours and what counts as "today" |
 | `DRY_RUN` | `false` | Turn this off only after everything below works |
 
-Built-in defaults, set as constants at the top of `notify.py`:
+Defaults (settings in `config.env`):
 
-- Quiet hours are 22:00–08:00 local time. Non-urgent texts and calls wait until 08:00. Urgent
-  problem calls (budget cap, YouTube quota, copyright claim, upload failure) can still ring at
-  night.
-- The same urgent problem calls at most once every 6 hours. Repeats come as texts instead.
-- The voice is `Polly.Joanna-Neural`.
+- Quiet hours are 22:00–08:00 local time (`QUIET_HOURS_START` / `QUIET_HOURS_END`). Non-urgent
+  texts and calls wait until the window ends. Urgent problem calls (AI budget cap, YouTube login
+  problems, copyright claims / takedowns) can still ring at night.
+- The same urgent problem calls at most once every 6 hours (`URGENT_CALL_DEDUP_HOURS`). Repeats
+  come as texts instead.
+- At most 25 calls + texts reach your phone per day (`notify.MAX_NOTIFICATIONS_PER_DAY`), as a
+  backstop against a runaway loop; the rest are only recorded on the dashboard.
+- The voice is `Polly.Joanna-Neural` (`TWILIO_VOICE`).
 
 ## 3. Webhook URLs
 
@@ -47,8 +50,8 @@ and never answers them.
 
 Texts you can send to the agent:
 
-- `YES 12` or `NO 12` answers approval #12. A bare `YES` or `NO` works when only one approval
-  is pending.
+- `YES 12` or `NO 12` answers approval #12. The number is required: a bare `YES` gets a reply
+  listing what is pending, so an answer can never land on a different request than you meant.
 - `STATUS` returns uploads today, AI spend against the cap, and pending approvals.
 - `PAUSE` and `RESUME` stop and restart AI spending.
 - `HELP` lists the commands.

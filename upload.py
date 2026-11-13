@@ -203,6 +203,15 @@ def _clean(text: str | None) -> str:
     return _ANGLE.sub("", text or "").replace("\r\n", "\n").strip()
 
 
+def _no_links(text: str) -> str:
+    """Strip URLs / bare domains / @mentions line by line (``pick.strip_links``), keeping newlines.
+
+    Clips edited by hand or from the dashboard never went through pick's cleaning."""
+    import pick  # late import: pick is heavy-ish and only needed here
+
+    return "\n".join(pick.strip_links(line) for line in (text or "").split("\n"))
+
+
 def _truncate_words(text: str, limit: int) -> str:
     """Cut ``text`` to <= ``limit`` chars on a word boundary (hard cut if one word is too long)."""
     text = _WS.sub(" ", text).strip()
@@ -227,7 +236,7 @@ def _truncate_bytes(text: str, limit: int) -> str:
 
 def build_title(title: str, fallback: str = "Clip") -> str:
     """<= 100 chars, no angle brackets, contains ``#Shorts`` (kept on truncation)."""
-    t = _WS.sub(" ", _clean(title).replace("\n", " ")) or _clean(fallback) or "Clip"
+    t = _WS.sub(" ", _no_links(_clean(title).replace("\n", " "))) or _clean(_no_links(fallback)) or "Clip"
     if "#shorts" in t.lower():
         if len(t) <= TITLE_MAX_CHARS:
             return t
@@ -250,7 +259,7 @@ def credit_block(clip: db.Clip, source: db.Source | None = None) -> str:
     lines = [credit, f"Source: {clip.source_url}",
              f"Licence: {LICENCE_TEXT.get(clip.licence, clip.licence)}"]
     if clip.licence == "cc_by":
-        orig = _clean(source.title) if source and source.title else ""
+        orig = _no_links(_clean(source.title)) if source and source.title else ""
         author = channel or "the original creator"
         lines.append(f'Original work: "{orig}" by {author}' if orig else f"Original work by {author}")
         lines.append("Changes: excerpted, reframed to vertical, captions and titles added. "
@@ -268,7 +277,7 @@ def build_description(clip: db.Clip, source: db.Source | None = None,
             tags.append(h)
     hashtag_line = " ".join(tags[:15])  # YouTube ignores all hashtags if a video has more than 15
     tail = "\n\n" + hashtag_line + "\n\n" + credit_block(clip, source)
-    body = _clean(clip.description)
+    body = _no_links(_clean(clip.description)).strip()
     room = DESCRIPTION_MAX_BYTES - len(tail.encode("utf-8"))
     body = _truncate_bytes(body, max(room, 0)) if body else ""
     return (body + tail).strip() if body else tail.strip()
@@ -569,6 +578,14 @@ def upload_clip(clip_id: int, publish_at: datetime | None = None, *, immediate: 
         raise UploadError(f"clip {clip_id} is {clip.status!r}; only rendered/scheduled clips can be uploaded")
 
     # 2. guards
+    source = db.get_source(clip.source_id)
+    licence_problem = (f"licence {clip.licence!r} is not one we publish" if clip.licence not in LICENCE_TEXT
+                       else f"source {clip.source_id} is rejected ({source.status_reason or 'no reason'})"
+                       if source is not None and source.status == "rejected" else None)
+    if licence_problem:
+        db.set_clip_status(clip_id, "failed", f"not uploadable: {licence_problem}")
+        db.log_event(MODULE, f"clip {clip_id} refused: {licence_problem}", level="error", data={"clip_id": clip_id})
+        raise UploadError(f"clip {clip_id} refused: {licence_problem}")
     strat = _load_strategy()
     cap = strategy_mod.upload_cap(strat)
     if uploads_today() >= cap:
@@ -580,7 +597,6 @@ def upload_clip(clip_id: int, publish_at: datetime | None = None, *, immediate: 
             _stop_for_quota("local_tally", f"tally {youtube_auth.quota_used()} of {youtube_auth.daily_quota_limit()}")
             raise QuotaExhausted("local quota tally would exceed the daily limit")
 
-    source = db.get_source(clip.source_id)
     try:
         path = _check_render(clip, strict=not settings.dry_run)
     except _Permanent as exc:

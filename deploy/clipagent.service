@@ -31,8 +31,12 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/opt/clipagent
-# faster-whisper caches its model under the user's home by default; point it into the repo.
+# Everything outside /opt/clipagent is read-only: keep the whisper model, yt-dlp and fontconfig
+# caches inside data/ (otherwise they would try to write to the user's home directory).
 Environment=HF_HOME=/opt/clipagent/data/hf-cache
+Environment=XDG_CACHE_HOME=/opt/clipagent/data/cache
+# The DB, OAuth token and backups hold secrets: files are created without world access.
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

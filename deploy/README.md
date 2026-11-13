@@ -6,8 +6,9 @@ One process (`python main.py schedule`) runs the scheduler and the web server
 ## systemd
 
 ```bash
-sudo useradd --system --create-home --home-dir /opt/clipagent clipagent   # or reuse an existing user
-sudo -u clipagent git clone <repo> /opt/clipagent                        # then install per ../README.md
+sudo useradd --system --create-home --home-dir /var/lib/clipagent --shell /usr/sbin/nologin clipagent
+sudo install -d -o clipagent -g clipagent -m 750 /opt/clipagent   # empty dir: git clone needs one
+sudo -u clipagent git clone <repo> /opt/clipagent                 # then install per ../README.md
 sudo cp /opt/clipagent/deploy/clipagent.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now clipagent
 journalctl -u clipagent -f            # logs
@@ -20,8 +21,10 @@ also run `main.py schedule` by hand while the service is up (one-off commands su
 `status`, `manual` or `doctor` are fine; pipeline commands wait their turn via per-stage locks
 and report `busy` if a job holds them).
 
-The unit sets `HF_HOME` so the whisper model is cached under `data/hf-cache`. If you ran
-`doctor`/`manual` by hand as another user first, run them with the same `HF_HOME`.
+The unit sets `HF_HOME` (whisper model) and `XDG_CACHE_HOME` (yt-dlp, fontconfig) to folders
+under `data/`, because the hardening makes everything outside `/opt/clipagent` read-only. Run
+one-off commands as the service user with the same variables, e.g.
+`sudo -u clipagent env HF_HOME=/opt/clipagent/data/hf-cache XDG_CACHE_HOME=/opt/clipagent/data/cache .venv/bin/python main.py doctor`.
 
 ## HTTPS reverse proxy (Caddy)
 
@@ -52,6 +55,10 @@ PUBLIC_BASE_URL=https://agent.example.com
 DASHBOARD_TOKEN=<long random string>     # openssl rand -hex 24
 ```
 
+Without `DASHBOARD_TOKEN` the dashboard refuses every request that comes through the proxy
+(it only answers direct requests to 127.0.0.1, e.g. over `ssh -L 8000:127.0.0.1:8000`).
+Without `TWILIO_AUTH_TOKEN` the `/twilio/*` webhooks likewise refuse proxied requests.
+
 `PUBLIC_BASE_URL` must be exactly the URL Twilio calls: webhook signatures are verified against
 it. Open the dashboard at `https://agent.example.com/dashboard/` and log in with the token.
 Check `https://agent.example.com/healthz` returns `{"status": "ok", ...}`.
@@ -77,7 +84,7 @@ Nightly backup (consistent even while the service runs, thanks to SQLite's onlin
 
 ```bash
 # /etc/cron.d/clipagent-backup
-15 4 * * * clipagent cd /opt/clipagent && mkdir -p backups && \
+15 4 * * * clipagent umask 077 && cd /opt/clipagent && mkdir -p backups && \
   sqlite3 data/clipagent.db ".backup backups/clipagent-$(date +\%F).db" && \
   tar czf backups/meta-$(date +\%F).tgz config.env client_secret.json strategy.json \
       data/youtube_token.json data/media/transcripts $(ls -d data/media/downloads/*/info.json 2>/dev/null) && \
