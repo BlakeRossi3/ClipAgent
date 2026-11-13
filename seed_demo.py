@@ -62,9 +62,19 @@ def configure(data_dir: Path) -> None:
 
     os.environ["CLIPAGENT_DATA_DIR"] = str(data_dir)
     os.environ["CLIPAGENT_STRATEGY_PATH"] = str(data_dir / "strategy.json")
-    for k in ("CLIPAGENT_DB_PATH", "CLIPAGENT_MEDIA_DIR"):
-        os.environ.pop(k, None)
+    # Explicit values (env beats config.env): a CLIPAGENT_DB_PATH / MEDIA_DIR in config.env must
+    # never send demo rows into the real database, and nothing seeded may ever reach Twilio/YouTube.
+    os.environ["CLIPAGENT_DB_PATH"] = str(data_dir / "clipagent.db")
+    os.environ["CLIPAGENT_MEDIA_DIR"] = str(data_dir / "media")
+    os.environ["YOUTUBE_TOKEN_PATH"] = str(data_dir / "youtube_token.json")
+    os.environ["DRY_RUN"] = "true"
+    os.environ["FAKE_LLM"] = "true"
+    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        os.environ[k] = ""          # empty env value overrides config.env and means "unset"
     config.reset_settings()
+    s = config.get_settings()
+    if s.db_path.resolve().parent != data_dir.resolve():
+        raise RefuseError(f"demo database would be {s.db_path}, outside {data_dir}; refusing")
 
 
 def target_state(db_path: Path) -> str:

@@ -526,3 +526,18 @@ def test_approval_that_fails_to_apply_is_reported(client, clock, monkeypatch):
     r = client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html)}, follow_redirects=False)
     assert "msg=unapplied" in r.headers["location"]
     assert "could not be applied" in client.get("/dashboard/decisions?msg=unapplied").text
+
+
+def test_seed_demo_ignores_db_path_from_config_env(tmp_path, monkeypatch):
+    """config.env relocating the real DB must not make the demo write into it."""
+    real_db = tmp_path / "real" / "clipagent.db"
+    cfg = tmp_path / "config.env"
+    cfg.write_text(f"CLIPAGENT_DB_PATH={real_db}\nCLIPAGENT_MEDIA_DIR={tmp_path / 'realmedia'}\n"
+                   "DRY_RUN=false\nTWILIO_AUTH_TOKEN=live-token\n", encoding="utf-8")
+    monkeypatch.setenv("CLIPAGENT_CONFIG_FILE", str(cfg))
+    demo = tmp_path / "demo"
+    seed_demo.configure(demo)
+    s = config.get_settings()
+    assert s.db_path == demo / "clipagent.db" and str(s.downloads_dir).startswith(str(demo))
+    assert s.dry_run and not s.twilio_auth_token
+    assert not real_db.exists()
