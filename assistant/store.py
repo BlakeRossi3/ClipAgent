@@ -49,7 +49,7 @@ INCOME_SOURCES = ("job", "reels", "other")
 MEAL_SLOTS = ("breakfast", "lunch", "dinner")
 MEAL_STATUSES = ("suggested", "accepted", "declined", "eaten")
 GOAL_STATUSES = ("active", "done", "dropped")
-RUN_STATUSES = ("ok", "error", "budget", "denied")
+RUN_STATUSES = ("running", "ok", "error", "budget", "denied")
 LESSON_STATUSES = ("proposed", "adopted", "retired")
 ASSISTANT_PURPOSE_PREFIX = "assistant."
 ASSISTANT_TIER = "assistant"
@@ -697,6 +697,18 @@ def record_agent_run(agent: str, task: str, *, model: str, duration_ms: int, cos
             "cost_usd": float(cost_usd), "status": status, "summary": (summary or "")[:2000] or None,
             "parent_id": parent_id, "tool_calls": None if tool_calls is None else json.dumps(tool_calls, sort_keys=True),
             "fake": int(fake)})
+
+
+def finish_agent_run(run_id: int, *, status: str, duration_ms: int, cost_usd: float, summary: str | None = None,
+                     tool_calls: Any = None, conn: sqlite3.Connection | None = None) -> None:
+    """Close a run opened with ``record_agent_run(status="running")``."""
+    _check(status, RUN_STATUSES, "status")
+    with transaction(conn) as c:
+        _update(c, "as_agent_runs", run_id, {
+            "status": status, "duration_ms": int(duration_ms), "cost_usd": float(cost_usd),
+            "summary": (summary or "")[:2000] or None,
+            "tool_calls": None if tool_calls is None else json.dumps(tool_calls, sort_keys=True)},
+            {"status", "duration_ms", "cost_usd", "summary", "tool_calls"}, touch=False)
 
 
 def get_agent_run(run_id: int, *, conn: sqlite3.Connection | None = None) -> AgentRun | None:

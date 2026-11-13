@@ -447,3 +447,102 @@ any kind are delivered by `notify.send_queued()` (every 5 min).
 `scout.SEARCHERS[type]`, `transcribe.set_backend`, `edit.set_crop_locator` (face tracking),
 `llm.set_fake_handler` / `set_client`, `upload.set_service_factory`, `analytics.set_service_factory`,
 `notify.set_client`, `fetch.extract_info` (monkeypatch), `main.job_specs()` (jobs).
+
+## Phase 2 — assistant layer
+
+The owner's personal assistant; the Shorts pipeline is one division. Architecture, memory,
+safety model and how-tos: `docs/ASSISTANT.md`. Everything lives in new files - the package
+`assistant/` (flat modules inside it), `agents/*.md`, `skills/<name>/SKILL.md`, `vault_template/`,
+`tests/test_assistant_*.py` (+ shared fixtures in `tests/assistant_fixtures.py`, used via
+`pytestmark = pytest.mark.usefixtures("assistant_env")`), `config.assistant.env.example`.
+Phase-1 conventions above apply (UTC ISO in DB, `db.utcnow()`, no import side effects, DRY_RUN,
+`db.log_event`, offline tests).
+
+- **Anthropic SDK**: besides `llm.py`, `assistant/runtime.py` (`AnthropicBackend`) is the one other
+  place allowed to import `anthropic`: the assistant needs a multi-turn tool-use loop with sub-agents,
+  which `llm.complete` (single-shot JSON) does not do. Nothing else in `assistant/` touches the SDK.
+- **Privacy**: the vault (default `<data_dir>/vault`) holds personal data and is never committed;
+  `tests/test_assistant_settings.py` fails if the default path is not git-ignored.
+- **Spend**: assistant calls write `llm_usage` rows with `purpose LIKE 'assistant.%'`, `tier='assistant'`,
+  and are capped by `ASSISTANT_DAILY_BUDGET_USD` / `ASSISTANT_MAX_TURN_USD`, not the pipeline cap.
+
+### assistant/settings.py
+`AssistantSettings` (frozen; `.replace(**kw)`): `enabled=False, name="Sterling", owner_honorific="sir",
+owner_name, model="claude-fable-5-2", subagent_model="claude-opus-5-5", effort="medium",
+subagent_effort="low", daily_budget_usd=3.0, max_turn_usd=0.5, max_sms_per_day=8, max_tool_rounds=8,
+max_tokens=2048, subagent_max_tokens=3072, web_search=False, vault_dir, fake (= FAKE_ASSISTANT,
+default FAKE_LLM), timezone, dry_run`. `get_assistant_settings()` (cached; re-read whenever
+`config.reset_settings()` runs), `load_assistant_settings(environ=None)`, `set_assistant_settings(s|None)`,
+`reset_assistant_settings()`.
+
+### assistant/store.py (tables `as_*` in the pipeline DB; own `MIGRATIONS`, kv `assistant:schema_version`)
+`init_store(conn=None) -> version`, `schema_version()`, `transaction(conn=None)` (migrates lazily), `week_start_of(day=None) -> date` (local Monday).
+Every helper takes `conn=`. Constants: `DIRECTIONS, CHANNELS (sms|dashboard|call|system), CHECKIN_STATUSES
+(pending|answered|skipped|expired), PAY_SCHEDULES, INCOME_SOURCES (job|reels|other), MEAL_SLOTS, MEAL_STATUSES
+(suggested|accepted|declined|eaten), GOAL_STATUSES (active|done|dropped), RUN_STATUSES (running|ok|error|budget|denied),
+LESSON_STATUSES (proposed|adopted|retired)`. Rows (`.to_dict()`): `Message, Checkin, Job, WorkLog, Income, Meal, Goal, AgentRun, Lesson`.
+- messages: `add_message(direction, channel, body, *, kind="chat", agent, cost_usd, reply_to, meta) -> id`, `get_message`,
+  `list_messages(limit=50, *, channel, direction, since)` (newest first), `count_outbound_between(start_iso, end_iso, *, channel="sms", kinds_excluded=("reply",))`
+- check-ins: `add_checkin(kind, question, scheduled_for_iso) -> id`, `get_checkin`, `list_checkins(status, *, kind, limit)`,
+  `due_checkins(now_iso=None)` (pending, unsent, due), `open_checkin(kind=None)` (latest sent, unanswered),
+  `mark_checkin_sent(id, *, message_id)`, `answer_checkin(id, answer_text, parsed=None)`, `set_checkin_status(id, status)`
+- jobs/hours/income: `upsert_job(name, *, hourly_rate, pay_schedule="biweekly", est_tax_rate=0.0, active=True) -> id`,
+  `get_job`, `get_job_by_name` (case-insensitive), `list_jobs(*, active_only=True)`,
+  `log_hours(job_id, hours, *, week_start=None, source="sms", note) -> id` (upsert per job+Monday, 0-168),
+  `get_work_log(job_id, week_start=None)`, `list_work_log(*, job_id, since_week, limit)` (newest week first),
+  `add_income(amount_usd, *, source, day=None, note, ref) -> id | None` (None = duplicate (source, ref)),
+  `list_income(start_day, end_day, *, source)` (inclusive), `income_total(...) -> float`
+- meals: `add_meal(slot, suggestion, *, day=None) -> id`, `update_meal(id, *, status, feedback)`, `get_meal`, `list_meals(*, since_day, slot, status, limit)`
+- goals: `add_goal(title, *, metric, target, current, due) -> id`, `update_goal(id, **cols)`, `get_goal`, `list_goals(status="active"|None)`
+- audit/spend: `record_agent_run(agent, task, *, model, duration_ms, cost_usd, status, summary, parent_id, tool_calls, fake) -> id`,
+  `finish_agent_run(id, *, status, duration_ms, cost_usd, summary, tool_calls)`, `get_agent_run`, `list_agent_runs(limit, *, agent, since)`,
+  `assistant_spend_between(start_iso, end_iso)`, `assistant_spent_today(day=None)` (llm_usage rows `assistant.*` only)
+- lessons: `add_lesson(area, lesson, *, evidence, status="proposed") -> id`, `set_lesson_status(id, status)`, `list_lessons(status, *, area, limit)`
+
+### assistant/vault.py (memory; all paths vault-relative `.md`; LLM-facing => strict path safety)
+`vault_root()`, `ensure_vault() -> Path` (copies `vault_template/`, never overwrites), `safe_path(rel) -> (abs, rel_posix)`,
+`read_note(rel) -> Note(path, meta, body, sha, mtime)`, `note_exists(rel)`, `write_note(rel, body, *, meta, base_sha, on_conflict="append"|"raise", source, note_type) -> Note`
+(base_sha = sha you read; changed on disk or never read -> appended under "Merged ..." or `NoteConflict`),
+`append_to_note(rel, text, *, heading=None, source, note_type, tags) -> Note`, `delete_note(rel)`, `list_notes(folder=None)`,
+`links_in(text)`, `backlinks(rel_or_name)`, `journal_path(day)`, `append_journal(text, day=None, *, source) -> Note`,
+`remember(fact, *, area, source, confidence="stated") -> RememberResult(path, added, duplicate_of)`, `forget(fact, *, area=None) -> list[str]`,
+`note_for_area(area) -> (path, type)` (`AREAS` + `person:<Name>`, `project:<Name>`), `facts_in(body)`,
+`search(query, limit=8) -> list[SearchHit(path, title, snippet, score)]`, `sync_index() -> IndexStats`, `reindex()`,
+`context_for(text, budget_chars=4000, *, journal_days=3) -> str`, `parse_note_text(text)`, `render_note(meta, body)`.
+Errors: `VaultError` > `VaultPathError`, `NoteNotFound`, `NoteConflict`.
+
+### assistant/persona.py
+`system_blocks(channel, *, agent="main"|AgentSpec, profile_context="", settings, agents, skills) -> list[str]` (stable, cacheable),
+`lint(text, channel, *, settings) -> list[str]` (codes: empty, too_long, emoji, exclamation, markdown, url_in_voice,
+honorific_overuse, as_an_ai, gush), `polish(text, channel, *, settings) -> str` (idempotent), `escape_untrusted(text)`,
+`load_examples() -> list[Example(title, channel, situation, reply, bad, violates)]`, `CHANNEL_LIMITS` (sms 320, voice 600, dashboard 4000).
+
+### assistant/registry.py
+`load_skills(dir=None, *, strict=True) -> dict[str, SkillSpec(name, description, body, path, resources)]`,
+`load_agents(dir=None, *, skills, known_tools, strict=True) -> dict[str, AgentSpec(name, description, model, tools, skills, prompt, path, extra)]`,
+`AgentSpec.resolved_model(settings)` (`main` -> ASSISTANT_MODEL, `subagent` -> SUBAGENT_MODEL, else the id),
+`validate_all(known_tools) -> list[str]`, `parse_frontmatter(text)`, `RegistryError(.errors)`.
+
+### assistant/tools.py (the only capabilities)
+`Tool(name, description, input_schema, fn(ctx, args), owner, side_effects)`, `ToolContext(channel, agent, source, message_id, calls)`,
+`ToolCall`, `ToolResult(ok, content)`, `ToolError` (message shown to the model), `REGISTRY`, `register(tool, *, replace=False)`, `unregister(name)`,
+`available(names) -> list[Tool]`, `known_tool_names()`, `dispatch(name, args, ctx, *, allowed) -> ToolResult`,
+`load_extensions()` (imports `assistant.ledger|meals|checkins|improve` if present and calls their `register_tools(register)`),
+`send_to_owner(text, *, kind="update", agent, reply_to, cost_usd) -> dict` (the single outbound path; `kind="reply"` = sent now, exempt from the cap),
+`outbound_sms_today()`, `studio_snapshot(period_days=7) -> dict`, `register_approval_handler(name, fn(decision, data) -> bool)`,
+`apply_approved_decision(decision_id) -> bool`.
+Built-in tools: `memory_search, memory_read, memory_list, memory_remember, memory_forget, journal_append, studio_status, goals_list,
+goals_update, checkin_schedule, skill_read, lessons_propose, lessons_list, request_approval, message_owner`.
+**Reserved for the next engineers** (`PLANNED_TOOLS`; agents already list them; not offered until registered):
+`ledger_log_hours, ledger_summary` (assistant/ledger.py), `meals_suggest, meals_record_feedback` (assistant/meals.py),
+`improvement_propose, eval_results` (assistant/improve.py). `checkin_schedule` may be replaced by assistant/checkins.py
+(`register(..., replace=True)`). Runtime-provided: `delegate` (main only), `web_search` (server tool, `ASSISTANT_WEB_SEARCH`).
+
+### assistant/runtime.py
+`run_turn(message, *, channel, context=None, deliver=False) -> TurnResult(text, cost_usd, agent_runs, tool_calls, status, message_in_id, message_out_id, raw_text)`
+(status ok|budget|error|denied|rounds), `run_task(agent_name, task, *, channel="system", deliver=False, kind="task", context=None) -> TurnResult`,
+`handle_inbound_sms(body) -> TurnResult | None` (None when ASSISTANT_ENABLED is false; run it in the background),
+`set_backend(b|None)`, `get_backend()`, `reset()`, `FakeBackend(*steps)` (`.queue(...)`, `.queue_for(agent, ...)`, `.requests`;
+steps: str | `fake_tool(name, **input)` | list of them | `ModelReply` | callable(req)), `AnthropicBackend(client=None)`,
+`ModelRequest`, `ModelReply`, `Usage`, `ToolUse`, `AssistantBudgetExceeded(reason turn|daily|paused)`, `estimate_cost(req)`,
+`check_budget(est, turn, settings)`, `remaining_today()`, `price_for(model)`, `cost_of(model, usage)`, `wrap_untrusted(source, text)`.
