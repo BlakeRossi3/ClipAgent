@@ -562,3 +562,52 @@ def test_load_credentials_missing_scope(clock, settings):
         "scopes": [youtube_auth.SCOPE_UPLOAD]})})(), settings.youtube_token_path)
     with pytest.raises(youtube_auth.YouTubeAuthError, match="lacks scopes"):
         youtube_auth.load_credentials(refresh=False)
+
+
+# ---------------------------------------------------------------------------
+# review regressions
+# ---------------------------------------------------------------------------
+
+def test_retries_exhausted_mid_session_is_verified_before_reupload(clock, live, fake_yt, rendered_clip, sleeps):
+    """The final chunk may have landed: never blindly re-insert after an interrupted session."""
+    fake_yt.outcomes[:] = [http_error(503, "backendError")] * (upload.MAX_RETRIES + 1)
+    real_insert = FakeYouTube.videos
+
+    def videos_with_session(self):
+        v = real_insert(self)
+        orig = v.insert
+
+        def insert(**kw):
+            req = orig(**kw)
+            req.resumable_uri = "https://upload.example/session-1"
+            return req
+        v.insert = insert
+        return v
+    fake_yt.videos = videos_with_session.__get__(fake_yt)
+    cid = rendered_clip()
+    with pytest.raises(upload.UploadError):
+        upload.upload_clip(cid)
+    first = db.list_uploads(clip_id=cid)[0]
+    assert first.status == "queued" and "verify" in first.error
+    with pytest.raises(upload.UploadError):                # within ORPHAN_AGE: still "in progress"
+        upload.upload_clip(cid)
+    clock.advance(hours=3)                                 # later: the video turns out to exist
+    fake_yt.playlist_resp = {"items": [{"contentDetails": {"videoId": "vLanded"}}]}
+    fake_yt.videos_list_resp = {"items": [{"id": "vLanded", "snippet": {"tags": [f"clipagent-clip-{cid}"]}}]}
+    assert upload.upload_clip(cid) == first.id
+    assert db.get_upload(first.id).youtube_video_id == "vLanded"
+    assert len(fake_yt.insert_calls) == 1                  # no duplicate upload
+
+
+def test_concurrent_claim_blocks_second_insert(clock, live, fake_yt, rendered_clip, monkeypatch):
+    """Another process claims the clip between our guards and our insert."""
+    cid = rendered_clip()
+    real = db.claim_upload
+
+    def racing(clip_id, **kw):
+        assert real(clip_id, **kw) is not None             # the other process wins
+        return real(clip_id, **kw)
+    monkeypatch.setattr(db, "claim_upload", racing)
+    with pytest.raises(upload.UploadError, match="already being uploaded"):
+        upload.upload_clip(cid)
+    assert fake_yt.insert_calls == []

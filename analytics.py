@@ -420,6 +420,14 @@ def check_claims() -> int:
     items = _videos_list(youtube, ids, "status,contentDetails")
     if items is None:
         return 0
+    if len(ids) >= 2 and not items:
+        # Every video "vanished" at once: almost certainly the token belongs to another channel
+        # (or a Brand Account), not a mass takedown. Do not mark anything removed or page the owner
+        # once per video; report the likely cause instead.
+        db.log_event(MODULE, f"claims check: none of our {len(ids)} videos are visible to this token; "
+                     "is it authorised for the right channel? Nothing was flagged.", level="error",
+                     data={"checked": len(ids)})
+        return 0
     uploads = {u.youtube_video_id: u for u in db.list_uploads("uploaded", include_dry_run=False)}
     now = db.utcnow()
     newly = 0

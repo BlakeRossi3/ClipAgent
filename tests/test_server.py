@@ -28,3 +28,13 @@ def test_app_starts_without_a_broken_dashboard(monkeypatch, caplog):
         assert client.get("/healthz").json()["dashboard"] is False
         assert client.get("/dashboard/").status_code == 404
         assert client.get("/", follow_redirects=False).headers["location"] == "/healthz"
+
+
+def test_access_log_redacts_dashboard_token():
+    import logging
+
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, "x", 1, '%s - "%s %s HTTP/%s" %d',
+                            ("1.2.3.4:5", "GET", "/dashboard/clips?sort=views&token=s3cret&x=1", "1.1", 303), None)
+    server.RedactTokenFilter().filter(rec)
+    msg = rec.getMessage()
+    assert "s3cret" not in msg and "token=[redacted]&x=1" in msg

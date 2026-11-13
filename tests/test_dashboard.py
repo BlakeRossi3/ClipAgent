@@ -459,3 +459,70 @@ def test_seeded_data_is_consistent(seeded):
     assert any(e.level == "error" for e in db.list_events(limit=2000))
     assert any(s.status == "rejected" for s in db.list_sources())
     assert db.utcnow is not None and db.utcnow() == datetime(2026, 11, 13, 15, 0, tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+def test_no_token_dashboard_refuses_requests_relayed_by_a_proxy(clock):
+    """Behind Caddy every request arrives from 127.0.0.1; without a token it must not be 'open'."""
+    did = db.add_decision("budget_increase", "Raise budget", {"action": "apply_strategy"})
+    local = TestClient(_app(), base_url="http://testserver")
+    html = local.get("/dashboard/decisions").text                    # direct local: allowed
+    proxied = TestClient(_app(), base_url="https://agent.example.com")
+    hdr = {"X-Forwarded-For": "203.0.113.9"}
+    assert proxied.get("/dashboard/decisions", headers=hdr).status_code == 403
+    assert proxied.get("/dashboard/api/summary").status_code == 403    # public Host name alone
+    assert local.get("/dashboard/api/summary", headers=hdr).status_code == 403
+    r = proxied.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html)}, headers=hdr)
+    assert r.status_code == 403 and db.get_decision(did).status == "pending"
+
+
+def test_allow_unauthenticated_opt_in(clock, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_ALLOW_UNAUTHENTICATED", "true")
+    config.reset_settings()
+    c = TestClient(_app(), base_url="https://agent.example.com")
+    assert c.get("/dashboard/api/summary", headers={"X-Forwarded-For": "203.0.113.9"}).status_code == 200
+
+
+def test_wrong_tokens_are_throttled(client, clock, monkeypatch):
+    token = _with_token(monkeypatch)
+    monkeypatch.setattr(dashboard, "_auth_failures", {})
+    for _ in range(dashboard.AUTH_FAIL_LIMIT):
+        assert client.post("/dashboard/login", data={"token": "guess"}).status_code == 401
+    assert client.post("/dashboard/login", data={"token": token}).status_code == 429   # even the right one
+    assert client.get("/dashboard/api/summary", headers={"Authorization": f"Bearer {token}"}).status_code == 429
+    clock_now = dashboard._auth_failures
+    for ip in clock_now:
+        clock_now[ip] = [t - dashboard.AUTH_FAIL_WINDOW_SEC - 1 for t in clock_now[ip]]
+    assert client.get("/dashboard/api/summary", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_source_links_never_use_script_urls(client, clock, make_source, make_clip):
+    sid = make_source(status="picked", url="javascript:alert(document.cookie)")
+    cid = make_clip(sid)
+    for path in (f"/dashboard/sources/{sid}", f"/dashboard/clips/{cid}"):
+        html = client.get(path).text
+        assert 'href="javascript:' not in html and 'href="#"' in html
+    assert dashboard.ext_url("https://nasa.gov/x") == "https://nasa.gov/x"
+
+
+def test_clip_page_shows_haiku_reason(client, clock, make_clip):
+    cid = make_clip(haiku_reason="Opens with a <b>question</b>")
+    html = client.get(f"/dashboard/clips/{cid}").text
+    assert "Opens with a &lt;b&gt;question&lt;/b&gt;" in html
+
+
+def test_approval_that_fails_to_apply_is_reported(client, clock, monkeypatch):
+    import notify
+
+    def decide(decision_id, approved, *, via):
+        db.resolve_decision(decision_id, "approved", via=via)
+        return notify.DecisionOutcome(True, "approved", False)
+
+    monkeypatch.setitem(sys.modules, "notify", types.SimpleNamespace(decide=decide, handle_decision=None))
+    did = db.add_decision("new_niche", "Add history topics")
+    html = client.get("/dashboard/decisions").text
+    r = client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html)}, follow_redirects=False)
+    assert "msg=unapplied" in r.headers["location"]
+    assert "could not be applied" in client.get("/dashboard/decisions?msg=unapplied").text

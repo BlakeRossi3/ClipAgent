@@ -614,8 +614,11 @@ def upload_clip(clip_id: int, publish_at: datetime | None = None, *, immediate: 
     slot = _resolve_slot(publish_at, immediate)
     body = build_metadata(clip, source, settings=settings, strategy=strat, publish_at=slot)
     privacy = body["status"]["privacyStatus"]
-    upload_id = db.add_upload(clip_id, privacy=privacy, publish_at=db.to_iso(slot) if slot else None,
-                              dry_run=settings.dry_run)
+    # atomic check-and-insert: a concurrent process (scheduler + CLI) cannot start a second insert
+    upload_id = db.claim_upload(clip_id, privacy=privacy, publish_at=db.to_iso(slot) if slot else None,
+                                dry_run=settings.dry_run)
+    if upload_id is None:
+        raise UploadError(f"clip {clip_id} is already being uploaded (or was) by another process")
 
     if settings.dry_run:
         video_id = f"dryrun-{clip_id}"
@@ -672,6 +675,15 @@ def _upload_live(clip: db.Clip, upload_id: int, path: Path | None, body: dict, s
         raise UploadError(err) from exc
     except _RetriesExhausted as exc:
         youtube_auth.record_quota("videos.insert", units=cost)
+        if getattr(request, "resumable_uri", None):
+            # The resumable session existed: YouTube may have finished the video while our reads
+            # failed. Leave the row 'queued' so the next attempt (after ORPHAN_AGE) looks for the
+            # marker tag on the channel instead of uploading a duplicate.
+            db.update_upload(upload_id, error=f"outcome unknown, will verify on channel: {exc}"[:500],
+                             quota_units=cost)
+            db.log_event(MODULE, f"upload of clip {clip_id} interrupted mid-session; will verify before retrying",
+                         level="error", data={"clip_id": clip_id, "upload_id": upload_id, "error": str(exc)})
+            raise UploadError(str(exc)) from exc
         db.mark_upload_failed(upload_id, str(exc), quota_units=cost)
         db.log_event(MODULE, f"upload of clip {clip_id} failed after retries; will retry later",
                      level="error", data={"clip_id": clip_id, "upload_id": upload_id, "error": str(exc)})

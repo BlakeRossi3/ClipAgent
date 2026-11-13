@@ -448,3 +448,12 @@ def test_doctor_warns_about_allowlist_entries_without_ids(monkeypatch):
     monkeypatch.setattr(main, "_whisper_check", lambda s: main.Check("whisper model", "warn", "not cached"))
     chk = {c.name: c for c in main.doctor_checks()}["allowlist channel ids"]
     assert chk.status == "warn" and "House Committee on Science" in chk.detail
+
+
+def test_llm_outage_stops_judgment_without_failing_sources(stages, make_source, clock):
+    t1, t2 = make_source(status="transcribed"), make_source(status="transcribed")
+    stages["fail"]["pick"] = pick.LLMUnavailable("API down")
+    counters = main.process_pending(max_sources=5)
+    assert counters["llm_unavailable"] == 1
+    assert [c for c in stages["calls"] if c[0] == "pick"] == [("pick", t1)]
+    assert db.require_source(t1).status == db.require_source(t2).status == "transcribed"

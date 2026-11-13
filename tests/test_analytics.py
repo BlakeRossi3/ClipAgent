@@ -395,3 +395,14 @@ def test_check_claims_records_youtube_status(clock, live, videos, services):
     assert b.youtube_status == "rejected/private: rejected by YouTube (copyright)"
     assert b.status == "removed" and b.copyright_claim and b.error is None
     assert "youtube_claim" in {n.kind for n in db.list_notifications()}
+
+
+def test_check_claims_all_videos_missing_is_a_token_problem_not_takedowns(clock, live, make_upload, services):
+    """Token for another channel/Brand Account: videos.list returns nothing for ANY of our ids."""
+    for vid in ("a", "b", "c"):
+        make_upload(video_id=vid, publish_at="2026-11-12T17:15:00Z")
+    services["data"].items = {}
+    assert analytics.check_claims() == 0
+    assert all(db.get_upload_by_video(v).status == "uploaded" for v in ("a", "b", "c"))
+    assert [n for n in db.list_notifications() if n.kind == "youtube_claim"] == []
+    assert any("none of our" in e.message for e in db.list_events(module="analytics", level="error"))

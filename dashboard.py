@@ -101,6 +101,8 @@ _FLASH = {
     "rejected": ("info", "Rejected. Nothing will change."),
     "already": ("warning", "That decision was already resolved (first answer wins)."),
     "failed": ("critical", "Could not record the decision - see the log for details."),
+    "unapplied": ("critical", "Approved, but the change could not be applied automatically, so nothing has "
+                              "changed yet. See the log for why."),
     "csrf": ("critical", "The form expired or came from another site. Reload the page and try again."),
     "loggedout": ("info", "Signed out."),
 }
@@ -2162,7 +2164,12 @@ async def decide(request: Request, decision_id: int, action: str) -> Response:
     try:
         import notify  # late import: notify is optional at import time and patched in tests
 
-        ok = notify.handle_decision(decision_id, approved, via="dashboard")
+        applied: bool | None = None
+        if hasattr(notify, "decide"):
+            out = notify.decide(decision_id, approved, via="dashboard")
+            ok, applied = out.resolved, out.applied
+        else:
+            ok = notify.handle_decision(decision_id, approved, via="dashboard")
     except Exception as exc:  # surface the failure to the owner instead of a 500
         db.log_event("dashboard", f"decision {decision_id} {action} from dashboard failed", level="error",
                      data={"decision_id": decision_id, "error": repr(exc)[:500]})
@@ -2171,6 +2178,8 @@ async def decide(request: Request, decision_id: int, action: str) -> Response:
                  data={"decision_id": decision_id, "accepted": bool(ok),
                        "client": request.client.host if request.client else None})
     msg = ("approved" if approved else "rejected") if ok else "already"
+    if ok and approved and applied is False:
+        msg = "unapplied"
     if method == "bearer":
         return _json({"ok": bool(ok), "decision_id": decision_id, "status": msg})
     return _security_headers(RedirectResponse(f"{nxt}{sep}msg={msg}", status_code=303))
