@@ -509,9 +509,23 @@ def rule_path(p: Path | str) -> str:
     return "/" + s.rstrip("/")
 
 
+def api_fallback_active() -> bool:
+    """True while the Claude plan is limited and Sterling should use the saved Anthropic API key
+    instead (ASSISTANT_API_FALLBACK, default on). Conversation-only: no Claude Code powers meanwhile;
+    spend counts against ASSISTANT_DAILY_BUDGET_USD like any API turn."""
+    s = get_assistant_settings()
+    if s.fake or s.backend != "claude_code" or not s.api_fallback:
+        return False
+    import config
+
+    if not config.get_settings().anthropic_api_key:
+        return False
+    return backoff_until() is not None
+
+
 def full_mode(agent: str = "main") -> bool:
     s = get_assistant_settings()
-    return s.backend == "claude_code" and s.cc_full and agent == "main"
+    return s.backend == "claude_code" and s.cc_full and agent == "main" and not api_fallback_active()
 
 
 def user_dirs() -> list[Path]:

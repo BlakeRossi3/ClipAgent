@@ -343,6 +343,8 @@ def get_backend() -> Backend:
     if s.backend == "claude_code":
         from assistant import claude_code
 
+        if claude_code.api_fallback_active():
+            return AnthropicBackend()
         return claude_code.ClaudeCodeBackend()  # type: ignore[return-value]
     return AnthropicBackend()
 

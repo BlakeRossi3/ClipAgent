@@ -46,6 +46,7 @@ class AssistantSettings:
     cc_model: str = "opus"                   # Claude Code model alias for the main agent
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
+    api_fallback: bool = True                # plan limited -> use the Anthropic API key (if saved) meanwhile
     max_turns_per_day: int = 60              # claude -p runs per local day (protects the plan's limits)
     cc_timeout_sec: int = 240                # one claude -p run (tool calls included)
     claude_bin: str = ""                     # explicit path to the claude executable (else PATH / ~/.local/bin)
@@ -106,6 +107,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         claude_bin=s("ASSISTANT_CLAUDE_BIN", ""),
         cc_oauth_token=s("CLAUDE_CODE_OAUTH_TOKEN", ""),
         cc_full=config._bool(env.get("ASSISTANT_CC_FULL"), True),
+        api_fallback=config._bool(env.get("ASSISTANT_API_FALLBACK"), True),
         user_dirs=tuple(d.strip() for d in s("ASSISTANT_USER_DIRS", "").split(";") if d.strip()),
         chrome=config._bool(env.get("ASSISTANT_CHROME"), False),
         cc_task_timeout_sec=max(60, int(s("ASSISTANT_CC_TASK_TIMEOUT_SEC", "900"))),

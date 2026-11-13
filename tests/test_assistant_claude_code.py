@@ -209,3 +209,29 @@ def test_schedule_prompt_tool(cc, clock):
     assert [x.id for x in usage.due()] == [d.id]
     past = tools.dispatch("schedule_prompt", {"text": "x", "at": "2020-01-01 10:00"}, ctx, allowed={"schedule_prompt"})
     assert not past.ok
+
+
+def test_plan_limit_falls_back_to_api_key(cc, monkeypatch, clock):
+    """While the Claude plan is limited, Sterling uses the saved API key (conversation only)."""
+    import config
+
+    db.kv_set(claude_code.KV_BACKOFF, {"until": db.to_iso(db.utcnow() + timedelta(hours=3)), "reason": "limit"})
+    assert not claude_code.api_fallback_active()          # no API key saved yet
+    assert isinstance(runtime.get_backend(), claude_code.ClaudeCodeBackend)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    config.reset_settings()
+    asettings.reset_assistant_settings()
+    assert claude_code.api_fallback_active()
+    assert isinstance(runtime.get_backend(), runtime.AnthropicBackend)
+    assert not claude_code.full_mode("main")
+
+    monkeypatch.setenv("ASSISTANT_API_FALLBACK", "false")
+    asettings.reset_assistant_settings()
+    assert not claude_code.api_fallback_active()
+
+    monkeypatch.setenv("ASSISTANT_API_FALLBACK", "true")
+    asettings.reset_assistant_settings()
+    claude_code.clear_backoff()                           # plan back: full Claude Code again
+    assert not claude_code.api_fallback_active()
+    assert isinstance(runtime.get_backend(), claude_code.ClaudeCodeBackend)
