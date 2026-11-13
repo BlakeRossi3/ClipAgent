@@ -765,3 +765,12 @@ def test_chat_images_and_background_turns(client, clock, monkeypatch, fake_model
     assert _rt.is_stopped() and "switched off" in _json_post(client, "/dashboard/chat", {"csrf": c, "message": "hi"}).json()["reason"]
     _json_post(client, "/dashboard/sterling/start", {"csrf": c})
     assert not _rt.is_stopped()
+
+
+def test_home_renders_messages_with_meta_but_no_attachments(client: TestClient) -> None:
+    """Regression: a chat message whose meta lacks 'attachments' crashed the home page (500)."""
+    store.add_message("in", "dashboard", "hello", meta={"session": "abc"})
+    store.add_message("out", "dashboard", "Good evening, sir.", meta={})
+    r = client.get("/dashboard/")
+    assert r.status_code == 200
+    assert "Good evening, sir." in r.text

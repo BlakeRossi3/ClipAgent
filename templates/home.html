@@ -51,7 +51,7 @@
         {% for m in h.history %}
         <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
           <p class="msg-body">{{ m.body }}</p>
-          {% if m.meta and m.meta.attachments %}<p class="msg-images">{% for f in m.meta.attachments %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
+          {% if m.meta and m.meta.get("attachments") %}<p class="msg-images">{% for f in m.meta.get("attachments") or [] %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
           <p class="msg-meta"><span class="chip chan-{{ m.channel }}">{{ m.channel }}</span> · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
         </li>
         {% else %}
