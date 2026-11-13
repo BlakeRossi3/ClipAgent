@@ -82,7 +82,10 @@ NOTES = {
     "youtube_ok": ("good", "YouTube connected. The token is saved on this computer."),
     "finished": ("good", "Setup finished."),
     "restart_needed": ("warning", "Saved. Some of these changes apply after a Restart (button below)."),
+    "signed_out": ("info", "Signed out. The assistant is back on practice mode (or the API key, if you saved one)."),
+    "code_bad": ("warning", "That code was not accepted here. Copy the whole code from Claude's page and try again."),
 }
+KV_LAST_STEP = "setup:last_step"
 
 
 # ===========================================================================
@@ -165,6 +168,8 @@ def _render(request: Request, step: str, ctx: Mapping[str, Any] | None = None, *
         "values": current_values(step), "secrets": secret_flags(),
     }
     base.update(ctx or {})
+    if step in ("brain", "hub") and "cc" not in base:
+        base["cc"] = claude_status(probe=False)
     return _d()._render(request, "setup.html", base, status_code=status, nav="settings")
 
 
@@ -200,7 +205,8 @@ def current_values(step: str) -> dict[str, Any]:
                 "timezone": s.timezone}
     if step == "brain":
         return {"pipeline_cap": f"{s.max_daily_llm_budget_usd:g}", "assistant_cap": f"{a.daily_budget_usd:g}",
-                "assistant_on": a.enabled or not s.setup_complete, "fake": s.fake_llm}
+                "assistant_on": a.enabled or not s.setup_complete, "fake": s.fake_llm, "backend": a.backend,
+                "turns_cap": a.max_turns_per_day}
     if step == "money":
         j = _job()
         return {"job_name": j.name if j else "", "rate": f"{j.hourly_rate:g}" if j else "",
@@ -245,6 +251,52 @@ def _save(changes: dict[str, str | None]) -> list[str]:
     if not s.setup_complete and "SETUP_COMPLETE" not in config_store.read_values():
         changes = {**changes, "SETUP_COMPLETE": "false"}  # an existing file otherwise counts as "set up"
     return config_store.update(changes)
+
+
+def resume_step() -> str:
+    """Where an unfinished wizard continues: the last step page opened, else inferred from the
+    saved file (a name saved means "About you" is done)."""
+    try:
+        last = db.kv_get(KV_LAST_STEP)
+    except Exception:  # a broken DB must not lock the wizard
+        last = None
+    if last in STEP_KEYS:
+        return str(last)
+    vals = config_store.read_values()
+    return "brain" if vals.get("OWNER_NAME") else "about"
+
+
+def _note_step(step: str) -> None:
+    if step in STEP_KEYS and not config.get_settings().setup_complete:
+        try:
+            db.kv_set(KV_LAST_STEP, step)
+        except Exception:
+            pass
+
+
+# ===========================================================================
+# Claude account (the assistant's brain on the owner's subscription; assistant/claude_code.py)
+# ===========================================================================
+
+def claude_status(*, probe: bool = True) -> dict[str, Any]:
+    from assistant import claude_code
+
+    try:
+        out = claude_code.status(probe=probe)
+    except Exception as exc:  # the page must render whatever the CLI does
+        out = {"installed": False, "logged_in": None, "error": type(exc).__name__}
+    out["signin"] = claude_code.SIGNIN.snapshot()
+    return out
+
+
+def _claude_signed_in(model: str) -> None:
+    """Sign-in + test succeeded: the assistant (all agents) runs on the Claude account from now on."""
+    _save({"ASSISTANT_BACKEND": "claude_code", "FAKE_ASSISTANT": "false", "ASSISTANT_ENABLED": "true"})
+    db.log_event("setup", "assistant switched to the Claude account", data={"model": model})
+
+
+def _claude_signed_out() -> None:
+    _save({"ASSISTANT_BACKEND": "api", "FAKE_ASSISTANT": None, "CLAUDE_CODE_OAUTH_TOKEN": None})
 
 
 # ===========================================================================
@@ -747,7 +799,8 @@ def doctor_rows() -> list[dict[str, Any]]:
                 "PUBLIC_BASE_URL": "phone", "YouTube client secret": "youtube", "YouTube token": "youtube",
                 "YouTube token scopes": "youtube", "YouTube refresh token": "youtube", "vault": "memory",
                 "DASHBOARD_TOKEN": "power", "DRY_RUN": "power", "DASHBOARD_ALLOW_UNAUTHENTICATED": "power",
-                "whisper model": "power"}
+                "whisper model": "power", "Claude Code": "brain", "Claude account": "brain",
+                "Claude runs today": "brain", "Claude plan limit": "brain", "assistant models": "brain"}
     rows = []
     for c in main.doctor_checks():
         step = fix_step.get(c.name)
@@ -769,10 +822,15 @@ def index(request: Request) -> Response:
         return resp
     import main
 
+    if not config.get_settings().setup_complete and request.query_params.get("welcome") is None:
+        step = resume_step()
+        if step != "about":   # he has been here before: straight back to where he stopped
+            return _redirect(f"/setup/{step}")
     return _render(request, "welcome" if not config.get_settings().setup_complete else "hub",
                    {"can_control": main.control_available(),
                     "summary": {k: current_values(k) for k in ("about", "brain", "money", "phone", "youtube",
-                                                                "memory", "power")}})
+                                                                "memory", "power")},
+                    "cc": claude_status(probe=False)})
 
 
 @router.get("/help/{name}", include_in_schema=False)
@@ -845,9 +903,53 @@ async def step_page(request: Request, step: str) -> Response:
     if step not in STEP_KEYS:
         return _error(request, "Not found", "There is no such settings page.", 404)
     ctx: dict[str, Any] = {}
+    _note_step(step)
     if step == "done":
         ctx["checks"] = await run_in_threadpool(doctor_rows)
+    if step == "brain":
+        ctx["cc"] = await run_in_threadpool(claude_status)
     return _render(request, step, ctx)
+
+
+@router.get("/claude/status", include_in_schema=False)
+def claude_status_json(request: Request) -> Response:
+    """Polled by the brain page while installing / signing in (no secrets in it)."""
+    resp, _ = _guard(request)
+    if resp is not None:
+        return resp
+    from assistant import claude_code
+
+    return _d()._json(claude_code.SIGNIN.snapshot())
+
+
+@router.post("/claude/{action}", include_in_schema=False)
+async def claude_action(request: Request, action: str) -> Response:
+    """signin | cancel | code | signout - fixed commands only (assistant/claude_code.py)."""
+    from assistant import claude_code
+
+    err, form = await _post_guard(request)
+    if err is not None:
+        return err
+    if action == "signin":
+        if not _d()._is_direct_local(request):
+            return _render(request, "brain", {"cc": claude_status(probe=False), "result": {
+                "ok": False, "title": "Use the laptop", "text": "Sign in from the computer ClipAgent runs on: "
+                                                                "Claude's sign-in opens in that computer's browser."}},
+                           status=400)
+        claude_code.forget_status_cache()
+        claude_code.SIGNIN.start(on_success=_claude_signed_in)
+        return _redirect("/setup/brain#claude")
+    if action == "cancel":
+        claude_code.SIGNIN.cancel()
+        return _redirect("/setup/brain#claude")
+    if action == "code":
+        ok = claude_code.SIGNIN.submit_code(str(form.get("code") or ""))
+        return _redirect("/setup/brain#claude" if ok else "/setup/brain?msg=code_bad#claude")
+    if action == "signout":
+        await run_in_threadpool(claude_code.sign_out)
+        _claude_signed_out()
+        return _redirect("/setup/brain?msg=signed_out")
+    return _error(request, "Not found", "There is no such action.", 404)
 
 
 @router.post("/youtube/secret", include_in_schema=False)

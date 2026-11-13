@@ -38,7 +38,8 @@ _SCRUB_KEYS = ("FAKE_LLM", "DRY_RUN", "DAILY_LLM_BUDGET_USD", "MAX_DAILY_LLM_BUD
                "LLM_PRICES_JSON", "HAIKU_MODEL", "SONNET_MODEL", "TIMEZONE", "PUBLIC_BASE_URL", "DASHBOARD_TOKEN", "DASHBOARD_ALLOW_UNAUTHENTICATED",
                "LLM_SERVER_FALLBACKS", "HAIKU_EFFORT", "SONNET_EFFORT", "URGENT_CALL_DEDUP_HOURS",
                "SOURCE_MEDIA_RETENTION_DAYS", "RENDER_RETENTION_DAYS", "LOG_LEVEL", "FFMPEG_BIN",
-               "VAULT_DIR", "FAKE_ASSISTANT", "DASHBOARD_TRUST_LOOPBACK", "WHISPER_DEVICE")
+               "VAULT_DIR", "FAKE_ASSISTANT", "DASHBOARD_TRUST_LOOPBACK", "WHISPER_DEVICE",
+               "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR")
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +58,8 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TIMEZONE", "America/New_York")
     monkeypatch.setenv("SETUP_COMPLETE", "true")  # the web setup wizard's redirect is tested in test_setup_web
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))  # never the owner's real vault
+    # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
+    monkeypatch.setenv("ASSISTANT_CLAUDE_BIN", str(tmp_path / "no-claude" / "claude"))
     config.reset_settings()
     llm.reset()
     config.get_settings().ensure_dirs()

@@ -399,9 +399,21 @@ def assistant_state() -> dict[str, Any]:
         reason = "Spending is paused, so I am staying quiet. Text RESUME (or clear the pause) to bring me back."
     elif remaining <= 0.0:
         reason = f"I have spent today's allowance (${s.daily_budget_usd:.2f}). I will be back after midnight."
+    elif not s.fake and s.backend == "claude_code":
+        from assistant import claude_code
+
+        until = _safe(claude_code.backoff_until, None, "claude backoff")
+        if until is not None:
+            reason = (f"I've reached your Claude plan's limit for now, {s.owner_honorific}. "
+                      f"I'll be back {claude_code.friendly_time(until)}.")
+        elif _safe(claude_code.turns_today, 0, "claude runs") >= s.max_turns_per_day:
+            reason = (f"I have used today's {s.max_turns_per_day} Claude conversations, {s.owner_honorific}. "
+                      "I will be back after midnight.")
     return {"name": s.name, "honorific": s.owner_honorific, "owner": s.owner_name, "enabled": s.enabled,
             "fake": s.fake, "can_chat": reason is None, "reason": reason, "spent_today": round(spent, 4),
-            "budget": s.daily_budget_usd, "remaining": round(remaining, 4), "model": s.model,
+            "budget": s.daily_budget_usd, "remaining": round(remaining, 4),
+            "model": _main_model(s),
+            "backend": s.backend,
             "subagent_model": s.subagent_model}
 
 
@@ -569,6 +581,25 @@ def _short_model(m: str) -> str:
     return m.removeprefix("claude-")
 
 
+def _main_model(s: Any) -> str:
+    if s.fake or s.backend != "claude_code":
+        return s.model
+    from assistant import claude_code
+
+    return _safe(lambda: claude_code.model_in_use("main"), s.model, "claude model")
+
+
+def _agent_model(spec: Any, s: Any) -> str:
+    """Model shown on the roster: on the Claude account (claude_code backend), the one actually
+    answering for that role (kv), marked as the plan's; else the configured API model."""
+    if not s.fake and s.backend == "claude_code":
+        from assistant import claude_code
+
+        role = "main" if spec.name == "main" else "sub"
+        return _short_model(_safe(lambda: claude_code.model_in_use(role), role, "claude model")) + " (Claude plan)"
+    return _short_model(spec.resolved_model(s))
+
+
 def roster_data(today: date) -> list[dict[str, Any]]:
     from assistant import registry, store
 
@@ -597,7 +628,7 @@ def roster_data(today: date) -> list[dict[str, Any]]:
         out.append({
             "name": name, "display": s.name if name == "main" else name.capitalize(),
             "role": AGENT_ROLES.get(name, name.replace("-", " ").capitalize()),
-            "description": spec.description, "model": _short_model(spec.resolved_model(s)),
+            "description": spec.description, "model": _agent_model(spec, s),
             "tools": list(spec.tools), "skills": [{"name": k, "description": skills[k].description if k in skills else ""}
                                                     for k in spec.skills],
             "status": status, "last": last, "runs": runs,

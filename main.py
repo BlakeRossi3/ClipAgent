@@ -883,7 +883,8 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
                         "run: .venv/bin/python main.py init"))
 
     if s.fake_llm:
-        checks.append(Check("Anthropic", "warn", "FAKE_LLM=true: clips are picked by a deterministic fake",
+        checks.append(Check("Anthropic", "warn", "no API key (FAKE_LLM=true): the Shorts pipeline cannot pick "
+                            "clips by itself (optional; the assistant runs on the Claude account)",
                             "set ANTHROPIC_API_KEY and FAKE_LLM=false in config.env"))
     else:
         checks.append(Check("Anthropic", "pass" if s.anthropic_api_key else "fail",
@@ -922,13 +923,38 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
                         "on: nothing is uploaded, called or texted" if s.dry_run else "off: live",
                         "set DRY_RUN=false when the go-live checklist is done (README)"))
     checks.append(_whisper_check(s))
-    checks += assistant_checks(s)
+    checks += assistant_checks(s, network=network)
     if network:
         checks += _network_checks()
     return checks
 
 
-def assistant_checks(s: Settings) -> list[Check]:
+def claude_code_checks(*, network: bool = False) -> list[Check]:
+    """The assistant on the owner's Claude subscription (assistant/claude_code.py)."""
+    from assistant import claude_code
+
+    st = claude_code.status(probe=network)
+    fix = "open Settings > The brain and press Sign in with Claude"
+    out = [Check("Claude Code", "pass" if st["installed"] else "fail",
+                 (st["path"] or "not installed") + (f" ({st['version']})" if st.get("version") else ""), fix)]
+    if network and st["installed"]:
+        out.append(Check("Claude account", "pass" if st.get("logged_in") else "fail",
+                         "signed in" if st.get("logged_in") else (st.get("error") or "not signed in"), fix))
+    last = st.get("last_error") or {}
+    if isinstance(last, dict) and last.get("kind") == "auth":
+        out.append(Check("Claude account", "fail", "the last run was refused: sign-in needs renewing", fix))
+    out.append(Check("assistant models", "pass", f"Claude plan: main {st['model_in_use']}, sub-agents "
+                     f"{st['sub_model_in_use']}"))
+    used, cap = st["turns_today"], st["turns_cap"]
+    out.append(Check("Claude runs today", "warn" if used >= cap else "pass", f"{used} of {cap}",
+                     "raise ASSISTANT_MAX_TURNS_PER_DAY (shares your Claude plan's limits)"))
+    if st.get("backoff_until"):
+        out.append(Check("Claude plan limit", "warn", f"reached; assistant back {st['backoff_text']}",
+                         "wait for the reset, or use the API key backend (ASSISTANT_BACKEND=api)"))
+    return out
+
+
+def assistant_checks(s: Settings, *, network: bool = False) -> list[Check]:
     """Doctor section for the personal assistant."""
     from assistant import registry, store, tools
     from assistant.settings import get_assistant_settings
@@ -937,8 +963,11 @@ def assistant_checks(s: Settings) -> list[Check]:
     out = [Check("assistant", "pass", "enabled" if a.enabled else "disabled (ASSISTANT_ENABLED=false)")]
     if not a.enabled:
         return out
-    out.append(Check("assistant models", "pass", f"main {a.model} ({a.effort}), sub-agents {a.subagent_model} "
-                     f"({a.subagent_effort}){', FAKE' if a.fake else ''}"))
+    if a.backend == "claude_code" and not a.fake:
+        out += claude_code_checks(network=network)
+    else:
+        out.append(Check("assistant models", "pass", f"main {a.model} ({a.effort}), sub-agents {a.subagent_model} "
+                         f"({a.subagent_effort}){', FAKE' if a.fake else ''}"))
     out.append(Check("assistant budget", "pass" if a.daily_budget_usd > 0 else "warn",
                      f"${a.daily_budget_usd:.2f}/day, ${a.max_turn_usd:.2f}/turn, {a.max_sms_per_day} texts/day "
                      f"(separate from the pipeline's ${budget.daily_cap_usd():.2f})",

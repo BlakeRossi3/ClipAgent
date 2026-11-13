@@ -68,3 +68,22 @@
 .s-passed { margin: 4px 0 12px; }
 .s-passed summary { cursor: pointer; display: flex; gap: 10px; align-items: center; font-weight: 600; padding: 6px 0; }
 .c-dot-pass { background: #3f9a5a; margin-top: 0; }
+/* The brain: Claude account card */
+.s-claude { border: 1px solid var(--border-strong); border-radius: 14px; padding: 16px; margin: 4px 0 16px; background: var(--surface-2); }
+.s-claude.ok { border-color: var(--accent); background: var(--accent-wash); }
+.s-claude h2 { font-size: 1.15rem; margin: 0 0 6px; }
+.s-big { font-size: 1.05rem; padding: 12px 22px; min-height: 48px; width: 100%; max-width: 360px; }
+.s-live { border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; background: var(--page); border: 1px solid var(--border); }
+.s-live.bad { background: rgba(194, 65, 45, 0.10); border-color: rgba(194, 65, 45, 0.3); }
+.s-live-msg { display: flex; gap: 10px; align-items: center; font-weight: 600; }
+.s-spin { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: s-spin 0.9s linear infinite; }
+.s-spin[hidden] { display: none; }
+@keyframes s-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .s-spin { animation: none; } }
+.s-code { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.s-code .f { flex: 1 1 220px; margin: 0; }
+.s-facts { margin: 0 0 8px; padding-left: 18px; font-size: 0.9rem; }
+.s-warn { color: #a3641a; font-weight: 600; }
+.s-more { border-top: 1px solid var(--border); padding-top: 10px; margin: 14px 0 0; }
+.s-more summary { cursor: pointer; font-weight: 600; padding: 6px 0 10px; }
+.hbtn-sm { padding: 5px 12px; font-size: 0.85rem; }

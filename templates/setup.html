@@ -40,7 +40,7 @@
   <div>
     <p class="s-kicker">{{ a.name }} · at your service</p>
     <h1>{{ salute }} Let's get you set up.</h1>
-    <p>A few short pages: who you are, the AI key, your job, your phone and YouTube. Anything optional can be skipped and filled in later under Settings. Nothing here costs money until you add a key and switch off practice mode.</p>
+    <p>A few short pages: who you are, signing in with your Claude account, your job, your phone and YouTube. Anything optional can be skipped and filled in later under Settings. Nothing here costs money until you add a key and switch off practice mode.</p>
     <a class="hbtn hbtn-accent s-go" href="/setup/about">Begin</a>
   </div>
 </section>
@@ -54,7 +54,7 @@
 <div class="s-grid">
   {% set sm = summary %}
   <a class="card s-tile" href="/setup/about"><strong>About you</strong><span>{{ sm.about.owner_name }} · "{{ sm.about.honorific }}" · {{ sm.about.timezone }}</span></a>
-  <a class="card s-tile" href="/setup/brain"><strong>The brain</strong><span>{% if secrets.api_key %}Key saved{% else %}No key - practice mode{% endif %} · ${{ sm.brain.pipeline_cap }}/day studio, ${{ sm.brain.assistant_cap }}/day {{ a.name }}</span></a>
+  <a class="card s-tile" href="/setup/brain"><strong>The brain</strong><span>{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}/{{ cc.turns_cap }} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}</span></a>
   <a class="card s-tile" href="/setup/money"><strong>Job &amp; money</strong><span>{% if sm.money.job_name %}{{ sm.money.job_name }} · ${{ sm.money.rate }}/h{% else %}Not set{% endif %}</span></a>
   <a class="card s-tile" href="/setup/phone"><strong>Your phone</strong><span>{{ sm.phone.owner_phone or "Not set" }}{% if sm.phone.twilio_sid %} · Twilio set{% endif %}</span></a>
   <a class="card s-tile" href="/setup/youtube"><strong>YouTube</strong><span>{% if sm.youtube.has_token %}Connected{% elif sm.youtube.has_secret %}Sign-in file saved, not connected{% else %}Not connected{% endif %}</span></a>
@@ -108,20 +108,62 @@
 </section>
 
 {% elif step == "brain" %}
-<section class="card s-step">
+{% set su = cc.signin %}
+{% set signed_in = values.backend == "claude_code" and cc.logged_in %}
+<section class="card s-step" id="claude">
   <h1>The brain</h1>
-  <p>ClipAgent and {{ a.name }} think with Claude, made by Anthropic. You pay Anthropic directly for what is used; the caps below are hard limits per day.</p>
   {{ result_box(result) }}
+  <div class="s-claude{% if signed_in %} ok{% endif %}">
+    <p class="s-kicker">{{ "Connected" if signed_in else "Recommended" }}</p>
+    <h2>Sign in with your Claude account</h2>
+    <p>{{ a.name }} and all his helpers run on your Claude Pro plan: no extra bill. They share your plan's usage limits, so ClipAgent stops itself at {{ values.turns_cap }} Claude runs a day.</p>
+    {% if signed_in %}
+      <div class="s-result ok" role="status"><strong>Signed in with your Claude account.</strong> {{ a.name }} is using <strong>{{ cc.model_in_use }}</strong>{% if cc.sub_model_in_use and cc.sub_model_in_use != cc.model_in_use %}; helpers use {{ cc.sub_model_in_use }}{% endif %}.</div>
+      <ul class="s-facts">
+        <li>Claude runs today: <strong>{{ cc.turns_today }}</strong> of {{ cc.turns_cap }}</li>
+        {% if cc.plan_hint %}<li>Plan: {{ cc.plan_hint }}</li>{% endif %}
+        {% if cc.backoff_until %}<li class="s-warn">Your plan's limit was reached; {{ a.name }} is back {{ cc.backoff_text }}.</li>{% endif %}
+        {% if cc.version %}<li>Claude Code {{ cc.version }}</li>{% endif %}
+      </ul>
+      <div class="s-btnrow">
+        <form method="post" action="/setup/claude/signin"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn">Sign in again</button></form>
+        <form method="post" action="/setup/claude/signout"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn">Sign out</button></form>
+      </div>
+    {% else %}
+      {% if values.backend == "claude_code" and cc.logged_in == false and not su.active %}<div class="s-result bad" role="status"><strong>Claude needs you to sign in again.</strong> Until then {{ a.name }} cannot answer.</div>{% endif %}
+      <div class="s-live{% if su.state == 'error' %} bad{% endif %}" data-claude-live data-state="{{ su.state }}"{% if su.state == "idle" %} hidden{% endif %} aria-live="polite">
+        <p class="s-live-msg"><span class="s-spin" aria-hidden="true"{% if not su.active %} hidden{% endif %}></span><span data-claude-msg>{{ su.message }}</span></p>
+        <p data-claude-url{% if not su.url %} hidden{% endif %}><a href="{{ su.url or '#' }}" target="_blank" rel="noopener noreferrer" data-claude-link>Browser did not open? Open Claude's sign-in page</a></p>
+        <form method="post" action="/setup/claude/code" class="s-code" data-claude-code{% if su.state != "signing_in" %} hidden{% endif %}>
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label class="f">If Claude's page shows you a code instead, paste it here<input name="code" autocomplete="off" spellcheck="false" maxlength="600"></label>
+          <button type="submit" class="hbtn">Send code</button>
+        </form>
+        <div data-claude-error{% if su.state != "error" %} hidden{% endif %}>
+          {% if su.log %}<pre class="s-log">{{ su.log | join("\n") }}</pre>{% endif %}
+          <p class="f-help">If it keeps failing, install Claude Code by hand from <a href="{{ su.manual }}" target="_blank" rel="noopener">Anthropic's install page</a> (one command, no admin rights), then press Sign in again.</p>
+        </div>
+        <form method="post" action="/setup/claude/cancel" data-claude-cancel{% if not su.active %} hidden{% endif %}><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn hbtn-sm">Cancel</button></form>
+      </div>
+      <form method="post" action="/setup/claude/signin" data-claude-start{% if su.active %} hidden{% endif %}>
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="hbtn hbtn-accent s-big">Sign in with Claude</button>
+      </form>
+    {% endif %}
+    <p class="f-help">Uses Anthropic's official Claude Code app on this computer (installed for you if it is missing; no admin rights). You sign in on Claude's own page, so ClipAgent never sees your password. Anthropic's plan limits assume ordinary personal use; the daily cap keeps {{ a.name }} well inside them.</p>
+  </div>
   <form method="post" action="/setup/brain">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    {{ secret_field("api_key", "Anthropic API key", secrets.api_key, "sk-ant-...", "clear_api_key") }}
-    <p class="f-help">Where do I get this? Sign in at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>, press <em>Create key</em>, copy it and paste it here. Add a little credit under Billing first ($10 lasts weeks). Without a key everything runs in free practice mode with made-up answers.</p>
-    <label class="f">Shorts studio: most it may spend per day (USD)<input name="pipeline_cap" value="{{ values.pipeline_cap }}" inputmode="decimal">{{ help("Picking clips costs a few cents per video. The weekly review sets its own daily budget (about $1) but can never go above this.") }}{{ err("pipeline_cap") }}</label>
-    <label class="f">{{ a.name }}: most per day (USD)<input name="assistant_cap" value="{{ values.assistant_cap }}" inputmode="decimal">{{ help("A chat or text costs roughly 1-5 cents. At the cap the assistant politely goes quiet until tomorrow.") }}{{ err("assistant_cap") }}</label>
     <label class="f-check"><input type="checkbox" name="assistant_on" value="1"{% if values.assistant_on in (true, "1") %} checked{% endif %}> Switch on {{ a.name }} (your personal assistant: check-ins, money, meals, memory)</label>
-    <div class="s-actions">
-      <button type="submit" name="action" value="test" class="hbtn">Save &amp; test the key</button>
-    </div>
+    <details class="s-more"{% if errors.get("api_key") or errors.get("pipeline_cap") or errors.get("assistant_cap") or result %} open{% endif %}>
+      <summary>Shorts pipeline (optional): Anthropic API key</summary>
+      <p class="f-help">Only needed for automatic clip picking in the Shorts studio, paid to Anthropic per use (about $1 a day at most, capped below). Without a key the studio cannot pick clips by itself; {{ a.name }} and everything else still work on your Claude account.</p>
+      {{ secret_field("api_key", "Anthropic API key", secrets.api_key, "sk-ant-...", "clear_api_key") }}
+      <p class="f-help">Where do I get this? Sign in at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>, press <em>Create key</em>, copy it and paste it here. Add a little credit under Billing first ($10 lasts weeks).</p>
+      <label class="f">Shorts studio: most it may spend per day (USD)<input name="pipeline_cap" value="{{ values.pipeline_cap }}" inputmode="decimal">{{ help("Picking clips costs a few cents per video. The weekly review sets its own daily budget (about $1) but can never go above this.") }}{{ err("pipeline_cap") }}</label>
+      <label class="f">{{ a.name }} on this key instead of your Claude account: most per day (USD)<input name="assistant_cap" value="{{ values.assistant_cap }}" inputmode="decimal">{{ help("Only used if you do not sign in with Claude. A chat or text costs roughly 1-5 cents.") }}{{ err("assistant_cap") }}</label>
+      <div class="s-actions"><button type="submit" name="action" value="test" class="hbtn">Save &amp; test the key</button></div>
+    </details>
     {{ buttons() }}
   </form>
 </section>

@@ -351,9 +351,13 @@ def _sandbox(root: Path, *, live: bool, backend: Any) -> Iterator[None]:
     from assistant import runtime, store
     from assistant import settings as asettings
 
+    from assistant import claude_code
+
     prev_cfg = config.get_settings()
     prev_override = asettings._override
     prev_backend = runtime._backend
+    prev_home = claude_code._home_override
+    claude_code.set_home(claude_code.home_dir())   # keep the real Claude sign-in while the data dir moves
     root.mkdir(parents=True, exist_ok=True)
     cfg = prev_cfg.replace(data_dir=root, db_path=root / "eval.db", downloads_dir=root / "downloads",
                            transcripts_dir=root / "transcripts", renders_dir=root / "renders", dry_run=True,
@@ -371,6 +375,7 @@ def _sandbox(root: Path, *, live: bool, backend: Any) -> Iterator[None]:
         runtime.set_backend(prev_backend)
         asettings.set_assistant_settings(prev_override)
         config.set_settings(prev_cfg)
+        claude_code.set_home(prev_home)
 
 
 def _fx_jobs(items: list[dict[str, Any]]) -> None:
@@ -742,7 +747,12 @@ def _run_case(case: Case, root: Path, *, live: bool) -> CaseResult:
         res.status = st
         return res
     if live:
-        backend: Any = RecordingBackend(runtime.AnthropicBackend())
+        from assistant import claude_code
+        from assistant.settings import get_assistant_settings
+
+        # on the owner's Claude account (ASSISTANT_BACKEND=claude_code) or the API key
+        backend: Any = (claude_code.ClaudeCodeBackend() if get_assistant_settings().backend == "claude_code"
+                        else RecordingBackend(runtime.AnthropicBackend()))
     else:
         backend = runtime.FakeBackend()
         for agent, steps in case.script.items():

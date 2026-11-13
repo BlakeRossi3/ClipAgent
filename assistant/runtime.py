@@ -63,6 +63,10 @@ CANNED = {
     "refusal": "I cannot help with that one, {h}.",
     "error": "Something went wrong on my side, {h}. I have logged it and will look into it.",
     "rounds": "I could not finish that in one go, {h}. Ask me to continue and I will carry on.",
+    "limit": "I've reached your Claude plan's limit for now, {h}. I'll be back {when}.",
+    "turns": "I have used today's allowance of Claude conversations, {h}. I will pick this up tomorrow.",
+    "signin": "I cannot reach Claude at the moment, {h}: the Claude sign-in needs renewing. Open Settings, "
+              "The brain, and press Sign in again.",
 }
 
 
@@ -111,9 +115,11 @@ def cost_of(model: str, usage: "Usage") -> float:
 # ---------------------------------------------------------------------------
 
 class AssistantBudgetExceeded(RuntimeError):
-    def __init__(self, reason: str, message: str, *, spent: float = 0.0, limit: float = 0.0, estimated: float = 0.0):
+    def __init__(self, reason: str, message: str, *, spent: float = 0.0, limit: float = 0.0, estimated: float = 0.0,
+                 when: str = ""):
         super().__init__(message)
-        self.reason = reason            # turn | daily | paused
+        self.reason = reason            # turn | daily | paused | limit (Claude plan) | turns (daily run cap)
+        self.when = when                # "at 4pm" for reason=limit
         self.spent, self.limit, self.estimated = spent, limit, estimated
 
 
@@ -324,9 +330,18 @@ def set_backend(backend: Backend | None) -> None:
 
 
 def get_backend() -> Backend:
+    """Installed backend, else from settings: fake, the owner's Claude subscription via Claude Code
+    (``ASSISTANT_BACKEND=claude_code``), or the Anthropic API."""
     if _backend is not None:
         return _backend
-    return FakeBackend() if get_assistant_settings().fake else AnthropicBackend()
+    s = get_assistant_settings()
+    if s.fake:
+        return FakeBackend()
+    if s.backend == "claude_code":
+        from assistant import claude_code
+
+        return claude_code.ClaudeCodeBackend()  # type: ignore[return-value]
+    return AnthropicBackend()
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +417,9 @@ class _Run:
 def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, parent_id: int | None,
                profile_context: str = "") -> tuple[str, str]:
     """Run one agent to completion. Returns (text, status). Raises AssistantBudgetExceeded."""
+    if getattr(r.backend, "whole_run", False):
+        return _run_agent_whole(r, agent_name, user_content, channel=channel, parent_id=parent_id,
+                                profile_context=profile_context)
     s = r.settings
     spec = r.agents[agent_name]
     model = spec.resolved_model(s)
@@ -475,6 +493,89 @@ def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, par
                                summary=text[:500], tool_calls=[tc.to_dict() for tc in r.ctx.calls[calls_before:]
                                                                if tc.agent == agent_name])
     return text, status
+
+
+def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: str, parent_id: int | None,
+                     profile_context: str = "") -> tuple[str, str]:
+    """Hand the whole agent run (tool loop included) to Claude Code on the owner's subscription.
+
+    Same allowlist, persona, untrusted wrapping, audit rows and polish as the in-process loop: the
+    tools run in ``assistant.mcp_server`` (a child of Claude Code) through ``tools.dispatch``.
+    """
+    from assistant import claude_code
+
+    s = r.settings
+    spec = r.agents[agent_name]
+    is_main = agent_name == "main"
+    allowed = [t.name for t in tools.available(spec.tools)]
+    if is_main and "delegate" in spec.tools and r.depth == 0:
+        allowed.append("delegate")
+    web = s.web_search and "web_search" in spec.tools
+    top_level = r.depth == 0
+    system = persona.system_blocks(channel if top_level else "system", agent=spec, settings=s,
+                                   agents=r.agents, skills=r.skills, profile_context=profile_context)
+    role = "main" if is_main else "sub"
+    run_id = store.record_agent_run(agent_name, user_content[-2000:], model=claude_code.model_in_use(role),
+                                    duration_ms=0, cost_usd=0, status="running", parent_id=parent_id, fake=False)
+    r.run_ids.append(run_id)
+    started, status, text = time.monotonic(), "ok", ""
+    calls: list[tools.ToolCall] = []
+    model = claude_code.model_in_use(role)
+    if hasattr(r.backend, "requests"):
+        r.backend.requests.append(ModelRequest(agent_name, model, system, [{"role": "user", "content": user_content}],
+                                               [{"name": n} for n in allowed], 0,
+                                               s.effort if is_main else s.subagent_effort))
+    try:
+        check_budget(0.0, r.turn, s)   # PAUSE and the dollar caps still apply (subscription runs record $0)
+        mcp = claude_code.McpSpec(agent_name, allowed, channel=r.ctx.channel, source=r.ctx.source,
+                                  message_id=r.ctx.message_id, run_id=run_id)
+        try:
+            res = claude_code.run_prompt(user_content, system="\n\n".join(b for b in system if b), role=role,
+                                         mcp=mcp, effort=s.effort if is_main else s.subagent_effort,
+                                         web_search=web, alert_channel=r.ctx.channel)
+        except claude_code.ClaudeCodeError as exc:
+            calls = list(exc.calls)
+            raise
+        calls = list(res.tool_calls)
+        model = res.model
+        db.insert_llm_usage(model=res.model, purpose=f"{PURPOSE_PREFIX}{agent_name}", tier=TIER,
+                            input_tokens=res.input_tokens, output_tokens=res.output_tokens,
+                            cache_read_tokens=res.cache_read_tokens, cache_write_tokens=res.cache_write_tokens,
+                            cost_usd=0.0, request_id=res.session_id, fake=False)
+        claude_code.record_notional(res.notional_usd)
+        text, status = res.text, res.status
+        if status == "denied":
+            text = CANNED["refusal"].format(h=s.owner_honorific)
+        elif status == "rounds":
+            text = text or CANNED["rounds"].format(h=s.owner_honorific)
+    except AssistantBudgetExceeded:
+        status = "budget"
+        raise
+    except Exception as exc:
+        status = "error"
+        db.log_event("assistant", f"agent {agent_name} failed", level="error", data={"error": repr(exc)[:500]})
+        raise
+    finally:
+        r.ctx.calls.extend(calls)
+        store.finish_agent_run(run_id, status="ok" if status in ("ok", "rounds") else
+                               ("denied" if status == "denied" else status),
+                               duration_ms=int((time.monotonic() - started) * 1000), cost_usd=0.0,
+                               summary=text[:500], tool_calls=[tc.to_dict() for tc in calls])
+    return text, status
+
+
+def delegate_via_mcp(args: dict[str, Any], ctx: tools.ToolContext, parent_id: int | None) -> tuple[str, bool]:
+    """``delegate`` called through the MCP server (Claude Code backend): run the sub-agent with the
+    same rules as in-process delegation; its tool calls land on ``ctx.calls``."""
+    r = _new_run(get_assistant_settings(), ctx)
+    return _delegate(r, args, parent_id)  # type: ignore[arg-type]
+
+
+def _failure_text(exc: Exception, s: AssistantSettings) -> str:
+    kind = getattr(exc, "kind", None)
+    if kind in ("auth", "not_installed"):
+        return CANNED["signin"].format(h=s.owner_honorific)
+    return CANNED["error"].format(h=s.owner_honorific)
 
 
 def _delegate(r: _Run, args: dict[str, Any], parent_id: int) -> tuple[str, bool]:
@@ -551,10 +652,10 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
     try:
         raw, status = _run_agent(r, "main", user_content, channel=channel, parent_id=None)
     except AssistantBudgetExceeded as exc:
-        status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific)
-    except Exception:
+        status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific, when=exc.when or "soon")
+    except Exception as exc:
         log.exception("assistant turn failed")
-        status, raw = "error", CANNED["error"].format(h=s.owner_honorific)
+        status, raw = "error", _failure_text(exc, s)
     text = persona.polish(raw, channel if channel in persona.CHANNEL_LIMITS else "dashboard", settings=s)
     if not text:  # the model produced nothing usable once the rules were applied
         text = f"Understood, {s.owner_honorific}."
@@ -589,10 +690,10 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
     try:
         raw, status = _run_agent(r, agent_name, user_content, channel=out_channel, parent_id=None)
     except AssistantBudgetExceeded as exc:
-        status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific)
-    except Exception:
+        status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific, when=exc.when or "soon")
+    except Exception as exc:
         log.exception("assistant task failed")
-        status, raw = "error", CANNED["error"].format(h=s.owner_honorific)
+        status, raw = "error", _failure_text(exc, s)
     text = persona.polish(raw, out_channel if out_channel in persona.CHANNEL_LIMITS else "system", settings=s)
     if not text:
         status, text = ("error" if status == "ok" else status), CANNED["error"].format(h=s.owner_honorific)

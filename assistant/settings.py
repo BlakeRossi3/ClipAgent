@@ -16,6 +16,8 @@ from typing import Any, Mapping
 
 import config
 
+BACKENDS = ("api", "claude_code")
+
 
 @dataclass(frozen=True, slots=True)
 class AssistantSettings:
@@ -38,6 +40,16 @@ class AssistantSettings:
     fake: bool = True                        # deterministic offline runtime
     timezone: str = "America/New_York"
     dry_run: bool = True
+    # --- backend: "api" (Anthropic API key, per-token billing) or "claude_code" (the owner's Claude
+    # subscription through the Claude Code CLI in headless mode; see assistant/claude_code.py)
+    backend: str = "api"
+    cc_model: str = "opus"                   # Claude Code model alias for the main agent
+    cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
+    cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
+    max_turns_per_day: int = 60              # claude -p runs per local day (protects the plan's limits)
+    cc_timeout_sec: int = 240                # one claude -p run (tool calls included)
+    claude_bin: str = ""                     # explicit path to the claude executable (else PATH / ~/.local/bin)
+    cc_oauth_token: str = ""                 # optional CLAUDE_CODE_OAUTH_TOKEN the owner set himself (never shown)
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -73,6 +85,15 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         fake=config._bool(env.get("FAKE_ASSISTANT"), base.fake_llm),
         timezone=base.timezone,
         dry_run=base.dry_run,
+        backend=s("ASSISTANT_BACKEND", "api").lower() if s("ASSISTANT_BACKEND", "api").lower() in BACKENDS
+        else "api",
+        cc_model=s("ASSISTANT_CC_MODEL", "opus"),
+        cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
+        cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),
+        max_turns_per_day=max(0, int(s("ASSISTANT_MAX_TURNS_PER_DAY", "60"))),
+        cc_timeout_sec=max(30, int(s("ASSISTANT_CC_TIMEOUT_SEC", "240"))),
+        claude_bin=s("ASSISTANT_CLAUDE_BIN", ""),
+        cc_oauth_token=s("CLAUDE_CODE_OAUTH_TOKEN", ""),
     )
 
 
