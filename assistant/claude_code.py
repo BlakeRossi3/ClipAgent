@@ -768,7 +768,7 @@ class SignIn:
     :meth:`snapshot` is what the wizard polls."""
 
     LOGIN_TIMEOUT = 600.0
-    INSTALL_TIMEOUT = 900.0
+    INSTALL_TIMEOUT = 300.0
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -841,7 +841,10 @@ class SignIn:
         exe = find_claude()
         if exe is None:
             self._set("installing", "Installing Claude Code (about a minute; no admin rights needed)...")
-            code = self._stream(install_argv(), self.INSTALL_TIMEOUT, stdin=False)
+            # The official installer can linger (or open its own sign-in) after claude.exe is in
+            # place, so move on as soon as the executable appears instead of waiting for it to exit.
+            code = self._stream(install_argv(), self.INSTALL_TIMEOUT, stdin=False,
+                                stop_when=lambda: find_claude() is not None)
             if self._cancel.is_set():
                 return
             exe = find_claude()
@@ -887,7 +890,8 @@ class SignIn:
         self._set("done", f"Signed in with your Claude account. {get_assistant_settings().name} is using "
                           f"{res.model}.")
 
-    def _stream(self, argv: list[str], timeout: float, *, stdin: bool) -> int | None:
+    def _stream(self, argv: list[str], timeout: float, *, stdin: bool,
+                stop_when: Callable[[], bool] | None = None) -> int | None:
         """Run ``argv``, collecting output into the log (and the sign-in URL). Returns the exit code
         (None on timeout/cancel)."""
         try:
@@ -921,7 +925,17 @@ class SignIn:
         t = threading.Thread(target=pump, daemon=True)
         t.start()
         deadline = time.monotonic() + timeout
+        next_check = time.monotonic() + 3
         while p.poll() is None:
+            if stop_when is not None and time.monotonic() >= next_check:
+                next_check = time.monotonic() + 3
+                if stop_when():
+                    try:
+                        p.terminate()
+                    except OSError:
+                        pass
+                    t.join(timeout=2)
+                    return 0
             if self._cancel.is_set() or time.monotonic() > deadline:
                 try:
                     p.terminate()
