@@ -37,7 +37,7 @@
     <p class="jv-cap-you" data-jv-you></p>
     <p class="jv-cap-them" data-jv-them>{{ h.hello.salute }}</p>
   </div>
-  <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Hold the ring to talk · or hold <kbd>Space</kbd>{% else %}Voice opens once I am switched on.{% endif %}</p>
+  <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Hold the ring to talk · or hold <kbd>Space</kbd>{% elif a.reason %}{{ a.reason }}{% else %}Voice opens once I am switched on.{% endif %}</p>
 
   <div class="jv-controls">
     <label class="jv-toggle"><input type="checkbox" data-jv-always {% if not a.can_chat %}disabled{% endif %}><span>Always listen in this tab</span></label>
