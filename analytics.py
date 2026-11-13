@@ -284,7 +284,7 @@ def _videos_list(youtube: Any, ids: list[str], part: str) -> dict[str, dict[str,
     out: dict[str, dict[str, Any]] = {}
     for batch in _chunks(ids, 50):
         try:
-            resp = youtube.videos().list(part=part, id=",".join(batch), maxResults=50).execute()
+            resp = youtube.videos().list(part=part, id=",".join(batch)).execute()  # maxResults is not allowed with id
         except HttpError as exc:
             _report_failed(f"videos.list({part})", exc, videos=len(batch))
             return None

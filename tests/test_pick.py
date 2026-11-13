@@ -6,7 +6,6 @@ import budget
 import db
 import llm
 import pick
-import strategy as strategy_mod
 
 # ---------------------------------------------------------------------------
 # helpers
