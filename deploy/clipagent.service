@@ -1,0 +1,38 @@
+# systemd unit for the Auto Shorts Agent (scheduler + web server in one process).
+#
+# Install (as root), assuming the repo lives in /opt/clipagent and is owned by user "clipagent":
+#   cp deploy/clipagent.service /etc/systemd/system/clipagent.service
+#   systemctl daemon-reload && systemctl enable --now clipagent
+#   journalctl -u clipagent -f
+#
+# The process binds 127.0.0.1:8000; put a TLS reverse proxy in front (deploy/README.md).
+[Unit]
+Description=Auto Shorts Agent (scheduler + Twilio webhooks + dashboard)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=clipagent
+Group=clipagent
+WorkingDirectory=/opt/clipagent
+ExecStart=/opt/clipagent/.venv/bin/python main.py schedule --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=30
+# SIGTERM stops the web server and the scheduler; a render in progress is abandoned and
+# redone on the next run (all stages resume from the database).
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Keep ffmpeg / whisper from starving sshd on a small box.
+Nice=5
+# Hardening: the agent only writes inside its own directory (data/, strategy.json).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/clipagent
+# faster-whisper caches its model under the user's home by default; point it into the repo.
+Environment=HF_HOME=/opt/clipagent/data/hf-cache
+
+[Install]
+WantedBy=multi-user.target

@@ -905,7 +905,8 @@ CLIP_SORTS = {
 }
 
 _CLIP_SQL = """
-WITH lu AS (SELECT clip_id, MAX(id) AS uid FROM uploads GROUP BY clip_id),
+WITH lu AS (SELECT clip_id, COALESCE(MAX(CASE WHEN status != 'superseded' THEN id END), MAX(id)) AS uid
+            FROM uploads GROUP BY clip_id),
 st AS (
     SELECT youtube_video_id AS vid, SUM(views) AS views, SUM(likes) AS likes,
            SUM(subscribers_gained) - SUM(subscribers_lost) AS subs, SUM(watch_minutes) AS wm,
@@ -922,9 +923,11 @@ SELECT c.id, c.title, c.status, c.status_reason, c.haiku_score, c.start_sec, c.e
        (c.end_sec - c.start_sec) AS length, c.experiment_id, c.experiment_variant, c.strategy_version,
        c.created_at, c.hook_text, s.id AS source_id, s.topic, s.source_type, s.channel,
        u.id AS upload_id, u.status AS upload_status, u.youtube_video_id, u.dry_run, u.copyright_claim,
-       u.publish_at, u.uploaded_at, u.error AS upload_error,
+       u.publish_at, u.uploaded_at, u.error AS upload_error, u.youtube_status,
+       u.lifetime_views, u.lifetime_fetched_at, COALESCE(st.views, 0) AS analytics_views,
        COALESCE(u.publish_at, u.uploaded_at) AS published_at,
-       COALESCE(st.views, 0) AS views, st.pct AS pct, st.avd AS avd, COALESCE(st.likes, 0) AS likes,
+       MAX(COALESCE(st.views, 0), COALESCE(u.lifetime_views, 0)) AS views, st.pct AS pct, st.avd AS avd,
+       MAX(COALESCE(st.likes, 0), COALESCE(u.lifetime_likes, 0)) AS likes,
        COALESCE(st.subs, 0) AS subs, COALESCE(st.wm, 0) AS watch_minutes,
        COALESCE(cd.c, 0) + COALESCE(cs.c, 0) / COALESCE(nc.n, 1) AS cost
 FROM clips c
@@ -1855,7 +1858,11 @@ def clip_detail(conn: sqlite3.Connection, clip_id: int) -> dict[str, Any] | None
     return {"clip": clip, "source": source, "uploads": uploads, "live": live, "stats": stats, "row": row,
             "charts": charts, "experiment": exp, "strategy_version": sv, "costs": clip_costs(conn, clip_id, clip.source_id),
             "events": events, "siblings": siblings, "hook_form": hook_form(clip.hook_text), "retention": retention,
-            "totals": {"views": sum(s.views for s in stats), "likes": sum(s.likes for s in stats),
+            "totals": {"views": max(sum(s.views for s in stats), getattr(live, "lifetime_views", None) or 0),
+                       "analytics_views": sum(s.views for s in stats),
+                       "lifetime_views": getattr(live, "lifetime_views", None),
+                       "lifetime_fetched_at": getattr(live, "lifetime_fetched_at", None),
+                       "likes": max(sum(s.likes for s in stats), getattr(live, "lifetime_likes", None) or 0),
                        "comments": sum(s.comments for s in stats), "shares": sum(s.shares for s in stats),
                        "subs": sum(s.subscribers_gained - s.subscribers_lost for s in stats),
                        "watch_minutes": sum(s.watch_minutes for s in stats)}}
@@ -2026,7 +2033,12 @@ def decisions_page(request: Request) -> Response:
         notes = db.list_notifications(nstatus, limit=200, conn=c)
         if nstatus == "queued":
             notes = list(reversed(notes))
-        versions = {v.decision_id: v.version for v in db.list_strategy_versions(limit=500, conn=c) if v.decision_id}
+        versions = {}
+        for d in history:
+            if d.status == "approved":
+                sv = db.strategy_version_for_decision(d.id, conn=c)
+                if sv is not None:
+                    versions[d.id] = sv.version
     return _render(request, "decisions.html", {"pending": pending, "history": history, "notes": notes,
                                                "nstatus": nstatus or "", "nstatuses": db.NOTIFICATION_STATUSES,
                                                "versions": versions}, nav="decisions")

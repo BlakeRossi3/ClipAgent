@@ -59,7 +59,7 @@ saying "Reply YES <id> or NO <id>".
 
 ## 4. Expose the server over HTTPS
 
-Twilio must reach `server.py` (`python main.py serve`, port 8000 by default) at a public
+Twilio must reach `server.py` (`python main.py schedule` or `serve`, port 8000 by default) at a public
 HTTPS URL. Pick one of these:
 
 - **Reverse proxy on a server** with a domain. Caddy is the simplest because it gets TLS

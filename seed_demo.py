@@ -323,6 +323,9 @@ def _finish(sim: Sim, db, clock: Clock) -> None:
         db.set_source_status(sid, "failed", "yt-dlp: Unable to download webpage: HTTP Error 429: Too Many Requests")
         db.log_event("fetch", f"source {sid} failed: HTTP Error 429 Too Many Requests", level="error",
                      data={"source_id": sid})
+    if hasattr(db, "set_upload_lifetime"):
+        clock.now = sim.real_now - timedelta(minutes=55)
+        _lifetime_counters(sim, db, sim.real_now.astimezone(sim.tz).date())
     clock.now = sim.real_now - timedelta(minutes=40)
     new = [x for x in (_scout_one(sim, db, sim.real_now.astimezone(sim.tz).date()) for _ in range(3)) if x]
     db.log_event("scout", f"scout found {len(new)} new candidates", data={"new": len(new)})
@@ -697,7 +700,7 @@ def _analytics(sim: Sim, db, day: date, i: int, plan: dict[str, int]) -> None:
                            avg_view_duration_sec=round(avd, 1), avg_view_pct=round(pct, 1),
                            likes=int(views * p.like_rate), comments=int(views * 0.0021), shares=int(views * 0.0032),
                            subscribers_gained=gained, subscribers_lost=int(round(gained * rng.uniform(0.05, 0.15))),
-                           retention=p.retention, conn=c)
+                           retention=None if hasattr(db, "upsert_retention") else p.retention, conn=c)
             rows += 1
             if hasattr(db, "upsert_retention"):  # schema v2: canonical per-video curve
                 db.upsert_retention(vid, p.retention, start_day=pub, end_day=target, conn=c)
@@ -716,6 +719,26 @@ def _analytics(sim: Sim, db, day: date, i: int, plan: dict[str, int]) -> None:
             db.log_event("analytics", f"copyright claim detected on video {vid}", level="warning", data={"video_id": vid})
             db.add_notification("error", "Heads up: YouTube flagged a copyright claim on one Short. Check the dashboard.",
                                 "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26))
+
+
+def _lifetime_counters(sim: Sim, db, today: date) -> None:
+    """Data API lifetime counters (same-day signal, ahead of the 2-day Analytics lag) + YouTube status."""
+    with db.transaction() as c:
+        totals = {r["v"]: (r["views"], r["likes"], r["comments"]) for r in c.execute(
+            "SELECT youtube_video_id AS v, SUM(views) AS views, SUM(likes) AS likes, SUM(comments) AS comments "
+            "FROM stats GROUP BY youtube_video_id")}
+        for vid, pub in sim.published.items():
+            p = sim.perf[vid]
+            views, likes, comments = totals.get(vid, (0, 0, 0))
+            first_unreported = max(pub, today - timedelta(days=1))
+            extra = sum(p.total * _day_share((d - pub).days) / _SHARE_NORM
+                        for d in (first_unreported + timedelta(days=n) for n in range((today - first_unreported).days + 1)))
+            extra *= 0.5  # today is only partly over
+            if pub >= today:
+                extra = 0.0  # scheduled for later today: not public yet
+            db.set_upload_lifetime(vid, views=int(views + extra), likes=int(likes + extra * p.like_rate),
+                                   comments=int(comments + extra * 0.002), conn=c)
+            db.set_youtube_status(vid, "processed · public" if pub < today else "processed · scheduled", conn=c)
 
 
 def _length_of(sim: Sim, vid: str) -> float:

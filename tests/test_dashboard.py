@@ -366,6 +366,17 @@ def test_revenue_tiles_only_with_revenue_data(client, clock, make_upload):
     assert s["kpis"]["rpm"]["value"] == pytest.approx(2.5)
 
 
+def test_live_counts_fill_the_analytics_lag(client, clock, make_upload):
+    uid = make_upload(video_id="vidLIVE0001")
+    if not hasattr(db, "set_upload_lifetime"):
+        pytest.skip("schema without lifetime counters")
+    db.set_upload_lifetime("vidLIVE0001", views=4321, likes=99, comments=3)
+    clips = client.get("/dashboard/api/clips").json()["clips"]
+    assert clips[0]["views"] == 4321 and clips[0]["likes"] == 99
+    clip_id = db.get_upload(uid).clip_id
+    assert "4.3K" in client.get(f"/dashboard/clips/{clip_id}").text
+
+
 # --------------------------------------------------------------------------- helpers
 
 

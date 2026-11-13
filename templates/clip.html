@@ -21,7 +21,7 @@
 {% endif %}
 
 <div class="kpis kpis-compact">
-  <div class="tile"><p class="tile-label">Views</p><p class="tile-value">{{ totals.views | compact }}</p></div>
+  <div class="tile"><p class="tile-label">Views</p><p class="tile-value">{{ totals.views | compact }}</p>{% if totals.lifetime_views is not none %}<p class="tile-delta is-flat"><span class="muted">live count {{ totals.lifetime_fetched_at | ago }}</span></p>{% endif %}</div>
   <div class="tile"><p class="tile-label">Avg view %</p><p class="tile-value">{{ row.pct | pct if row else "—" }}</p></div>
   <div class="tile"><p class="tile-label">Avg view duration</p><p class="tile-value">{{ row.avd | duration if row else "—" }}</p></div>
   <div class="tile"><p class="tile-label">Likes</p><p class="tile-value">{{ totals.likes | compact }}</p></div>
@@ -80,8 +80,8 @@
       <tbody>
       {% for u in uploads %}
       <tr>
-        <td>{{ m.pill(u.status ~ (" (dry run)" if u.dry_run else ""), {"uploaded": "good", "failed": "critical", "removed": "serious"}.get(u.status, "neutral")) }}{% if u.error %}<div class="error-text">{{ u.error }}</div>{% endif %}</td>
-        <td class="break">{{ u.youtube_video_id or "—" }}</td>
+        <td>{{ m.pill(u.status ~ (" (dry run)" if u.dry_run else ""), {"uploaded": "good", "failed": "critical", "removed": "serious", "superseded": "neutral"}.get(u.status, "neutral")) }}{% if u.error %}<div class="error-text">{{ u.error }}</div>{% endif %}</td>
+        <td class="break">{{ u.youtube_video_id or "—" }}{% if u.youtube_status %}<div class="muted small">YouTube: {{ u.youtube_status }}</div>{% endif %}{% if u.lifetime_views is not none %}<div class="muted small">{{ u.lifetime_views | compact }} views (live count)</div>{% endif %}</td>
         <td class="nowrap">{{ u.publish_at | dt }}</td>
         <td class="nowrap">{{ u.uploaded_at | dt }}</td>
       </tr>

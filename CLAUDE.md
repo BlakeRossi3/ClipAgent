@@ -21,19 +21,21 @@ approval before any major change.
 | `strategy.py` + `strategy.json` | strategy schema, validation, versioned saves, major-change diff, publisher allowlist | **done** |
 | `budget.py` | pricing, usage recording, daily cap | **done** |
 | `llm.py` | the ONLY Anthropic SDK user; fake mode | **done** |
-| `scout.py` | find candidate sources -> `sources` | planned |
-| `fetch.py` | yt-dlp download + licence check | planned |
-| `transcribe.py` | faster-whisper, word timestamps | planned |
-| `pick.py` | windows -> Haiku scores -> Sonnet cuts -> `clips` | planned |
-| `edit.py` | ffmpeg 9:16 render, captions, hook, credit | planned |
-| `upload.py` | YouTube Data API v3 upload + scheduling | planned |
-| `analytics.py` | daily YouTube Analytics pull -> `stats` | planned |
-| `strategist.py` | weekly Sonnet review -> new strategy | planned |
-| `notify.py` | Twilio voice/SMS + webhook `router` | planned |
-| `dashboard.py` | FastAPI `router` + `templates/` | planned |
-| `server.py` | FastAPI `app` (notify + dashboard routers) | planned |
-| `main.py` | APScheduler jobs + CLI | planned |
-| `tests/` | pytest; `conftest.py` fixtures are shared | |
+| `scout.py` | find candidate sources -> `sources` | **done** |
+| `fetch.py` | yt-dlp download + licence check | **done** |
+| `transcribe.py` | faster-whisper, word timestamps | **done** |
+| `pick.py` | windows -> Haiku scores -> Sonnet cuts -> `clips` | **done** |
+| `edit.py` | ffmpeg 9:16 render, captions, hook, credit | **done** |
+| `upload.py` | YouTube Data API v3 upload + scheduling | **done** |
+| `youtube_auth.py` | OAuth token, service builders, Data API quota tally | **done** |
+| `analytics.py` | daily YouTube Analytics pull -> `stats` | **done** |
+| `strategist.py` | weekly Sonnet review -> new strategy | **done** |
+| `notify.py` | Twilio voice/SMS + webhook `router` | **done** |
+| `dashboard.py` | FastAPI `router` + `templates/` | **done** |
+| `server.py` | FastAPI `app` (notify + dashboard routers) | **done** |
+| `main.py` | APScheduler jobs + CLI | **done** |
+| `tests/` | pytest; `conftest.py` fixtures are shared; `test_e2e.py` runs the real pipeline with ffmpeg | |
+| `deploy/` | systemd unit, reverse proxy + backup notes | |
 
 ## Running
 
@@ -42,7 +44,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp config.env.example config.env   # then fill in; config.env is gitignored
 .venv/bin/python -m pytest -q      # all tests offline, zero tokens
 ```
-Python >= 3.12. External binaries used at runtime: `ffmpeg`/`ffprobe`.
+Python >= 3.12. External binaries used at runtime: `ffmpeg`/`ffprobe` (with libass + libx264), `fc-list`.
+Owner-facing docs: `README.md` (install, go-live checklist, unverified-live list), `deploy/README.md`.
 
 ## Conventions (mandatory)
 
@@ -58,7 +61,7 @@ Python >= 3.12. External binaries used at runtime: `ffmpeg`/`ffprobe`.
   (see `db.SOURCE_TRANSITIONS`, `db.CLIP_TRANSITIONS`; `force=True` only for manual repair):
   - source: `candidate -> fetched -> transcribed -> picked -> done`; any stage -> `rejected` (licence/allowlist, with reason) or `failed` (with reason); `transcribed -> done` when nothing worth clipping; `failed -> candidate|fetched|transcribed` to retry; `rejected -> candidate` = manual re-approval.
   - clip: `picked -> rendered -> [scheduled] -> uploaded`, plus `failed` / `skipped`. `scheduled` = rendered and holding a publish slot but not yet sent to YouTube (optional).
-  - upload: `queued -> uploaded | failed`, `removed` (taken down).
+  - upload: `queued -> uploaded | failed`, `removed` (taken down), `superseded` (a dry-run upload replaced via `main.py requeue-dry-run`; its fake id is cleared).
   - decision: `pending -> approved | rejected | expired` (first answer wins).
 - **No raw SQL outside `db.py`** when a helper exists. If you need a new query,
   add a typed helper to `db.py` (with a test) rather than inlining SQL. Schema
@@ -116,20 +119,31 @@ Python >= 3.12. External binaries used at runtime: `ffmpeg`/`ffprobe`.
   max_uploads_per_day=6, dry_run=True, youtube_client_secrets, youtube_token_path,
   youtube_default_privacy="private", youtube_category_id="28", twilio_account_sid,
   twilio_auth_token, twilio_from_number, owner_phone, owner_name="Blake",
-  public_base_url, dashboard_token, timezone="America/New_York", whisper_model="small.en",
-  whisper_device="auto", whisper_compute_type="int8", ffmpeg_bin="ffmpeg", log_level`.
+  public_base_url, dashboard_token, quiet_hours_start="22:00", quiet_hours_end="08:00",
+  urgent_call_dedup_hours=6.0, twilio_voice, twilio_language, youtube_daily_quota=10000,
+  youtube_api_key, youtube_monetary_analytics=False, scout_cc_backend="ytdlp",
+  scout_cc_api_max_searches_per_day=2, timezone="America/New_York", whisper_model="small.en",
+  whisper_device="auto", whisper_compute_type="int8", ffmpeg_bin="ffmpeg", log_level,
+  source_media_retention_days=3, render_retention_days=14`.
+- Never read `os.environ` in modules: add a `Settings` field (+ `config.env.example` line,
+  + conftest scrub if it has a new prefix) instead.
 - Env vars are documented in `config.env.example`. `CLIPAGENT_DATA_DIR`,
   `CLIPAGENT_DB_PATH`, `CLIPAGENT_MEDIA_DIR`, `CLIPAGENT_STRATEGY_PATH`,
   `CLIPAGENT_CONFIG_FILE` relocate everything (tests use them).
 
 ### db.py
 Connections: `connect(path=None)` (WAL, FKs, `sqlite3.Row`, auto-migrates on first use),
-`init_db(path=None) -> schema_version`, `transaction(conn=None)` context manager.
+`init_db(path=None) -> schema_version`, `schema_version(path=None)` (read-only, 0 = never
+initialised), `transaction(conn=None)` context manager. Schema v2 (in `MIGRATIONS`, upgrades a v1
+DB in place): uploads gained `lifetime_views/likes/comments`, `lifetime_fetched_at`,
+`youtube_status` and the `superseded` status; stats gained `estimated_revenue`, `cpm`
+(NULL unless the monetary scope is granted); new `retention` table. Beware: `_split_sql`
+splits on `;`, so never put a `;` inside a SQL comment.
 Every helper takes keyword `conn=` to join a caller's transaction.
 Exceptions: `NotFound`, `InvalidTransition`. Constants: `*_STATUSES`, `*_TRANSITIONS`,
 `DECISION_KINDS`, `RESOLVED_VIA`, `NOTIFICATION_CHANNELS`, `UPLOAD_QUOTA_UNITS=1600`.
 Row dataclasses (JSON columns decoded, 0/1 -> bool): `Source, Clip, Upload, Stat,
-ChannelStat, Decision, LLMUsageRow, StrategyVersion, Notification, Event` (`.to_dict()`).
+ChannelStat, Decision, LLMUsageRow, StrategyVersion, Notification, Event, Retention` (`.to_dict()`).
 
 Time: `utcnow()`, `now_iso()`, `to_iso(dt)`, `parse_iso(s)`, `local_tz()`, `local_now()`,
 `local_today()`, `local_day_bounds(day=None)`, `local_date_of(iso)`.
@@ -137,15 +151,15 @@ Time: `utcnow()`, `now_iso()`, `to_iso(dt)`, `parse_iso(s)`, `local_tz()`, `loca
 | Table | Helpers |
 |---|---|
 | sources | `add_source(url, source_type, *, platform, external_id, channel, channel_id, title, description, duration_sec, published_at, topic, licence, licence_evidence, metadata) -> id or None if URL known`, `get_source`, `require_source`, `get_source_by_url`, `list_sources(status=None\|str\|list, *, source_type, limit)` (oldest first), `update_source(id, **cols)` (non-status cols), `set_source_status(id, status, reason=None, *, force=False)`, `count_sources_by_status()` |
-| clips | `add_clip(source_id, start_sec, end_sec, *, title, description, hashtags, hook_text, credit_text, haiku_score, sonnet_rationale, strategy_version, experiment_id, experiment_variant) -> id` (copies licence+url), `get_clip`, `require_clip`, `list_clips(status, *, source_id, limit)`, `update_clip(id, **cols)`, `set_clip_status(id, status, reason=None, *, force=False)` |
-| uploads | `add_upload(clip_id, *, privacy, publish_at=None, dry_run=False) -> id` (queued), `mark_upload_succeeded(id, youtube_video_id, *, quota_units=1600)`, `mark_upload_failed(id, error, *, quota_units=0)`, `update_upload(id, **cols)`, `get_upload`, `get_upload_by_video`, `list_uploads(status, *, clip_id, include_dry_run, limit)` (newest first), `count_uploads_on(day=None)` (status uploaded by local `uploaded_at` day, dry runs included - **this is what the cap counts**), `quota_used_on(day)`, `publish_times_between(start_iso, end_iso)`, `live_video_ids()` (non-dry-run), `set_copyright_claim(video_id, claimed=True)` |
-| stats / channel_stats | `upsert_stat(video_id, day, *, views, watch_minutes, avg_view_duration_sec, avg_view_pct, likes, comments, shares, subscribers_gained, subscribers_lost, retention)`, `get_stats(video_id)`, `stats_between(start_day, end_day)`, `upsert_channel_stat(day, *, subscribers, total_views, video_count)`, `list_channel_stats(limit=90)`, `clip_performance(since_day=None) -> list[dict]` (per uploaded clip: metadata + summed stats; used by strategist & dashboard) |
+| clips | `add_clip(source_id, start_sec, end_sec, *, title, description, hashtags, hook_text, credit_text, haiku_score, sonnet_rationale, strategy_version, experiment_id, experiment_variant) -> id` (copies licence+url), `get_clip`, `require_clip`, `list_clips(status, *, source_id, limit)`, `update_clip(id, **cols)`, `set_clip_status(id, status, reason=None, *, force=False)`, `count_clips(*, experiment_id, variant, source_id, status) -> int` |
+| uploads | `add_upload(clip_id, *, privacy, publish_at=None, dry_run=False) -> id` (queued), `mark_upload_succeeded(id, youtube_video_id, *, quota_units=1600)`, `mark_upload_failed(id, error, *, quota_units=0)`, `update_upload(id, **cols)`, `get_upload`, `get_upload_by_video`, `list_uploads(status, *, clip_id, include_dry_run, limit)` (newest first), `count_uploads_on(day=None)` (status uploaded by local `uploaded_at` day, dry runs included - **this is what the cap counts**), `quota_used_on(day)`, `publish_times_between(start_iso, end_iso)`, `live_video_ids()` (non-dry-run), `set_copyright_claim(video_id, claimed=True)`, `set_upload_lifetime(video_id, *, views, likes, comments)`, `set_youtube_status(video_id, status)` |
+| stats / channel_stats / retention | `upsert_stat(video_id, day, *, views, watch_minutes, avg_view_duration_sec, avg_view_pct, likes, comments, shares, subscribers_gained, subscribers_lost, retention, estimated_revenue, cpm)` (`retention` column = legacy copy on the newest day only), `get_stats(video_id)`, `stats_between(start_day, end_day)`, `upsert_retention(video_id, curve, *, start_day, end_day)`, `get_retention(video_id) -> Retention`, `upsert_channel_stat(day, *, subscribers, total_views, video_count)`, `list_channel_stats(limit=90)`, `clip_performance(since_day=None, until_day=None) -> list[dict]` - one row per real uploaded/removed clip; **the period filters stats days, not upload date** (a clip uploaded earlier still reports views earned in the period; new clips with no data appear with zeros). Extra keys: `topic`, `avg_view_duration_sec`, `upload_status`, `youtube_status`, `estimated_revenue`, `total_views` (all days), `lifetime_views/likes/comments` |
 | decisions | `add_decision(kind, summary, payload=None, *, expires_at=None) -> id`, `get_decision`, `list_decisions(status=None, *, limit)`, `resolve_decision(id, status, *, via, note=None) -> bool`, `set_decision_call_sid`, `get_decision_by_call_sid`, `expire_decisions() -> n` |
 | llm_usage | `insert_llm_usage(...)` (use `budget.record_usage`), `llm_spend_between`, `llm_usage_summary(day=None)`, `list_llm_usage(limit)` |
-| strategy_versions | `add_strategy_version(version, json, *, report, decision_id)` (use `strategy.save_strategy`), `get_strategy_version`, `latest_strategy_version`, `list_strategy_versions(limit)` |
-| notifications | `add_notification(kind, body, channel, *, status="queued", sid, error, decision_id) -> id`, `update_notification(id, *, status, sid, error)`, `list_notifications(status=None, *, limit)` (queued = oldest first) |
+| strategy_versions | `add_strategy_version(version, json, *, report, decision_id)` (use `strategy.save_strategy`), `get_strategy_version`, `latest_strategy_version`, `list_strategy_versions(limit)`, `strategy_version_for_decision(decision_id)` |
+| notifications | `add_notification(kind, body, channel, *, status="queued", sid, error, decision_id) -> id`, `update_notification(id, *, status, sid, error)`, `list_notifications(status=None, *, limit)` (queued = oldest first), `get_notification(id)`, `get_notification_by_sid(sid)` |
 | events | `log_event(module, message, *, level="info", data=None)`, `list_events(*, limit, level, module, since)` (newest first) |
-| kv | `kv_get(key, default)`, `kv_set`, `kv_set_if_absent -> bool`, `kv_delete` (pause switch, once-per-day flags, scout cursors) |
+| kv | `kv_get(key, default)`, `kv_set`, `kv_set_if_absent -> bool`, `kv_incr(key, by=1) -> int` (atomic counter), `kv_delete` (pause switch, once-per-day flags, scout cursors, quota tally, retry counts) |
 
 ### strategy.py
 - `load_strategy(path=None) -> Strategy` (a validated `dict` subclass; `.version`, `.topics`,
@@ -155,14 +169,23 @@ Time: `utcnow()`, `now_iso()`, `to_iso(dt)`, `parse_iso(s)`, `local_tz()`, `loca
   version = max(file, DB)+1, stamps `updated_at`, atomic write, inserts `strategy_versions`.
 - `record_initial_version()` - seed `strategy_versions` with the shipped file (main `init`).
 - `diff_major_changes(old, new) -> list[MajorChange(kind, summary, detail)]`; kinds:
-  `new_niche` (niche text changed or topic area added), `new_source_type`, `budget_increase`.
+  `new_niche` (niche text changed or topic area added), `new_source_type`, `budget_increase`,
+  `strategy_change` (any allowlist edit, blocklist addition/removal, source type removed).
+  The strategist adds only hard refusals on top (`strategist.licence_problems`).
+- `validate_strategy` rejects `any_channel: true` outside `ANY_CHANNEL_SOURCE_TYPES` ({cc_by_youtube}).
+- Optional key `max_windows_per_source` (default 40, `Strategy.max_windows_per_source`): Haiku
+  windows per source; pick falls back to kv `pick:max_windows` only when the key is absent.
 - `upload_cap(strategy=None) -> int` = min(strategy.uploads_per_day, MAX_UPLOADS_PER_DAY).
 - `active_experiment(strategy, day=None)`, `assign_variant(strategy, key, day=None) -> (experiment_id, "control"|"variant") | (None, None)` (even key = control).
 - `is_publisher_allowed(strategy, source_type, *, channel, channel_id, handle, url) -> (ok, reason)` -
   shared allowlist/blocklist rule for scout (pre-filter) and fetch (authoritative).
 - Schema documented in the module docstring. `caption_style` keys: `font, font_size,
   primary_color, highlight_color, outline_color, outline_px, max_words_per_line,
-  position (top|center|lower_third), uppercase, animation (word_pop|karaoke|none)`.
+  position (top|center|lower_third), uppercase, animation (word_pop|karaoke|none),
+  framing (auto|center_crop|blur_fill|fit, optional)` - enum values are validated.
+- Caption font: `edit.resolve_font` tries the strategy font, then `edit.FONT_FALLBACKS`
+  (Montserrat ExtraBold/Black, Montserrat, Anton, Inter Black, ..., DejaVu Sans); TTF/OTF files
+  in `assets/fonts/` are used by ffmpeg and count as installed.
 
 ### budget.py
 - `PRICES: dict[model, ModelPrice]`, `price_for(model)`, `cost_usd(model, in, out, cache_read=0, cache_write=0)`,
@@ -188,8 +211,14 @@ Usage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 - `purpose` is `"<module>.<step>"`, e.g. `pick.score_window`, `pick.finalize`, `strategist.review`.
 - `json_schema`: plain JSON schema; `minimum/maximum/maxLength/maxItems...` are stripped for
   the API and validated client-side; every object becomes `additionalProperties: false`.
-  `res.data` is the parsed, validated object. Errors: `LLMOutputError`, `LLMRefusal`,
-  `LLMError`, `budget.BudgetExceeded`.
+  `res.data` is the parsed, validated object. Errors: `LLMOutputError` (`.text`, `.truncated`),
+  `LLMRefusal`, `LLMError`, `budget.BudgetExceeded`; every `LLMError` carries `.cost_usd`
+  (already recorded) and `.attempts`.
+- **A client-side constraint violation (`maxLength`, `maxItems`, `minimum`...) triggers a paid
+  retry of the whole call.** Leave length/count limits out of schemas and trim in code (pick and
+  strategist do).
+- Truncation (`stop_reason == "max_tokens"`): the retry doubles `max_tokens` (cap 16384) only if
+  that worst case fits the remaining budget; otherwise `LLMOutputError(truncated=True)` at once.
 - Thinking is adaptive (model default); `effort` defaults: haiku `low`, sonnet `medium`.
   Thinking tokens bill as output - leave headroom (Haiku scoring: ~1024; Sonnet: ~4096).
 - Sonnet calls use the beta endpoint with `fallbacks="default"` (server-side refusal fallback).
@@ -207,7 +236,7 @@ credentials scrubbed, socket guard. Opt-in: `settings`, `strategy`, `fake_llm`
 `make_source(status="candidate", **cols) -> id`, `make_clip(source_id=None, status="picked", **cols) -> id`,
 `make_upload(clip_id=None, *, video_id, dry_run, publish_at, succeeded=True) -> id`.
 
-## Planned module interfaces (build exactly these; extend, don't rename)
+## Module interfaces (implemented; extend, don't rename)
 
 Files and paths: downloads `settings.downloads_dir / f"{source_id}" /` (`video.mp4`, `info.json`),
 transcripts `settings.transcripts_dir / f"{source_id}.json"`, renders `settings.renders_dir / f"{clip_id}.mp4"`.
@@ -360,18 +389,61 @@ router: fastapi.APIRouter   # prefix "/dashboard", Jinja2 templates in templates
 def create_app() -> fastapi.FastAPI    # includes notify.router + dashboard.router, GET /healthz, db.init_db() in lifespan
 app = create_app()
 ```
+The dashboard is imported defensively (warning logged, app still serves `/twilio/*` if it fails);
+`GET /` redirects to `/dashboard/` (or `/healthz` without a dashboard); `/healthz` returns
+`{"status", "schema_version", "dashboard"}`.
 
 ### main.py
 ```python
-def process_source(source_id: int) -> list[int]        # fetch -> transcribe -> pick -> render (resumes from current status)
-def upload_ready(limit: int | None = None) -> list[int] # upload rendered clips into free slots, respecting the cap
-def run_once(max_sources: int = 3) -> dict              # scout + process + upload; returns counters
-def manual(url: str, source_type: str | None = None, *, upload: bool = True) -> list[int]
-def build_scheduler() -> BackgroundScheduler            # jobs below, timezone = settings.timezone
+def process_source(source_id: int, *, allow_llm: bool = True, strategy=None) -> list[int]  # rendered clip ids
+def render_clips(source_id: int | None = None, strategy=None) -> list[int]
+def retry_failed_sources() -> list[int]          # failed -> resume stage, max MAX_SOURCE_RETRIES=2, >= 50 min apart
+def process_pending(max_sources: int = 3) -> dict  # the hourly "process" job
+def upload_ready(limit: int | None = None) -> list[int]   # upload ids
+def run_once(max_sources: int = 3) -> dict        # scout (if queue short) + process_pending + upload_ready
+def manual(url: str, source_type: str | None = None, *, upload: bool = True) -> list[int]  # clip ids
+def infer_source_type(url, strategy) -> str      # first enabled type whose licence check passes
+def requeue_dry_run() -> dict                    # DRY_RUN -> live: dry-run uploads superseded, clips back to rendered/picked
+def cleanup() -> dict                            # disk hygiene (never deletes DB rows, info.json, transcripts)
+def run_job(name, fn)                            # job wrapper: kv main:job:<name>, error event, one job_error SMS/day
+def build_scheduler() -> BackgroundScheduler     # coalesce, max_instances=1, misfire grace 30 min
+def doctor_checks(*, network=False) -> list[Check];  def status_text() -> str
 def main(argv: list[str] | None = None) -> int
 ```
+Error policy: `LicenceRejected` permanent; `FetchError`/`TranscribeError`/`PickError` per source
+(bounded retry); `RenderError` per clip (`MAX_CLIP_RETRIES=2`); `BudgetExceeded` stops LLM work
+for the run (source stays `transcribed`) but rendering/uploading go on; `upload_ready` stops on
+`UploadCapReached`/`QuotaExhausted`/`UploadAuthError`, skips other `UploadError`s.
+Locks (`fcntl` in the data dir): `scheduler.lock` (one scheduler per data dir), `process.lock`,
+`upload.lock` (a concurrent CLI run gets `Busy`; a job skips).
+A source becomes `done` once none of its clips still needs rendering.
+
 CLI: `python main.py init | manual <url> [--source-type T] [--no-upload] | scout | process [--limit N]
-| run-once | upload | analytics [--day YYYY-MM-DD] | review | summary | serve [--host --port] | schedule | status`.
-Jobs (local time, off the hour): scout 06:10; process hourly at :20; upload_ready hourly at :40;
-notify.send_queued every 5 min; db.expire_decisions hourly; analytics 07:25; notify.daily_summary 20:55;
-strategist.weekly_review Sunday 18:05. `schedule` runs the scheduler and the FastAPI server together.
+| run-once [--max-sources N] | upload [--limit N] | analytics [--day YYYY-MM-DD] | review | summary
+| serve [--host --port] | schedule [--host --port] | status | doctor [--network] | requeue-dry-run [--force]
+| cleanup | approve <id> | reject <id>`.
+Jobs (local time, off the hour): scout 06:10; process hourly at :20; upload hourly at :40;
+send_queued every 5 min; expire_decisions hourly at :50; analytics 07:25 (collect_stats +
+refresh_channel_stats + check_claims, each isolated); cleanup 03:35; daily_summary 20:55;
+weekly_review Sunday 18:05. `schedule` runs the scheduler and uvicorn together and exits 0 on SIGTERM.
+
+### Notification kinds
+| kind | producer | channel | rings in quiet hours |
+|---|---|---|---|
+| `budget_cap` | budget | call (queued) | yes |
+| `youtube_auth` | youtube_auth | call (queued) | yes |
+| `youtube_claim` | analytics | call (queued) | yes |
+| `youtube_quota` | upload | sms (queued) | no |
+| `youtube_private_lock` | analytics | sms (queued) | no |
+| `job_error` | main.run_job (once per job per day) | sms (queued) | no |
+| `weekly_report`, `strategy_conflict` | strategist via `notify.notify` | sms | no |
+| `approval` | notify.request_approval | call, SMS fallback | no (queued) |
+| `daily_summary` | notify.daily_summary | call | no |
+
+`notify.URGENT_KINDS` = the "yes" rows; add a kind there if it must wake the owner. Queued rows of
+any kind are delivered by `notify.send_queued()` (every 5 min).
+
+### Extension points
+`scout.SEARCHERS[type]`, `transcribe.set_backend`, `edit.set_crop_locator` (face tracking),
+`llm.set_fake_handler` / `set_client`, `upload.set_service_factory`, `analytics.set_service_factory`,
+`notify.set_client`, `fetch.extract_info` (monkeypatch), `main.job_specs()` (jobs).

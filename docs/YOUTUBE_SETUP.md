@@ -115,9 +115,8 @@ immediate, unscheduled uploads; scheduled uploads are always `private` + `publis
   stop until the next Pacific midnight and you get a text.
 * The YouTube Analytics API has its own quota. The daily pull uses a few dozen requests and
   does not touch the Data API units.
-* **More quota:** use the same Audit and Quota Extension Form. Once Google grants it, store
-  the new limit with
-  `.venv/bin/python -c "import db; db.kv_set('youtube:quota_limit', 50000)"` and raise
+* **More quota:** use the same Audit and Quota Extension Form. Once Google grants it, set
+  `YOUTUBE_DAILY_QUOTA=50000` (your new limit) in `config.env`, restart the service, and raise
   `MAX_UPLOADS_PER_DAY` / `uploads_per_day` to match.
 * There is also a per-channel upload limit, separate from API quota and not published by
   Google. Hitting it returns `uploadLimitExceeded`, which is handled as above.
