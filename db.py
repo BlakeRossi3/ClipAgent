@@ -1545,10 +1545,24 @@ def insert_llm_usage(
         })
 
 
-def llm_spend_between(start_iso: str, end_iso: str, *, conn: sqlite3.Connection | None = None) -> float:
+ASSISTANT_PURPOSE_PREFIX = "assistant."   # llm_usage.purpose of every personal-assistant call (phase 2)
+LLM_SPEND_SCOPES = ("all", "pipeline", "assistant")
+
+
+def llm_spend_between(start_iso: str, end_iso: str, *, scope: str = "all",
+                      conn: sqlite3.Connection | None = None) -> float:
+    """LLM spend in [start, end). ``scope``: ``all`` (dashboard cost pages), ``pipeline``
+    (everything except ``assistant.*`` purposes - what the pipeline's daily cap counts) or
+    ``assistant`` (only ``assistant.*`` - the assistant's own cap)."""
+    if scope not in LLM_SPEND_SCOPES:
+        raise ValueError(f"scope must be one of {LLM_SPEND_SCOPES}")
+    sql = "SELECT COALESCE(SUM(cost_usd), 0) AS s FROM llm_usage WHERE ts >= ? AND ts < ?"
+    params: list[Any] = [start_iso, end_iso]
+    if scope != "all":
+        sql += " AND purpose " + ("LIKE ?" if scope == "assistant" else "NOT LIKE ?")
+        params.append(ASSISTANT_PURPOSE_PREFIX + "%")
     with transaction(conn) as c:
-        row = c.execute("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM llm_usage WHERE ts >= ? AND ts < ?",
-                        (start_iso, end_iso)).fetchone()
+        row = c.execute(sql, params).fetchone()
     return float(row["s"])
 
 

@@ -81,3 +81,24 @@ def test_manual_pause():
         budget.check_budget()
     budget.set_paused(False)
     budget.check_budget()
+
+
+def test_assistant_models_priced():
+    assert budget.cost_usd("claude-fable-5-2", 1_000_000, 1_000_000) == pytest.approx(8.0 + 40.0)
+    assert budget.cost_usd("claude-opus-5-5", 1_000_000, 1_000_000) == pytest.approx(4.0 + 20.0)
+
+
+def test_assistant_spend_is_not_pipeline_spend(clock):
+    # an assistant call (purpose assistant.*) must not eat the pipeline's daily cap...
+    db.insert_llm_usage(model="claude-fable-5-2", purpose="assistant.main", tier="assistant",
+                        input_tokens=1, output_tokens=1, cost_usd=0.9)
+    assert budget.spent_today() == 0 and budget.remaining_today() == pytest.approx(1.0)
+    budget.check_budget(0.95)
+    # ...and pipeline spend does not count toward the assistant's
+    budget.record_usage("claude-sonnet-5-5", "pick.finalize", input_tokens=100_000, output_tokens=10_000)
+    start, end = db.local_day_bounds()
+    assert db.llm_spend_between(start, end, scope="assistant") == pytest.approx(0.9)
+    assert db.llm_spend_between(start, end, scope="pipeline") == pytest.approx(0.3)
+    assert db.llm_spend_between(start, end) == pytest.approx(1.2)  # dashboard sees everything
+    with pytest.raises(ValueError):
+        db.llm_spend_between(start, end, scope="nope")

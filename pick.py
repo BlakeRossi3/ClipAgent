@@ -548,6 +548,7 @@ class Candidate:
     rationale: str
     rank: int                     # position in Sonnet's output (0 = best)
     haiku_score: float | None = None
+    haiku_reason: str | None = None   # the best overlapping window's Haiku reason (audit/dashboard)
 
 
 @dataclass(frozen=True, slots=True)
@@ -708,13 +709,13 @@ def postprocess_clips(
     max_clips: int,
     default_hashtags: Sequence[str] = (),
     duration: float | None = None,
-    window_scores: Sequence[tuple[float, float, float]] = (),
+    window_scores: Sequence[tuple[float, float, float] | tuple[float, float, float, str]] = (),
     existing: Sequence[tuple[float, float]] = (),
 ) -> tuple[list[Candidate], list[Rejection]]:
     """Validate, snap, clamp and de-overlap Sonnet's clips. Pure; never trusts model times.
 
-    ``allowed`` = ranges shown to Sonnet; ``window_scores`` = (start, end, haiku score)
-    used to attach the best overlapping Haiku score; ``existing`` = clips already in the DB.
+    ``allowed`` = ranges shown to Sonnet; ``window_scores`` = (start, end, haiku score[, reason])
+    used to attach the best overlapping Haiku score (and that window's reason); ``existing`` = clips already in the DB.
     """
     accepted: list[Candidate] = []
     rejected: list[Rejection] = []
@@ -760,13 +761,16 @@ def postprocess_clips(
         if any(_overlap(s2, e2, a.start_sec, a.end_sec) > MAX_OVERLAP_SEC for a in accepted):
             rej("overlaps a better clip")
             continue
-        hs = [sc for (a, b, sc) in window_scores if _overlap(s2, e2, a, b) > 0]
+        hs = [(ws[2], ws[3] if len(ws) > 3 else None) for ws in window_scores
+              if _overlap(s2, e2, ws[0], ws[1]) > 0]
+        best = max(hs, key=lambda t: t[0]) if hs else None
         accepted.append(Candidate(
             start_sec=s2, end_sec=e2, title=title,
             description=_public_text(c.get("description"), DESCRIPTION_MAX_CHARS, hashtags=True),
             hashtags=merge_hashtags(c.get("hashtags"), default_hashtags),
             hook_text=hook, rationale=_clean_text(c.get("rationale"), 1000), rank=rank,
-            haiku_score=float(max(hs)) if hs else None,
+            haiku_score=float(best[0]) if best else None,
+            haiku_reason=(best[1] or None) if best else None,
         ))
     return accepted, rejected
 
@@ -920,7 +924,7 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
         allowed=_merge_ranges([(m.lo, m.hi) for m in moments]),
         clip_length=clip_length, max_clips=max_clips,
         default_hashtags=strategy.get("default_hashtags") or [], duration=duration,
-        window_scores=[(m.window.start_sec, m.window.end_sec, m.score) for m in moments],
+        window_scores=[(m.window.start_sec, m.window.end_sec, m.score, m.reason) for m in moments],
         existing=existing,
     )
     stats["rejected"] = [{"rank": r.rank, "reason": r.reason} for r in rejected]
@@ -949,7 +953,7 @@ def _finish(source_id: int, accepted: Sequence[Candidate], stats: dict, state: d
             ids.append(db.add_clip(
                 source_id, cand.start_sec, cand.end_sec, title=cand.title, description=cand.description,
                 hashtags=cand.hashtags, hook_text=cand.hook_text, credit_text=credit,
-                haiku_score=cand.haiku_score, sonnet_rationale=cand.rationale,
+                haiku_score=cand.haiku_score, sonnet_rationale=cand.rationale, haiku_reason=cand.haiku_reason,
                 strategy_version=strategy.version if strategy else None,
                 experiment_id=exp_id, experiment_variant=arm, conn=c))
         if ids or had_existing:

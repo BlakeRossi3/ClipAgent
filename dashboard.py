@@ -2,7 +2,9 @@
 
 Answers "is this working as a business?" at a glance, with drill-downs:
 
-* ``/``             overview: KPIs vs previous period, today vs caps, pipeline health,
+* ``/``             command-centre home (see ``home.py``: greeting, approvals, life tiles,
+                    agent roster, chat, memory, activity); ``/memory``, ``/agents/{name}``
+* ``/studio``       Shorts overview (was ``/``; ``/overview`` and ``/?period=`` redirect): KPIs vs previous period, today vs caps, pipeline health,
                     pending approvals, current experiment, daily charts
 * ``/clips``        sortable / filterable leaderboard; ``/clips/{id}`` per-clip audit page
 * ``/insights``     "what works": breakdowns with sample sizes, Haiku score vs views
@@ -85,8 +87,16 @@ STAGES: list[tuple[str, str, int]] = [
     ("analytics", "Analytics", 30), ("strategist", "Weekly review", 8 * 24), ("notify", "Notify", 30),
 ]
 
+#: Top-level sections (the command-centre home, the Shorts studio, the assistant's memory).
+SECTIONS = [
+    ("home", "Home", "/dashboard/"),
+    ("studio", "Studio", "/dashboard/studio"),
+    ("memory", "Memory", "/dashboard/memory"),
+]
+
+#: The Studio section's own pages (the phase-1 analytics dashboard).
 NAV = [
-    ("overview", "Overview", "/dashboard/"),
+    ("overview", "Overview", "/dashboard/studio"),
     ("clips", "Clips", "/dashboard/clips"),
     ("insights", "What works", "/dashboard/insights"),
     ("strategy", "Experiments", "/dashboard/strategy"),
@@ -105,6 +115,21 @@ _FLASH = {
                               "changed yet. See the log for why."),
     "csrf": ("critical", "The form expired or came from another site. Reload the page and try again."),
     "loggedout": ("info", "Signed out."),
+    # home (command centre)
+    "chat_sent": ("good", "Message sent."),
+    "chat_empty": ("warning", "There was nothing to send."),
+    "chat_long": ("warning", "That message is too long for one go. Shorten it and try again."),
+    "chat_off": ("warning", "The assistant is not taking messages right now."),
+    "chat_failed": ("critical", "The assistant could not answer - see the log for details."),
+    "answered": ("good", "Thank you, noted."),
+    "already_answered": ("info", "That question was already answered."),
+    "answer_empty": ("warning", "An empty answer was not saved."),
+    "hours_bad": ("warning", "I could not find a number of hours (0-168) in that answer."),
+    "gone": ("warning", "That item no longer exists."),
+    "meal_accepted": ("good", "Splendid. Noted for the menu."),
+    "meal_declined": ("info", "Noted. I will suggest something else next time."),
+    "job_saved": ("good", "Pay rate saved. I will keep the books from your weekly hours."),
+    "job_bad": ("warning", "I need a job name and an hourly rate above zero."),
 }
 
 
@@ -541,9 +566,22 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
     except sqlite3.Error:  # pragma: no cover - unreadable DB still renders the error page
         demo = None
     flash = _FLASH.get(request.query_params.get("msg", ""))
+    if nav in ("home", "memory", "login"):
+        section = nav
+    else:
+        section = "studio"
+    try:
+        from assistant.settings import get_assistant_settings
+
+        assistant_name = get_assistant_settings().name
+    except Exception:  # pragma: no cover - assistant package broken: keep the studio usable
+        assistant_name = "Assistant"
     base = {
         "request_path": request.url.path,
         "nav": NAV,
+        "sections": SECTIONS,
+        "section": section,
+        "assistant_name": assistant_name,
         "active": nav,
         "demo": demo,
         "dry_run": s.dry_run,
@@ -1866,8 +1904,14 @@ async def logout(request: Request) -> Response:
     return _security_headers(r)
 
 
-@router.get("", response_class=HTMLResponse, include_in_schema=False)
-@router.get("/", response_class=HTMLResponse)
+@router.get("/overview", include_in_schema=False)
+def overview_redirect(request: Request) -> Response:
+    params = [(k, v) for k, v in request.query_params.multi_items() if k != "token"]
+    return _security_headers(RedirectResponse("/dashboard/studio" + (("?" + urlencode(params)) if params else ""),
+                                              status_code=301))
+
+
+@router.get("/studio", response_class=HTMLResponse)
 def overview(request: Request) -> Response:
     resp, _ = _guard(request)
     if resp is not None:
@@ -2304,5 +2348,10 @@ def api_costs(request: Request) -> Response:
                   "daily": {k: _series_payload(v) for k, v in d["charts"].items()},
                   "cap_hits": d["cap_hits"], "today": d["today"]})
 
+
+# The command-centre home, memory browser, agent pages and their POSTs live in home.py.
+import home as _home  # noqa: E402 - imported last: home reaches back into this module lazily
+
+_home.register(router)
 
 __all__ = ["router", "DEMO_KV_KEY", "csrf_token", "spearman", "hook_form", "strategy_diff"]

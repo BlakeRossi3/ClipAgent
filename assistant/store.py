@@ -51,7 +51,7 @@ MEAL_STATUSES = ("suggested", "accepted", "declined", "eaten")
 GOAL_STATUSES = ("active", "done", "dropped")
 RUN_STATUSES = ("running", "ok", "error", "budget", "denied")
 LESSON_STATUSES = ("proposed", "adopted", "retired")
-ASSISTANT_PURPOSE_PREFIX = "assistant."
+ASSISTANT_PURPOSE_PREFIX = db.ASSISTANT_PURPOSE_PREFIX
 ASSISTANT_TIER = "assistant"
 
 
@@ -579,6 +579,20 @@ def add_income(amount_usd: float, *, source: str, day: date | str | None = None,
         return int(cur.lastrowid) if cur.rowcount else None  # type: ignore[arg-type]
 
 
+def set_income(amount_usd: float, *, source: str, ref: str, day: date | str | None = None, note: str | None = None,
+               conn: sqlite3.Connection | None = None) -> int:
+    """Insert or replace the income row keyed by (source, ref) - e.g. one week's pay that is
+    re-logged with corrected hours. Returns the row id."""
+    _check(source, INCOME_SOURCES, "source")
+    if not ref:
+        raise ValueError("set_income needs a ref")
+    with transaction(conn) as c:
+        c.execute("INSERT INTO as_income (day, source, amount_usd, note, ref, created_at) VALUES (?,?,?,?,?,?) "
+                  "ON CONFLICT (source, ref) DO UPDATE SET day = excluded.day, amount_usd = excluded.amount_usd, "
+                  "note = excluded.note", (_day(day), source, float(amount_usd), note, ref, db.now_iso()))
+        return int(c.execute("SELECT id FROM as_income WHERE source = ? AND ref = ?", (source, ref)).fetchone()["id"])
+
+
 def list_income(start_day: date | str | None = None, end_day: date | str | None = None, *,
                 source: str | None = None, conn: sqlite3.Connection | None = None) -> list[Income]:
     """Inclusive day range, oldest first."""
@@ -733,10 +747,7 @@ def list_agent_runs(limit: int = 50, *, agent: str | None = None, since: str | N
 
 def assistant_spend_between(start_iso: str, end_iso: str, *, conn: sqlite3.Connection | None = None) -> float:
     """Assistant LLM spend (``llm_usage`` rows with purpose ``assistant.*``) in [start, end)."""
-    with transaction(conn) as c:
-        row = c.execute("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM llm_usage WHERE ts >= ? AND ts < ? "
-                        "AND purpose LIKE ?", (start_iso, end_iso, ASSISTANT_PURPOSE_PREFIX + "%")).fetchone()
-    return float(row["s"])
+    return db.llm_spend_between(start_iso, end_iso, scope="assistant", conn=conn)
 
 
 def assistant_spent_today(day: date | None = None) -> float:

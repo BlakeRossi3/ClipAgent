@@ -348,6 +348,15 @@ def test_haiku_score_attached_from_overlapping_window():
     acc, _ = _pp([sonnet_clip(segs[0]["start"], segs[10]["end"])], tr,
                  window_scores=[(0.0, 60.0, 8), (200.0, 260.0, 9)])
     assert acc[0].haiku_score == 8.0
+    assert acc[0].haiku_reason is None
+
+
+def test_haiku_reason_carried_from_best_overlapping_window():
+    tr = build_transcript(filler(60))
+    segs = tr["segments"]
+    acc, _ = _pp([sonnet_clip(segs[0]["start"], segs[10]["end"])], tr,
+                 window_scores=[(0.0, 60.0, 6, "weak"), (0.0, 40.0, 9, "strong reveal")])
+    assert acc[0].haiku_score == 9.0 and acc[0].haiku_reason == "strong reveal"
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +416,7 @@ def test_pick_clips_happy_path(fake_llm, clock, source_with_transcript, strategy
     assert clip.start_sec == pytest.approx(launch_segs[0]["start"] - pick.LEAD_SEC)
     assert clip.end_sec == pytest.approx(launch_segs[9]["end"] + pick.TAIL_SEC)
     assert clip.haiku_score == 9.0 and clip.sonnet_rationale == "Strong payoff."
+    assert clip.haiku_reason == "because"
     assert clip.strategy_version == strategy.version
     assert clip.credit_text == "Video: NASA (public domain)"
     assert clip.hashtags[:2] == ["#Shorts", "#Science"] and "#Artemis" in clip.hashtags

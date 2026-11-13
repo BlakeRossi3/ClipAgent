@@ -4,6 +4,8 @@
 * :func:`check_budget` raises :class:`BudgetExceeded` before a call that would
   push today's spend past the cap (``llm.complete`` calls it for you).
 * "Today" is the local calendar day in ``TIMEZONE``.
+* Only pipeline spend counts here: ``llm_usage`` rows with ``purpose LIKE 'assistant.%'``
+  belong to the personal assistant, which has its own cap (``assistant/runtime.py``).
 
 Daily cap (:func:`daily_cap_usd`)::
 
@@ -71,6 +73,9 @@ PRICES: dict[str, ModelPrice] = {
     # Possible server-side fallback target for Sonnet 5.5 refusals.
     "claude-sonnet-5": ModelPrice(input=2.00, output=10.00, cache_write=2.50, cache_read=0.20),
     "claude-opus-5-5": ModelPrice(input=4.00, output=20.00, cache_write=5.00, cache_read=0.20),
+    # Personal assistant (phase 2): Fable 5.2 main agent; Opus 5.5 above serves its sub-agents.
+    "claude-fable-5-2": ModelPrice(input=8.00, output=40.00, cache_write=10.00, cache_read=0.20),
+    "claude-fable-5-1": ModelPrice(input=10.00, output=50.00, cache_write=12.50, cache_read=1.00),
 }
 # Unknown models are priced conservatively so the budget errs on the safe side.
 FALLBACK_PRICE = PRICES["claude-opus-5-5"]
@@ -133,8 +138,10 @@ def daily_cap_usd() -> float:
 
 
 def spent_today(day: date | None = None) -> float:
+    """Pipeline spend for the local day. The personal assistant's calls (``assistant.*``
+    purposes) have their own cap (``ASSISTANT_DAILY_BUDGET_USD``) and are not counted here."""
     start, end = db.local_day_bounds(day)
-    return db.llm_spend_between(start, end)
+    return db.llm_spend_between(start, end, scope="pipeline")
 
 
 def remaining_today() -> float:
