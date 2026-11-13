@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+{% set w = d.window %}
+{% set cur = d.current %}
+<div class="page-head">
+  <div>
+    <h1>Is it working?</h1>
+    <p class="lede">
+      {% if d.is_empty %}
+        Nothing has run yet. Once the agent finds footage and publishes Shorts, this page will show whether it is paying off.
+      {% elif cur.views or cur.published %}
+        {{ w.label if w.key == "all" else "Last " ~ w.label }} ({{ w.start | date }} – {{ w.end | date }}):
+        <strong>{{ cur.views | compact }} views</strong>{% if d.kpis[0].delta and d.kpis[0].key == "views" %} ({{ d.kpis[0].delta.text }} vs previous {{ w.days }} days){% endif %}
+        from {{ cur.published | int }} Short{{ "s" if cur.published != 1 else "" }} published,
+        net {{ "+" if cur.subs_net > 0 else "" }}{{ cur.subs_net | int }} subscribers,
+        {{ cur.spend | usd }} LLM spend{% if cur.cost_per_1k is not none %} ({{ cur.cost_per_1k | usd }} per 1,000 views){% endif %}.
+      {% else %}
+        No views recorded in this period yet{% if d.as_of is none %} — YouTube analytics have not been collected{% endif %}.
+      {% endif %}
+    </p>
+  </div>
+</div>
+{{ m.period_picker(periods, w.key, ("Analytics through " ~ (d.as_of | date) ~ " (YouTube reports with a ~2-day lag)") if d.as_of else "No YouTube analytics collected yet") }}
+
+{% if d.is_empty %}
+<section class="card onboarding" aria-labelledby="getting-started">
+  <h2 id="getting-started">Getting started</h2>
+  <ol class="checklist">
+    <li class="{{ 'done' if d.strategy else '' }}"><strong>Strategy loaded</strong> — {% if d.strategy %}version {{ d.strategy.version }}: {{ d.strategy.niche }}{% else %}<span class="text-critical">{{ d.strategy_error or "strategy.json missing" }}</span>{% endif %}</li>
+    <li><strong>Find and process footage</strong> — run <code>python main.py run-once</code>, or <code>python main.py schedule</code> to run everything on a timer.</li>
+    <li><strong>Connect YouTube</strong> — uploads and analytics need the OAuth token (<code>YOUTUBE_CLIENT_SECRETS</code>). Until then views stay empty.</li>
+    <li class="{{ '' if dry_run else 'done' }}"><strong>Go live</strong> — {% if dry_run %}dry-run is on, so nothing is published yet.{% else %}dry-run is off.{% endif %}</li>
+  </ol>
+  <p class="muted">Want to see what this page looks like with data? <code>python seed_demo.py --data-dir /tmp/demo</code> builds a clearly labelled demo database in a separate folder.</p>
+</section>
+{% endif %}
+
+{% if d.pending or d.failures_24h or d.today.paused or d.today.cap_reached %}
+<section class="attention" aria-labelledby="attention-h">
+  <h2 id="attention-h">Needs your attention</h2>
+  {% for dec in d.pending %}{{ m.decision_card(dec, csrf, next="/dashboard/") }}{% endfor %}
+  {% if d.failures_24h %}
+  <p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span>{{ d.failures_24h }} pipeline failure{{ "s" if d.failures_24h != 1 else "" }} in the last 24 hours. <a href="/dashboard/events?level=error">See the errors</a></p>
+  {% endif %}
+  {% if d.today.paused %}<p class="alert alert-warning"><span class="pill-icon" aria-hidden="true">!</span>LLM spending is paused{% if d.today.pause_reason %}: {{ d.today.pause_reason }}{% endif %}. Text RESUME to restart.</p>
+  {% elif d.today.cap_reached %}<p class="alert alert-warning"><span class="pill-icon" aria-hidden="true">!</span>Today's LLM budget is used up; judgment steps resume tomorrow.</p>{% endif %}
+</section>
+{% endif %}
+
+<section aria-labelledby="kpi-h">
+  <h2 id="kpi-h" class="visually-hidden">Key numbers</h2>
+  <div class="kpis">
+    {% for k in d.kpis %}
+    <div class="tile{% if loop.first %} tile-hero{% endif %}">
+      <p class="tile-label">{{ k.label }}{% if k.hint %} <span class="hint" title="{{ k.hint }}">ⓘ<span class="visually-hidden">{{ k.hint }}</span></span>{% endif %}</p>
+      <p class="tile-value">{{ m.tile_value(k.value, k.fmt) }}</p>
+      {% if k.delta %}
+        {% set good = (k.delta.dir > 0 and k.good_up) or (k.delta.dir < 0 and not k.good_up) %}
+        {% set bad = (k.delta.dir < 0 and k.good_up) or (k.delta.dir > 0 and not k.good_up) %}
+        <p class="tile-delta {{ 'is-good' if good else ('is-bad' if bad else 'is-flat') }}"><span aria-hidden="true">{{ '▲' if k.delta.dir > 0 else ('▼' if k.delta.dir < 0 else '■') }}</span> {{ k.delta.text }} <span class="muted">vs {{ m.tile_value(k.previous, k.fmt) }} prior</span></p>
+      {% elif w.key != "all" %}
+        <p class="tile-delta is-flat"><span class="muted">no prior data</span></p>
+      {% endif %}
+      {% if k.spark %}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d="{{ k.spark }}"/></svg>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="grid-3" aria-label="Today">
+  <div class="card">
+    <div class="card-head"><h3>Today</h3><p class="sub">{{ d.today.date | date }} · resets at local midnight</p></div>
+    {{ m.meter("Uploads", d.today.uploads | int, (d.today.upload_cap | int) ~ " cap", d.today.uploads_pct, "critical" if d.today.uploads >= d.today.upload_cap and d.today.upload_cap > 0 else "accent", (d.ready_to_upload ~ " rendered clip" ~ ("s" if d.ready_to_upload != 1 else "") ~ " ready to upload")) }}
+    {{ m.meter("LLM spend", d.today.spend_usd | usd, (d.today.spend_cap_usd | usd) ~ " cap", d.today.spend_pct, "critical" if d.today.cap_reached else ("warning" if d.today.spend_pct >= 80 else "accent")) }}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Pipeline health</h3><p class="sub">Last success per stage · failures in last 24 h</p></div>
+    <ul class="health">
+      {% for h in d.health %}
+      <li>
+        {{ m.status_dot(h.status) }}
+        <a class="health-name" href="/dashboard/events?module={{ h.module }}">{{ h.label }}</a>
+        <span class="health-status{% if h.status == 'critical' %} text-critical{% endif %}">{{ h.status_text }}</span>
+        <span class="health-when" title="{{ h.last_success | dt }}">{{ ("ok " ~ (h.last_success | ago)) if h.last_success else "—" }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Current experiment</h3>{% if d.experiment %}<p class="sub">{{ d.experiment.id }} · {{ d.experiment.start | date }} – {{ d.experiment.end | date }}</p>{% endif %}</div>
+    {% if d.experiment %}
+      {% set r = d.experiment.results %}
+      <p class="exp-hyp">{{ d.experiment.hypothesis }}</p>
+      <p>{{ m.pill(d.experiment.status | capitalize, "info" if d.experiment.status == "running" else "neutral") }} <span class="muted">testing {{ d.experiment.variable | replace("_", " ") }} on {{ r.metric_label | lower }}</span></p>
+      <dl class="arms">
+        <div><dt><span class="key key-bar slot-1" aria-hidden="true"></span>Control</dt><dd>{{ r.arms.control.pct | pct if r.metric_label == "Average view %" else r.arms.control.views_7d_median | compact }} <span class="muted">n={{ r.arms.control.n }}</span></dd></div>
+        <div><dt><span class="key key-bar slot-2" aria-hidden="true"></span>Variant</dt><dd>{{ r.arms.variant.pct | pct if r.metric_label == "Average view %" else r.arms.variant.views_7d_median | compact }} <span class="muted">n={{ r.arms.variant.n }}</span></dd></div>
+      </dl>
+      <p class="verdict verdict-{{ r.tone }}">{{ r.verdict }}</p>
+      <p><a href="/dashboard/strategy#exp-{{ d.experiment.id }}">Experiment details →</a></p>
+    {% elif d.strategy_error %}
+      <p class="text-critical">{{ d.strategy_error }}</p>
+    {% else %}
+      <p class="muted">No experiment in the current strategy. The weekly review proposes one.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="grid-2" aria-label="Trends">
+  {{ m.chart(d.charts.views, "Daily views", "All Shorts, per local day" ~ ((" · through " ~ (d.as_of | date)) if d.as_of else ""), "No views yet — analytics fill this in once Shorts are live.") }}
+  {{ m.chart(d.charts.subs, "Subscribers", "Channel total at the end of each day", "No channel statistics collected yet.") }}
+  {{ m.chart(d.charts.subs_net, "Net subscribers per day", "Gained minus lost, attributed to Shorts", "No subscriber changes recorded yet.") }}
+  {{ m.chart(d.charts.uploads, "Uploads per day", "Including dry runs · dashed line is the daily cap", "Nothing uploaded in this period.") }}
+  {{ m.chart(d.charts.spend, "LLM spend per day", "Haiku scoring + Sonnet picks and reviews · dashed line is the daily cap", "No LLM calls in this period.") }}
+  <div class="card">
+    <div class="card-head"><h3>Top Shorts published this period</h3><p class="sub">Lifetime views</p></div>
+    {% if d.top_clips %}
+    <ol class="toplist">
+      {% for c in d.top_clips %}
+      <li><a href="/dashboard/clips/{{ c.id }}">{{ c.title or ("Clip " ~ c.id) }}</a><span class="toplist-meta">{{ c.views | compact }} views · {{ c.pct | pct }} viewed · {{ c.source_type | replace("_", " ") }}</span></li>
+      {% endfor %}
+    </ol>
+    <p><a href="/dashboard/clips?sort=views">All clips →</a></p>
+    {% else %}
+    <div class="chart-empty">No Shorts published in this period.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card" aria-labelledby="recent-h">
+  <div class="card-head"><h3 id="recent-h">Recent activity</h3><p class="sub"><a href="/dashboard/events">Full log →</a></p></div>
+  {% if d.recent_events %}
+  <ul class="events-mini">
+    {% for e in d.recent_events %}
+    <li>{{ m.status_dot({"error": "critical", "warning": "warning"}.get(e.level, "neutral")) }}<span class="ev-module">{{ e.module }}</span><span class="ev-msg">{{ e.message }}</span><time datetime="{{ e.ts }}" title="{{ e.ts | dt }}">{{ e.ts | ago }}</time></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="chart-empty">No activity yet.</div>
+  {% endif %}
+</section>
+{% endblock %}

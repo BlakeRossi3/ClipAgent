@@ -1,0 +1,118 @@
+{% macro period_picker(periods, current, note="") %}
+<div class="filters" role="group" aria-label="Period">
+  <div class="segmented">
+    {% for key, label in periods.items() %}
+    <a href="{{ link(period=key) }}"{% if key == current %} aria-current="true"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% if note %}<span class="filters-note">{{ note }}</span>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro chart(spec, title, subtitle="", empty_text="No data for this period yet.", legend=True) %}
+<figure class="card chart-card">
+  <figcaption class="card-head">
+    <h3>{{ title }}</h3>
+    {% if subtitle %}<p class="sub">{{ subtitle }}</p>{% endif %}
+  </figcaption>
+  {% if spec.has_data %}
+    {% if legend and ((spec.series | length) + (spec.refs | length)) > 1 %}
+    <ul class="legend">
+      {% for s in spec.series %}<li><span class="key key-{{ 'bar' if spec.type == 'bars' else 'line' }} slot-{{ s.slot }}" aria-hidden="true"></span>{{ s.name }}</li>{% endfor %}
+      {% for r in spec.refs %}<li><span class="key key-ref" aria-hidden="true"></span>{{ r.name }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    <div class="chart" data-chart="{{ spec.id }}" style="height: {{ spec.height }}px" role="img" aria-label="{{ title }} chart; the same values are in the table below"></div>
+    <script type="application/json" id="{{ spec.id }}-data">{{ spec | tojson }}</script>
+    <details class="table-twin">
+      <summary>Show table</summary>
+      <div class="table-wrap"><table class="data">
+        <thead><tr>{% for c in spec.table.columns %}<th scope="col"{% if not loop.first %} class="num"{% endif %}>{{ c }}</th>{% endfor %}</tr></thead>
+        <tbody>{% for row in spec.table.rows %}<tr>{% for v in row %}<td{% if not loop.first %} class="num"{% endif %}>{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+      </table></div>
+    </details>
+  {% else %}
+    <div class="chart-empty">{{ empty_text }}</div>
+  {% endif %}
+</figure>
+{% endmacro %}
+
+{% macro hbars(spec, min_n=5, show_n=True, label_href=None) %}
+<div class="hbars">
+  {% for r in spec.rows %}
+  <div class="hbar{% if r.low_n is defined and r.low_n %} is-low{% endif %}">
+    <div class="hbar-label">
+      {% if r.href is defined and r.href %}<a href="{{ r.href }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}
+      {% if show_n and r.n is defined %}<span class="n">n={{ r.n }}{% if r.low_n is defined and r.low_n %} · too few{% endif %}</span>{% endif %}
+    </div>
+    <div class="hbar-track">
+      <span class="hbar-fill" style="width: {{ '%.2f' | format(r.width) }}%"></span>
+      {% if spec.ref_pos %}<span class="hbar-ref" style="left: {{ '%.2f' | format(spec.ref_pos) }}%" aria-hidden="true"></span>{% endif %}
+    </div>
+    <div class="hbar-value">{{ r.value_text }}</div>
+  </div>
+  {% endfor %}
+  {% if spec.ref_pos %}<p class="hbars-ref-note"><span class="key key-ref" aria-hidden="true"></span>{{ spec.ref_label }}: {{ spec.ref_text }}</p>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro pill(label, tone="neutral") %}<span class="pill pill-{{ tone }}">{% if tone in ("good", "critical", "warning", "serious") %}<span class="pill-icon" aria-hidden="true">{{ {"good": "✓", "critical": "✕", "warning": "!", "serious": "!"}[tone] }}</span>{% endif %}{{ label }}</span>{% endmacro %}
+
+{% macro empty(title, body="") %}
+<div class="empty">
+  <p class="empty-title">{{ title }}</p>
+  {% if body %}<p class="empty-body">{{ body }}</p>{% endif %}
+  {{ caller() if caller is defined else "" }}
+</div>
+{% endmacro %}
+
+{% macro pager(page, pages) %}
+{% if pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  {% if page > 1 %}<a href="{{ link(page=page - 1) }}" rel="prev">← Previous</a>{% else %}<span class="disabled">← Previous</span>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="{{ link(page=page + 1) }}" rel="next">Next →</a>{% else %}<span class="disabled">Next →</span>{% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro sort_th(label, key, sort, desc, num=False, title="") %}
+{% set is_active = (key == sort) %}
+<th scope="col" class="{{ 'num' if num else '' }}"{% if is_active %} aria-sort="{{ 'descending' if desc else 'ascending' }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}>
+  <a href="{{ link(sort=key, dir=('asc' if is_active and desc else 'desc')) }}">{{ label }}{% if is_active %}<span class="sort-ind" aria-hidden="true">{{ '↓' if desc else '↑' }}</span>{% endif %}</a>
+</th>
+{% endmacro %}
+
+{% macro decision_card(d, csrf, next="/dashboard/decisions", compact=False) %}
+<article class="decision">
+  <div class="decision-main">
+    <p class="decision-kind">{{ d.kind | replace("_", " ") }} · #{{ d.id }} · requested {{ d.requested_at | ago }}{% if d.expires_at %} · expires {{ d.expires_at | ago }}{% endif %}</p>
+    <p class="decision-summary">{{ d.summary }}</p>
+    {% if not compact and d.payload %}
+    <details><summary>What would change</summary><pre class="json">{{ d.payload | pretty_json }}</pre></details>
+    {% endif %}
+  </div>
+  <div class="decision-actions">
+    <form method="post" action="/dashboard/decisions/{{ d.id }}/approve">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ next }}">
+      <button type="submit" class="btn btn-primary">Approve</button>
+    </form>
+    <form method="post" action="/dashboard/decisions/{{ d.id }}/reject">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ next }}">
+      <button type="submit" class="btn">Reject</button>
+    </form>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro meter(label, value_text, cap_text, pct, tone="accent", note="") %}
+<div class="meter-block">
+  <div class="meter-head"><span class="meter-label">{{ label }}</span><span class="meter-value"><strong>{{ value_text }}</strong> of {{ cap_text }}</span></div>
+  <div class="meter meter-{{ tone }}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ pct | round(0) }}" aria-label="{{ label }}"><span style="width: {{ '%.1f' | format(pct) }}%"></span></div>
+  {% if note %}<p class="meter-note">{{ note }}</p>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro tile_value(v, fmt) %}{% if fmt == "compact" %}{{ v | compact }}{% elif fmt == "hours" %}{{ v | hours }}{% elif fmt == "signed" %}{% if v is none %}—{% elif v > 0 %}+{{ v | int }}{% else %}{{ v | int }}{% endif %}{% elif fmt == "int" %}{{ v | int }}{% elif fmt == "pct" %}{{ v | pct }}{% elif fmt == "usd" %}{{ v | usd }}{% else %}{{ v }}{% endif %}{% endmacro %}
+
+{% macro status_dot(tone) %}<span class="dot dot-{{ tone }}" aria-hidden="true"></span>{% endmacro %}

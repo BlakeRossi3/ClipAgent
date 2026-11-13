@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex, nofollow">
+<title>{% block title %}Dashboard{% endblock %} · Shorts Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%232a78d6'/%3E%3Cpath d='M6 4.5v7l5.5-3.5z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/dashboard/static/dashboard.css">
+<script src="/dashboard/static/charts.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{% if demo %}
+<div class="banner banner-demo" role="alert">
+  <span class="banner-icon" aria-hidden="true">!</span>
+  <span><strong>DEMO DATA</strong> — every number on this dashboard is fabricated by <code>seed_demo.py</code>{% if demo.generated_at is defined %} ({{ demo.generated_at | dt }}){% endif %}. These are not real results.</span>
+</div>
+{% endif %}
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/dashboard/">
+      <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" class="brand-mark"/><path d="M6 4.5v7l5.5-3.5z" fill="#fff"/></svg>
+      <span>Shorts Agent</span>
+    </a>
+    {% if active != "login" %}
+    <nav class="nav" aria-label="Dashboard sections">
+      {% for key, label, href in nav %}
+      <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+  </div>
+</header>
+{% if active != "login" %}
+<div class="notices">
+  {% if dry_run %}<p class="notice"><span class="dot dot-info" aria-hidden="true"></span><strong>Dry-run mode.</strong> Uploads, calls and texts are simulated; set <code>DRY_RUN=false</code> to go live.</p>{% endif %}
+  {% if open_remote %}<p class="notice notice-warning"><span class="dot dot-warning" aria-hidden="true"></span><strong>No dashboard token set.</strong> Anyone who can reach this address can approve changes. Set <code>DASHBOARD_TOKEN</code>.</p>{% endif %}
+</div>
+{% endif %}
+{% if flash %}
+<div class="flash flash-{{ flash[0] }}" role="status">{{ flash[1] }}</div>
+{% endif %}
+<main id="main" class="page">
+{% block content %}{% endblock %}
+</main>
+<footer class="footer">
+  <span>Times in {{ tz }} · rendered {{ now_local }}</span>
+  {% if token_required and active != "login" %}
+  <form method="post" action="/dashboard/logout" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="link-button">Sign out</button>
+  </form>
+  {% endif %}
+</footer>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+</body>
+</html>
