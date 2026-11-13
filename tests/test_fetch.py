@@ -121,9 +121,47 @@ class TestGovLicence:
 
     def test_official_committee_channel_approved(self, strategy):
         name = "House Committee on Science, Space, and Technology"
-        d = check_licence(yt_info(channel=name, uploader=name, channel_id="UChouse", uploader_id="@HouseScience",
-                                  description="Full committee hearing."), strategy, "congress")
+        info = yt_info(channel=name, uploader=name, channel_id="UChouse", uploader_id="@HouseScience",
+                       description="Full committee hearing.")
+        # shipped entry has neither channel_id nor handle: the name alone must not admit it
+        d = check_licence(info, strategy, "congress")
+        assert not d.ok and "not allowed" in d.reason
+        allow = json.loads(json.dumps(strategy["allowlist"]))
+        allow["congress"]["channels"][0]["channel_id"] = "UChouse"
+        d = check_licence(info, strategy.updated(allowlist=allow), "congress")
         assert d.ok and d.licence == LICENCE_US_GOV
+
+    @pytest.mark.parametrize("info,stype", [
+        # anyone can create a YouTube channel *named* like an allowlisted committee / JPL
+        (dict(channel="House Committee on Oversight and Accountability",
+              uploader="House Committee on Oversight and Accountability", channel_id="UCattacker",
+              uploader_id="@attacker"), "congress"),
+        (dict(channel="NASA Jet Propulsion Laboratory", uploader="NASA Jet Propulsion Laboratory",
+              channel_id="UCattacker", uploader_id="@jplfan"), "nasa"),
+        # official handle but a different channel id than the pinned one
+        (dict(channel="Totally NASA", uploader="Totally NASA", channel_id="UCattacker", uploader_id="@NASA"), "nasa"),
+    ])
+    def test_name_only_and_handle_spoofs_rejected(self, strategy, info, stype):
+        d = check_licence(yt_info(**info), strategy, stype)
+        assert not d.ok, d.reason
+
+    def test_non_youtube_uploader_named_nasa_rejected(self, strategy):
+        info = {"webpage_url": "https://vimeo.com/12345", "extractor_key": "Vimeo", "uploader": "NASA",
+                "channel": None, "duration": 600, "description": "cool launch"}
+        assert not check_licence(info, strategy, "nasa").ok
+
+    @pytest.mark.parametrize("url", [
+        "ftp://images.nasa.gov/x.mp4",
+        "https://evil.example\\@images.nasa.gov/x.mp4",
+        "https://nasa:pw@images.nasa.gov/x.mp4",
+    ])
+    def test_odd_urls_on_allowed_hosts_rejected(self, strategy, url):
+        assert not check_licence(nasa_file_info(webpage_url=url), strategy, "nasa").ok
+
+    @pytest.mark.parametrize("channel", ["\u0421-SPAN", "ＣＳＰＡＮ", "Daily CSPAN Clips", "C\u2011SPAN"])
+    def test_rebroadcaster_lookalikes_rejected_for_cc(self, strategy, channel):
+        d = check_licence(cc_info(channel=channel, uploader=channel), strategy, "cc_by_youtube")
+        assert not d.ok and "blocklisted" in d.reason
 
     def test_house_gov_direct_url_approved(self, strategy):
         d = check_licence(nasa_file_info(webpage_url="https://science.house.gov/media/hearing.mp4", duration=3600),
@@ -229,6 +267,11 @@ class TestCcByLicence:
     def test_cc_by_all_rights_reserved_contradiction(self, strategy):
         d = check_licence(cc_info(description="© 2026 Me. All rights reserved."), strategy, "cc_by_youtube")
         assert not d.ok and "all rights reserved" in d.reason
+
+    @pytest.mark.parametrize("desc", ["Free for non-commercial use only.", "Licensed CC BY-NC 4.0",
+                                      "Please do not reupload.", "Footage courtesy of C-SPAN."])
+    def test_cc_by_description_restrictions_reject(self, strategy, desc):
+        assert not check_licence(cc_info(description=desc), strategy, "cc_by_youtube").ok
 
     def test_cc_by_copyright_symbol_alone_ok(self, strategy):
         assert check_licence(cc_info(description="© 2026 Me, licensed CC BY 4.0"), strategy, "cc_by_youtube").ok

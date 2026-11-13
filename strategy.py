@@ -570,7 +570,7 @@ def assign_variant(strategy: Mapping[str, Any], key: int, day: date | None = Non
 # publisher allowlist (shared by scout and fetch)
 # ---------------------------------------------------------------------------
 
-_YOUTUBE_DOMAINS = ("youtube.com", "youtu.be")
+_YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
 
 
 def _host_matches(host: str, domains: list[str]) -> bool:
@@ -594,8 +594,18 @@ def is_publisher_allowed(
     1. ``source_type`` must be in ``source_types``; blocklisted channel names never pass.
     2. ``any_channel`` entries pass when the URL host matches the entry's domains
        (or the entry lists no domains).
-    3. A listed channel matches on ``channel_id``, else case-insensitive name or handle.
-    4. A non-YouTube URL whose host is (a subdomain of) a listed domain passes.
+    3. A listed channel matches **only on a YouTube URL** (or when no URL is given, as a
+       scout pre-filter), and only by an identifier YouTube guarantees to be unique:
+
+       * an entry with a pinned ``channel_id`` matches that exact id and nothing else
+         (a matching name or handle with another id is an impostor);
+       * an entry without ``channel_id`` matches an exact (case-insensitive) ``handle``.
+
+       A channel *name* is never sufficient: anyone can name a channel "NASA". Entries
+       with neither ``channel_id`` nor ``handle`` therefore admit nothing until the owner
+       fills one in (``main.py doctor`` warns about them). On other sites (Vimeo, ...)
+       uploader names/ids are not checked at all - only rule 4 applies.
+    4. A non-YouTube ``http(s)`` URL whose host is (a subdomain of) a listed domain passes.
        YouTube URLs always need rule 2 or 3 - a YouTube domain alone proves nothing.
 
     This checks the *publisher* only; the per-video licence check lives in
@@ -608,16 +618,27 @@ def is_publisher_allowed(
         return False, f"channel {channel!r} is blocklisted"
     entry = strategy.get("allowlist", {}).get(source_type) or {}
     domains = list(entry.get("domains", []))
-    host = (urlparse(url).hostname or "") if url else ""
+    host, scheme = "", ""
+    if url:
+        try:
+            parsed = urlparse(url)
+            host, scheme = (parsed.hostname or ""), parsed.scheme.lower()
+        except ValueError:
+            return False, f"unparsable URL {url!r}"
+        if scheme not in ("http", "https") or "\\" in url or parsed.username or parsed.password:
+            return False, f"URL {url!r} is not a plain http(s) URL"
+    on_youtube = bool(host) and _host_matches(host, list(_YOUTUBE_DOMAINS))
     if entry.get("any_channel") and (not domains or (host and _host_matches(host, domains))):
         return True, f"any channel allowed for {source_type}"
-    for ch in entry.get("channels", []):
-        if channel_id and ch.get("channel_id") and channel_id == ch["channel_id"]:
-            return True, f"allowlisted channel id {channel_id}"
-        if channel and ch.get("name") and channel.strip().casefold() == ch["name"].casefold():
-            return True, f"allowlisted channel {ch['name']!r}"
-        if handle and ch.get("handle") and handle.strip().casefold() == ch["handle"].casefold():
-            return True, f"allowlisted handle {ch['handle']}"
-    if host and not _host_matches(host, list(_YOUTUBE_DOMAINS)) and _host_matches(host, domains):
+    if on_youtube or not url:
+        for ch in entry.get("channels", []):
+            pinned = ch.get("channel_id")
+            if pinned:
+                if channel_id and channel_id.strip() == pinned:
+                    return True, f"allowlisted channel id {pinned}"
+                continue  # the pinned id is authoritative: name/handle never stand in for it
+            if handle and ch.get("handle") and handle.strip().casefold() == ch["handle"].strip().casefold():
+                return True, f"allowlisted handle {ch['handle']}"
+    if host and not on_youtube and _host_matches(host, domains):
         return True, f"allowlisted domain {host}"
     return False, f"publisher not on the {source_type} allowlist"

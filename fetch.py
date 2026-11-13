@@ -43,6 +43,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,6 +67,7 @@ LICENCE_CC_BY = "cc_by"
 
 MAX_DURATION_SEC = 3 * 3600          # longer sources are almost always livestream dumps
 MAX_HEIGHT = 1080
+MAX_FILESIZE_BYTES = 6 * 1024**3     # yt-dlp skips formats/files larger than this (disk safety)
 
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
 
@@ -100,11 +102,19 @@ _GOV_RED_FLAGS: tuple[tuple[re.Pattern[str], str], ...] = (
                 r"musicbed|premiumbeat|audiojungle)\b", re.IGNORECASE), "commercial music library"),
     (re.compile(r"\bused (with|by) permission\b", re.IGNORECASE), "used with permission"),
     (re.compile(r"\bused under licen[cs]e\b", re.IGNORECASE), "used under licence"),
+    # C-SPAN footage is C-SPAN's copyright whoever uploads it.
+    (re.compile(r"\bc[-\s]?span\b", re.IGNORECASE), "C-SPAN footage"),
 )
 # CC BY sources are copyrighted-and-licensed, so a bare "©" is fine; these still contradict CC BY reuse.
 _CC_RED_FLAGS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (p, label) for p, label in _GOV_RED_FLAGS
     if label not in ("copyright symbol", "copyright notice")
+) + (
+    # The uploader restricting reuse in the description contradicts a bare CC BY licence field.
+    (re.compile(r"\bnon[-\s]?commercial\b|\bcc[-\s]?by[-\s]?(nc|nd|sa)\b|\bno[-\s]?deriv(ative)?s?\b|"
+                r"\bshare[-\s]?alike\b", re.IGNORECASE), "restrictive licence terms"),
+    (re.compile(r"\b(do not|don'?t|may not)\s+(re-?upload|re-?use|reuse|repost|use)\b", re.IGNORECASE),
+     "reuse prohibited"),
 )
 
 _BLOCKING_LIVE_STATUSES = {"is_live": "a live stream", "is_upcoming": "an upcoming premiere/stream",
@@ -158,6 +168,7 @@ def _ydl_options(download: bool, outdir: Path | None) -> dict[str, Any]:
         "fragment_retries": 5,
         "format": FORMAT_SELECTOR,
         "merge_output_format": "mp4",
+        "max_filesize": MAX_FILESIZE_BYTES,
         "continuedl": True,          # resume .part files after an interrupted run
         "overwrites": False,
         "writeinfojson": False,      # we write our own sanitised info.json
@@ -220,8 +231,20 @@ def _is_youtube_host(host: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in _YOUTUBE_HOSTS)
 
 
+# Latin look-alikes (Cyrillic / Greek) that NFKC does not fold, so "С-SPAN" (Cyrillic С) still
+# normalises to "cspan".
+_HOMOGLYPHS = str.maketrans({
+    "а": "a", "в": "b", "с": "c", "е": "e", "н": "h", "і": "i", "ј": "j", "к": "k", "м": "m", "о": "o",
+    "р": "p", "ѕ": "s", "т": "t", "у": "y", "х": "x", "ԁ": "d", "ԛ": "q", "ԝ": "w",
+    "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "m", "ν": "v", "ο": "o", "ρ": "p",
+    "τ": "t", "υ": "u", "χ": "x", "ζ": "z",
+})
+
+
 def _norm_name(name: str | None) -> str:
-    return re.sub(r"[^a-z0-9]", "", (name or "").casefold())
+    """Compare-key for channel names: NFKC, casefold, homoglyphs folded, only [a-z0-9] kept."""
+    text = unicodedata.normalize("NFKC", name or "").casefold().translate(_HOMOGLYPHS)
+    return re.sub(r"[^a-z0-9]", "", text)
 
 
 def _handle(info: Mapping[str, Any]) -> str | None:
@@ -363,10 +386,14 @@ def check_licence(info: Mapping[str, Any], strategy: Strategy, source_type: str)
     blocked = {_norm_name(b) for b in strategy.get("blocklist_channels", [])}
     for name in {info.get("channel"), info.get("uploader")} - {None}:
         n = _norm_name(name)
-        if n and (n in blocked or any(n.startswith(b) for b in _BUILTIN_BLOCKED)):
+        if n and (n in blocked or any(b in n for b in _BUILTIN_BLOCKED)):
             return reject(f"channel {name!r} is a blocklisted rebroadcaster, not the original publisher")
 
     # --- publisher allowlist -----------------------------------------------------------
+    if on_youtube and source_type in GOV_SOURCE_TYPES:
+        impostor = _allowlist_impostor(strategy, source_type, info)
+        if impostor:
+            return reject(impostor)
     ok, rule = strategy_mod.is_publisher_allowed(
         strategy, source_type, channel=channel, channel_id=info.get("channel_id"), handle=handle, url=url,
     )

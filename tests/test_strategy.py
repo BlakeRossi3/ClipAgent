@@ -150,8 +150,19 @@ def test_experiment_assignment(strategy):
 
 @pytest.mark.parametrize("source_type, kw, ok", [
     ("nasa", dict(channel_id="UCLA_DiR1FfKNvjuUpBHmylQ", url="https://www.youtube.com/watch?v=x"), True),
-    ("nasa", dict(channel="nasa goddard", url="https://youtu.be/x"), True),
+    # a channel *name* alone is never enough (anyone can call a channel "NASA Goddard")
+    ("nasa", dict(channel="nasa goddard", url="https://youtu.be/x"), False),
+    ("nasa", dict(channel="NASA", channel_id="UCimpostor", url="https://www.youtube.com/watch?v=x"), False),
+    # a pinned channel_id is authoritative: the right handle with another id is an impostor
+    ("nasa", dict(handle="@NASA", channel_id="UCimpostor", url="https://www.youtube.com/watch?v=x"), False),
     ("nasa", dict(handle="@nasajpl", url="https://youtu.be/x"), True),
+    ("nasa", dict(handle="@nasajpl", url="https://vimeo.com/1"), False),       # handles are YouTube-only
+    ("nasa", dict(channel="NASA", url="https://vimeo.com/1"), False),          # uploader names elsewhere: no
+    ("congress", dict(channel="House Committee on Oversight and Accountability", channel_id="UCany",
+                      url="https://www.youtube.com/watch?v=x"), False),        # name-only entries admit nothing
+    ("nasa", dict(url="ftp://images.nasa.gov/x.mp4"), False),
+    ("nasa", dict(url="https://evil.example\\@images.nasa.gov/x.mp4"), False),
+    ("nasa", dict(url="https://user@images.nasa.gov/x.mp4"), False),
     ("nasa", dict(channel="Space Fan 99", url="https://www.youtube.com/watch?v=x"), False),
     ("nasa", dict(url="https://images.nasa.gov/details/abc"), True),
     ("nasa", dict(url="https://evilnasa.gov.example.com/x"), False),

@@ -157,7 +157,21 @@ def test_nasa_images_searcher(transports, strategy):
     assert search_call[1]["media_type"] == "video" and search_call[1]["q"] == "Artemis"
 
 
+OVERSIGHT_ID = "UCoversight0000000000000"
+
+
+def pin_channel(strat, source_type, name, channel_id):
+    """Copy of ``strat`` with ``channel_id`` pinned on the allowlist entry called ``name``."""
+    allow = {k: (dict(v) if isinstance(v, dict) else v) for k, v in strat["allowlist"].items()}
+    allow[source_type]["channels"] = [dict(c, channel_id=channel_id) if c["name"] == name else c
+                                      for c in allow[source_type]["channels"]]
+    return strat.updated(allowlist=allow)
+
+
 def test_official_youtube_searcher_filters_to_allowlist(transports, strategy):
+    # The shipped strategy has no channel id for the committees: name-only entries admit nothing.
+    assert scout.SEARCHERS["congress"]("UAP hearing", 5, strategy) == []
+    strategy = pin_channel(strategy, "congress", "House Committee on Oversight and Accountability", OVERSIGHT_ID)
     cands = scout.SEARCHERS["congress"]("UAP hearing", 5, strategy)
     ids = {c.external_id for c in cands}
     assert "AAAAAAAAAA1" in ids
@@ -225,9 +239,9 @@ def test_parse_duration():
 # ---------------------------------------------------------------------------
 
 def C(vid, query, *, stype="cc_by_youtube", duration=600.0, channel="Some Educator", published="2026-10-01T00:00:00Z",
-      url=None):
+      url=None, channel_id=None):
     return scout.Candidate(url=url or scout.canonical_youtube_url(vid), source_type=stype, platform="youtube",
-                           external_id=vid, channel=channel, channel_id=None, title=f"title {vid}",
+                           external_id=vid, channel=channel, channel_id=channel_id, title=f"title {vid}",
                            duration_sec=duration, published_at=published, topic=query, metadata={})
 
 
@@ -290,8 +304,8 @@ def test_scout_dedupes_against_db_and_url_variants(only, clock, make_source):
 def test_scout_spreads_across_topics(only, clock):
     def nasa(q, n, s):
         if q == "NASA Artemis":
-            return [C(f"art{i:08d}", q, stype="nasa", channel="NASA") for i in range(20)]
-        return [C(f"o{abs(hash(q)) % 10**10:010d}", q, stype="nasa", channel="NASA")]
+            return [C(f"art{i:08d}", q, stype="nasa", channel="NASA", channel_id=NASA_ID) for i in range(20)]
+        return [C(f"o{abs(hash(q)) % 10**10:010d}", q, stype="nasa", channel="NASA", channel_id=NASA_ID)]
     only("nasa", nasa)
     ids = scout.scout(max_candidates=10)
     topics = [db.require_source(i).topic for i in ids]
@@ -311,17 +325,33 @@ def test_scout_prefers_recent(only, clock):
     assert [db.require_source(i).external_id for i in ids] == ["new00000001", "old00000001"]
 
 
-def test_scout_one_searcher_failing(only, clock):
+def test_scout_one_searcher_failing(only, clock, strategy):
     def broken(q, n, s):
         raise ConnectionError("blocked")
     only("nasa", broken)
     only("congress", lambda q, n, s: [C(f"c{abs(hash(q)) % 10**10:010d}", q, stype="congress",
-                                         channel="House Committee on Oversight and Accountability")])
-    ids = scout.scout()
+                                         channel="House Committee on Oversight and Accountability",
+                                         channel_id=OVERSIGHT_ID)])
+    strat = pin_channel(strategy, "congress", "House Committee on Oversight and Accountability", OVERSIGHT_ID)
+    ids = scout.scout(strategy=strat)
     assert len(ids) == 4  # four congress topics
     ev = db.list_events(module="scout")[0]
     assert ev.data["error_count"] == scout.MAX_SEARCHER_FAILURES  # nasa disabled after repeated failures
     assert ev.data["dropped"]["searcher_disabled"] > 0
+
+
+NASA_ID = "UCLA_DiR1FfKNvjuUpBHmylQ"
+
+
+def test_scout_drops_name_only_lookalikes(only, clock):
+    """A YouTube channel merely *named* like an allowlisted publisher is never nominated."""
+    only("nasa", lambda q, n, s: [C(f"n{abs(hash(q)) % 10**10:010d}", q, stype="nasa", channel="NASA",
+                                    channel_id="UCimpostor0000000000000")])
+    only("congress", lambda q, n, s: [C(f"c{abs(hash(q)) % 10**10:010d}", q, stype="congress",
+                                        channel="House Committee on Oversight and Accountability",
+                                        channel_id="UCimpostor0000000000001")])
+    assert scout.scout() == []
+    assert db.list_events(module="scout")[0].data["dropped"]["publisher"] >= 8
 
 
 def test_scout_cap(only, clock):
