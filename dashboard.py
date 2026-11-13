@@ -522,6 +522,17 @@ def _is_loopback(request: Request) -> bool:
 # ===========================================================================
 
 @lru_cache(maxsize=1)
+def _asset_version() -> str:
+    """Cache-buster for /dashboard/static URLs: changes whenever a static file changes, so a browser
+    never keeps an old stylesheet or script after an update (static files are cached for an hour)."""
+    static = Path(__file__).resolve().parent / "static"
+    try:
+        newest = max((f.stat().st_mtime_ns for f in static.rglob("*") if f.is_file()), default=0)
+    except OSError:
+        newest = 0
+    return format(newest // 1_000_000, "x")
+
+
 def _env():
     import jinja2
 
@@ -532,6 +543,7 @@ def _env():
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    env.globals["asset_v"] = _asset_version()
     env.filters.update(
         compact=fmt_compact, int=fmt_int, usd=fmt_usd, pct=fmt_pct, duration=fmt_duration, hours=fmt_hours,
         dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json, ext_url=ext_url,

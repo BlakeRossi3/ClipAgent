@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if wizard %}Setup{% else %}Settings{% endif %}{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/dashboard/static/setup.css">
+<link rel="stylesheet" href="/dashboard/static/setup.css?v={{ asset_v }}">
 {% if step == "action" and reload %}<meta http-equiv="refresh" content="12;url=/setup/">{% endif %}
 {% endblock %}
 {% macro err(name) %}{% if errors.get(name) %}<span class="f-err" role="alert">{{ errors[name] }}</span>{% endif %}{% endmacro %}
@@ -334,7 +334,7 @@
       <label>Voice <select name="voice_voice">{% for k, l in (values.voice_voices or {}).items() %}<option value="{{ k }}"{% if values.voice_voice == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>{{ err("voice_voice") }}
       <label>Talking over me <select name="voice_barge">{% for k, l in (("auto", "Stops when you speak (best with a headset)"), ("wake_only", "Stops only for the wake word (laptop speakers)"), ("off", "Never interrupt")) %}<option value="{{ k }}"{% if values.voice_barge == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
       <label>ElevenLabs API key (optional) <input type="password" name="voice_eleven_key" autocomplete="off" placeholder="{{ 'Saved' if values.voice_eleven_key_set else 'Not set' }}"></label>{{ err("voice_eleven_key") }}
-      <script src="/dashboard/static/voice.js" defer></script>
+      <script src="/dashboard/static/voice.js?v={{ asset_v }}" defer></script>
       {% endif %}
       <p class="f-help">Say "stop listening" (or press Ctrl+Alt+M) for a hard mute: the microphone closes, so only the dashboard, the tray icon or Ctrl+Alt+M turn it back on. Windows must allow desktop apps to use the microphone (Settings, Privacy &amp; security, Microphone).</p>
     </fieldset>
@@ -381,4 +381,4 @@
 {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script src="/dashboard/static/setup.js"></script>{% endblock %}
+{% block scripts %}<script src="/dashboard/static/setup.js?v={{ asset_v }}"></script>{% endblock %}

@@ -79,6 +79,18 @@ def choose_device(devices: Iterable[Device], preferred: str = "") -> Device | No
     return max(mics, key=lambda d: (bool(_GOOD.search(d.name)), _HOSTAPI_RANK.get(d.hostapi, 1), -d.index))
 
 
+def _siblings(device: Device) -> list[Device]:
+    """The same microphone exposed through other host APIs, best first (shared-mode WASAPI, DirectSound...)."""
+    try:
+        devices = list_input_devices()
+    except Exception:  # pragma: no cover - hardware only
+        return []
+    base = _base_name(device.name)
+    same = [d for d in devices if d.index != device.index and _base_name(d.name) == base]
+    order = {"Windows WASAPI": 0, "Windows DirectSound": 1, "MME": 2, "Windows WDM-KS": 3}
+    return sorted(same, key=lambda d: order.get(d.hostapi, 4))
+
+
 def list_input_devices() -> list[Device]:
     """Inputs as PortAudio sees them now (re-initialises PortAudio so a newly plugged device appears)."""
     sd = _sd()
@@ -214,16 +226,26 @@ class MicSource:
                     pass
 
         last_exc: Exception | None = None
-        for rate in (RATE, self.device.default_rate, 48000.0, 44100.0):
-            try:
-                self._stream = sd.InputStream(device=self.device.index, channels=1, samplerate=rate, dtype="float32",
-                                              blocksize=int(rate * FRAME_SEC), callback=cb)
-                self._stream.start()
-                self._rate = float(rate)
+        # The same physical mic appears once per Windows audio API (MME, DirectSound, WASAPI). One of them
+        # can refuse to open (e.g. MME "Unanticipated host error" while another app holds the device), so
+        # fall back to the other APIs for the same mic before giving up.
+        for dev in [self.device, *_siblings(self.device)]:
+            for rate in (RATE, dev.default_rate, 48000.0, 44100.0):
+                try:
+                    self._stream = sd.InputStream(device=dev.index, channels=1, samplerate=rate, dtype="float32",
+                                                  blocksize=int(rate * FRAME_SEC), callback=cb)
+                    self._stream.start()
+                    self._rate = float(rate)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    self._stream = None
+            if self._stream is not None:
+                if dev is not self.device:
+                    log.warning("microphone %r failed on %s; using %s instead", self.device.name,
+                                self.device.hostapi, dev.hostapi)
+                    self.device = dev
                 break
-            except Exception as exc:
-                last_exc = exc
-                self._stream = None
         if self._stream is None:
             raise DeviceLost(f"could not open {self.device.name!r}: {last_exc}")
         self._last = self.clock()

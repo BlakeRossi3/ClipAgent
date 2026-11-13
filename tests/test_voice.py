@@ -479,3 +479,30 @@ def test_jarvis_home_renders_with_and_without_voice_process(talk):
     assert c.get("/dashboard/").status_code == 200
     csp = c.get("/dashboard/").headers["content-security-policy"]
     assert "script-src 'self'" in csp
+
+
+def test_mic_falls_back_to_another_windows_audio_api(monkeypatch):
+    """Regression: MME refused the G733 headset mic ("Unanticipated host error"); the same mic via
+    WASAPI must be tried before giving up."""
+    import types
+    from voice import audio
+
+    mme = audio.Device(index=1, name="Microphone (G733 Gaming Headset", hostapi="MME")
+    wasapi = audio.Device(index=7, name="Microphone (G733 Gaming Headset)", hostapi="Windows WASAPI")
+    opened = []
+
+    class FakeStream:
+        def __init__(self, *, device, **kw):
+            if device == 1:
+                raise RuntimeError("Error opening InputStream: Unanticipated host error [MME error 1]")
+            opened.append(device)
+            self.active = True
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(audio, "_sd", lambda: types.SimpleNamespace(InputStream=FakeStream))
+    monkeypatch.setattr(audio, "list_input_devices", lambda: [mme, wasapi])
+    mic = audio.MicSource(mme).open()
+    assert opened == [7]
+    assert mic.device.hostapi == "Windows WASAPI"
