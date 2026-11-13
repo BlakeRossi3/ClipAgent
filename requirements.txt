@@ -18,3 +18,14 @@ python-dotenv>=1.0
 httpx>=0.27                  # scout.py (NASA / congress APIs), FastAPI TestClient
 tzdata>=2024.1               # zoneinfo data on platforms without a system tz database
 PyYAML>=6.0                  # assistant/ vault frontmatter, agent and skill files
+
+# --- voice/ (always-on voice loop, Windows). Binary wheels for win_amd64 cp312/cp313 confirmed with
+# `uv pip compile --python-platform x86_64-pc-windows-msvc --only-binary :all:`. Windows-only markers:
+# openwakeword pulls tflite-runtime on Linux, which has no Python 3.12+ wheels (Linux: see docs/VOICE.md).
+sounddevice>=0.5; sys_platform == "win32"          # PortAudio bundled in the wheel
+openwakeword>=0.6,<0.7; sys_platform == "win32"    # wake word (ONNX runtime; hey_jarvis model)
+kokoro-onnx>=0.4,<0.7; sys_platform == "win32"     # local British TTS voices (bm_george)
+webrtcvad-wheels>=2.0.14; sys_platform == "win32"  # end-of-speech detection
+pystray>=0.19; sys_platform == "win32"             # tray icon
+pynput>=1.7; sys_platform == "win32"               # global hotkeys
+pywin32>=306; sys_platform == "win32"              # Windows SAPI voices (fallback TTS)

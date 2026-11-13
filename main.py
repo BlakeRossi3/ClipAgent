@@ -1166,6 +1166,12 @@ def schedule(host: str, port: int) -> int:
     _install_stop_signals()
     _control.update(server=srv, restart=False)
     _start_selfedit_check(port)
+    try:  # the always-on voice loop (VOICE_ENABLED) runs as its own process; see voice/web.py
+        from voice import web as voice_web
+
+        voice_web.start_child()
+    except Exception as exc:
+        log.warning("voice not started: %s", exc)
     if __name__ == "__main__":  # `python main.py`: the web pages `import main`, a second module copy
         import main as importable
 
@@ -1176,6 +1182,12 @@ def schedule(host: str, port: int) -> int:
         pass
     finally:
         _control["server"] = None
+        try:
+            from voice import web as voice_web
+
+            voice_web.stop_child()
+        except Exception:
+            pass
         try:
             sched.shutdown(wait=False)
             db.log_event(MODULE, "scheduler stopped", data={"pid": os.getpid(), "restart": _control["restart"]})

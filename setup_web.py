@@ -222,8 +222,10 @@ def current_values(step: str) -> dict[str, Any]:
     if step == "memory":
         return memory_status()
     if step == "power":
+        from voice.settings import form_values as voice_values
+
         return {"whisper_device": "cuda" if s.whisper_device == "cuda" else "cpu", "dry_run": s.dry_run,
-                "startup": start_with_windows()}
+                "startup": start_with_windows(), **voice_values()}
     return {}
 
 
@@ -418,7 +420,13 @@ def save_power(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
         problem = set_start_with_windows(bool(form.get("startup")))
         if problem:
             errors["startup"] = problem
-    return errors, {"WHISPER_DEVICE": device, "DRY_RUN": dry}
+    from voice.settings import parse_form as voice_form
+
+    verrors, vchanges = voice_form(form)
+    errors.update(verrors)
+    if verrors:
+        return errors, {}
+    return errors, {"WHISPER_DEVICE": device, "DRY_RUN": dry, **vchanges}
 
 
 SAVERS: dict[str, Callable[[Any], tuple[dict[str, str], dict[str, str | None]]]] = {

@@ -747,7 +747,7 @@ def feed_data(limit: int = FEED_ITEMS) -> list[dict[str, Any]]:
 def chat_history(limit: int = CHAT_HISTORY) -> list[Any]:
     from assistant import store
 
-    msgs = [m for m in store.list_messages(limit * 2) if m.channel in ("dashboard", "sms")][:limit]
+    msgs = [m for m in store.list_messages(limit * 2) if m.channel in ("dashboard", "sms", "voice", "whatsapp", "call")][:limit]
     return list(reversed(msgs))
 
 

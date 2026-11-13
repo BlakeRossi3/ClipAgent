@@ -494,7 +494,7 @@ DENY_COMMANDS = ("rm -rf *", "rm -fr *", "rm -r *", "rm -R *", "git push *", "gi
 DENY_POWERSHELL = ("Remove-Item * -Recurse*", "Remove-Item -Recurse *", "Remove-Item * -r *", "Format-Volume *",
                    "Clear-Disk *", "Stop-Computer*", "Restart-Computer*", "git push *", "git reset --hard *",
                    "git clean *", "Remove-ItemProperty *", "Invoke-Expression *", "iex *")
-SESSION_CHANNELS = ("dashboard", "sms")
+SESSION_CHANNELS = ("dashboard", "sms", "whatsapp", "voice")
 KV_SESSION = "assistant:cc:session:{channel}"
 DEFAULT_USER_DIRS = ("Desktop", "Documents", "Downloads", "Pictures", "Videos")
 

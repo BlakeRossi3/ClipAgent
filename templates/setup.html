@@ -322,6 +322,22 @@
       <label class="f-check"><input type="radio" name="dry_run" value="true"{% if values.dry_run in (true, "true") %} checked{% endif %}> On - nothing is uploaded, texted or called; everything is recorded so you can check it (recommended for the first days)</label>
       <label class="f-check"><input type="radio" name="dry_run" value="false"{% if values.dry_run in (false, "false") %} checked{% endif %}> Off - go live: real uploads, texts and calls</label>
       {{ err("dry_run") }}</fieldset>
+    {# --- voice (voice/ package; docs/VOICE.md) --- #}
+    <fieldset class="f" id="voice"><legend>Voice</legend>
+      <input type="hidden" name="voice_present" value="1">
+      <label class="f-check"><input type="checkbox" name="voice_enabled" value="1"{% if values.voice_enabled %} checked{% endif %}> Talk to {{ values.voice_name or "me" }} out loud: always listening on this laptop for "Hey Jarvis" or "{{ values.voice_name or "Sterling" }}". Everything is heard and spoken locally; only what you say after the wake word goes to the assistant.</label>
+      {% if not wizard %}
+      <label>Microphone <input name="voice_device" value="{{ values.voice_device or '' }}" placeholder="Automatic" list="voice-devs" data-voice-devices></label><datalist id="voice-devs"></datalist>{{ err("voice_device") }}
+      <p><button type="button" class="hbtn" data-voice-test>Test my mic</button> <meter min="0" max="1" value="0" data-voice-meter></meter> <span data-voice-test-note></span></p>
+      <label>Wake word <select name="voice_wake">{% for k, l in (("both", "Hey Jarvis or my name"), ("hey_jarvis", "Hey Jarvis only"), ("name", "My name only")) %}<option value="{{ k }}"{% if values.voice_wake == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>{{ err("voice_wake") }}
+      <label>Voice engine <select name="voice_tts">{% for k, l in (("kokoro", "Kokoro (free, on this laptop)"), ("sapi", "Windows voices"), ("elevenlabs", "ElevenLabs (paid, needs a key)")) %}<option value="{{ k }}"{% if values.voice_tts == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>{{ err("voice_tts") }}
+      <label>Voice <select name="voice_voice">{% for k, l in (values.voice_voices or {}).items() %}<option value="{{ k }}"{% if values.voice_voice == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>{{ err("voice_voice") }}
+      <label>Talking over me <select name="voice_barge">{% for k, l in (("auto", "Stops when you speak (best with a headset)"), ("wake_only", "Stops only for the wake word (laptop speakers)"), ("off", "Never interrupt")) %}<option value="{{ k }}"{% if values.voice_barge == k %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+      <label>ElevenLabs API key (optional) <input type="password" name="voice_eleven_key" autocomplete="off" placeholder="{{ 'Saved' if values.voice_eleven_key_set else 'Not set' }}"></label>{{ err("voice_eleven_key") }}
+      <script src="/dashboard/static/voice.js" defer></script>
+      {% endif %}
+      <p class="f-help">Say "stop listening" (or press Ctrl+Alt+M) for a hard mute: the microphone closes, so only the dashboard, the tray icon or Ctrl+Alt+M turn it back on. Windows must allow desktop apps to use the microphone (Settings, Privacy &amp; security, Microphone).</p>
+    </fieldset>
     {% if windows %}
     <label class="f-check"><input type="checkbox" name="startup" value="1"{% if values.startup in (true, "1") %} checked{% endif %}> Start ClipAgent when Windows starts (quietly, without opening the browser)</label>{{ err("startup") }}
     {% endif %}

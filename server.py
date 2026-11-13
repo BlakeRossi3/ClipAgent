@@ -87,6 +87,13 @@ def create_app() -> FastAPI:
     if setup is not None:
         app.include_router(setup)
     if dashboard is not None:
+        try:  # voice status/mute API (voice/web.py); optional
+            from voice.web import router as voice_router
+
+            app.include_router(voice_router)
+        except Exception as exc:
+            log.warning("voice API unavailable: %s", exc)
+    if dashboard is not None:
         try:  # desktop modes / Claude history / Twilio check pages (optional, like the wizard)
             from assistant import toolkit_web
 

@@ -19,6 +19,7 @@
       {% if dry_run %}<span class="chip">Dry run</span>{% endif %}
       {% if a.enabled and a.fake %}<span class="chip">Practice mode</span>{% endif %}
       {% if not a.enabled %}<span class="chip">Assistant off</span>{% endif %}
+      {# --- voice pill (voice/web.py, static/voice.js) --- #}<span class="chip" data-voice-pill hidden data-csrf="{{ csrf }}"><span data-voice-label>Voice</span> <button type="button" class="hbtn" data-voice-mute>Mute</button></span><script src="/dashboard/static/voice.js" defer></script>
     </p>
   </div>
 </section>
@@ -51,7 +52,7 @@
         <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
           <p class="msg-body">{{ m.body }}</p>
           {% if m.meta and m.meta.attachments %}<p class="msg-images">{% for f in m.meta.attachments %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
-          <p class="msg-meta">{{ m.channel }} · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
+          <p class="msg-meta"><span class="chip chan-{{ m.channel }}">{{ m.channel }}</span> · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
         </li>
         {% else %}
         <li class="msg msg-them msg-hint" data-empty><p class="msg-body">{% if a.can_chat %}Ask me anything, {{ a.honorific }} — or tell me something worth remembering.{% else %}{{ a.reason }}{% endif %}</p></li>
