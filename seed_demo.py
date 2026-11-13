@@ -45,6 +45,7 @@ from zoneinfo import ZoneInfo
 REPO_ROOT = Path(__file__).resolve().parent
 DATA_TABLES = ("sources", "clips", "uploads", "stats", "channel_stats", "decisions", "llm_usage",
                "strategy_versions", "notifications", "events")
+ASSISTANT_TABLES = ("as_messages", "as_jobs", "as_work_log", "as_income", "as_agent_runs", "as_goals")
 DEMO_MARKER_FILE = ".clipagent-demo"
 
 
@@ -71,10 +72,21 @@ def configure(data_dir: Path) -> None:
     os.environ["FAKE_LLM"] = "true"
     for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
         os.environ[k] = ""          # empty env value overrides config.env and means "unset"
+    # The assistant: its own DEMO vault inside data_dir (never the owner's real one), offline fake model.
+    os.environ["VAULT_DIR"] = str(data_dir / "vault")
+    os.environ["ASSISTANT_ENABLED"] = "true"
+    os.environ["FAKE_ASSISTANT"] = "true"
+    os.environ["OWNER_NAME"] = "Alex"
     config.reset_settings()
     s = config.get_settings()
     if s.db_path.resolve().parent != data_dir.resolve():
         raise RefuseError(f"demo database would be {s.db_path}, outside {data_dir}; refusing")
+    from assistant.settings import get_assistant_settings, reset_assistant_settings
+
+    reset_assistant_settings()
+    vault_dir = get_assistant_settings().vault_dir.resolve()
+    if not vault_dir.is_relative_to(data_dir.resolve()):
+        raise RefuseError(f"demo vault would be {vault_dir}, outside {data_dir}; refusing")
 
 
 def target_state(db_path: Path) -> str:
@@ -91,7 +103,7 @@ def target_state(db_path: Path) -> str:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "kv" in tables and conn.execute("SELECT 1 FROM kv WHERE key = ?", (DEMO_KV_KEY,)).fetchone():
                 return "demo"
-            for t in DATA_TABLES:
+            for t in DATA_TABLES + ASSISTANT_TABLES:
                 if t in tables and conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone():
                     return "real"
             if "kv" in tables and conn.execute("SELECT 1 FROM kv WHERE key NOT LIKE 'dashboard:%' LIMIT 1").fetchone():
@@ -122,6 +134,13 @@ def prepare_target(data_dir: Path, *, replace: bool) -> None:
                 p.unlink()
         if strat.exists() and marker.exists():
             strat.unlink()
+        vault_dir = data_dir / "vault"
+        if vault_dir.is_dir() and marker.exists() and (vault_dir / DEMO_MARKER_FILE).exists():
+            import shutil
+
+            shutil.rmtree(vault_dir)
+    if (data_dir / "vault").exists() and not (data_dir / "vault" / DEMO_MARKER_FILE).exists():
+        raise RefuseError(f"{data_dir / 'vault'} exists and was not created by seed_demo.py; refusing to touch it.")
     if strat.exists() and not marker.exists():
         raise RefuseError(f"{strat} exists and was not created by seed_demo.py; refusing to overwrite it.")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -267,6 +286,9 @@ def seed(data_dir: Path, *, days: int = 60, seed_value: int = 7, replace: bool =
     data_dir = Path(data_dir).expanduser().resolve()
     configure(data_dir)
     prepare_target(data_dir, replace=replace)
+    from assistant import store as _store
+
+    _store._reset_migration_cache()  # the DB file may have just been replaced
 
     import budget
     import config
@@ -314,6 +336,7 @@ def seed(data_dir: Path, *, days: int = 60, seed_value: int = 7, replace: bool =
             day = start + timedelta(days=i)
             _simulate_day(sim, day, i, plan, clock, db, budget, strategy_mod)
         _finish(sim, db, clock)
+        _assistant(sim, db, clock, data_dir)
         clock.now = real_now
         conn = db.connect()
         try:
@@ -842,6 +865,169 @@ def _weekly(sim: Sim, db, budget, strategy_mod, clock: Clock, day: date, i: int,
         db.log_event("strategist", f"weekly review saved strategy version {saved.version}",
                      data={"version": saved.version})
     db.add_notification("weekly_report", report[:600], "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26))
+
+
+# ---------------------------------------------------------------------------
+# the assistant (invented persona "Alex"; nothing here is real)
+# ---------------------------------------------------------------------------
+
+DEMO_NOTES = {
+    "Profile/About.md": ("profile", """# About Alex
+
+Alex works shifts at a bike shop and runs a small Shorts channel on the side.
+
+## Facts
+- Works at [[Spoke & Chain]] as a bike mechanic — _stated, sms, {d}_
+- Prefers texts over calls before 9 am — _stated, dashboard, {d}_
+- Training for a half marathon in the spring — _stated, sms, {d}_
+
+See also [[Preferences]] and [[Meals]]."""),
+    "Profile/Preferences.md": ("preferences", """# Preferences
+
+## Facts
+- Likes short, direct updates — _stated, sms, {d}_
+- Coffee black, no sugar — _stated, sms, {d}_
+- Weekly money summary on Sunday evenings — _inferred, dashboard, {d}_"""),
+    "Health/Meals.md": ("meals", """# Meals
+
+## Facts
+- Dislikes mushrooms — _stated, sms, {d}_
+- Happy with leftovers for lunch — _stated, sms, {d}_
+- Vegetarian on weekdays — _stated, dashboard, {d}_
+
+## Favourites
+1. Black bean tacos
+2. Peanut noodles with cucumber
+3. Overnight oats"""),
+    "Projects/Spoke & Chain.md": ("project", """# Spoke & Chain
+
+The bike shop where Alex works. Pay is weekly-ish; hours vary between **20 and 38**.
+
+- [x] Ask about the winter schedule
+- [ ] Find out whether overtime applies on Saturdays
+
+Linked from [[About]]."""),
+    "Finance/Goals.md": ("finance", """# Money goals
+
+## Facts
+- Emergency fund target: $3,000 by June — _stated, sms, {d}_
+- Sets aside 15% of pay for tax — _stated, dashboard, {d}_"""),
+}
+
+AGENT_TASKS = {
+    "main": [("Answer: how many hours did I work last week?", "Replied with last week's hours and pay."),
+             ("Remember: allergic to nothing, dislikes mushrooms", "Filed under Health/Meals."),
+             ("Morning check-in", "Sent the morning brief.")],
+    "studio": [("Weekly reels report", "Seven Shorts, 41K views; space clips lead retention."),
+               ("Why did views dip on Tuesday?", "Two uploads went out late; slot moved back.")],
+    "ledger": [("Log 31.5 hours for this week", "Logged 31.5 h at Spoke & Chain."),
+               ("Monthly money summary", "Month to date: job pay and reels profit summarised.")],
+    "quartermaster": [("Suggest tonight's dinner", "Suggested black bean tacos."),
+                      ("Plan tomorrow's meals", "Planned breakfast, lunch and dinner.")],
+    "archivist": [("Weekly vault tidy", "Merged two duplicate preference notes."),
+                  ("What do I know about the half marathon?", "Found one fact in About.")],
+    "briefer": [("Morning brief", "Brief sent: one approval waiting, meals planned."),
+                ("Evening wrap", "Wrap sent: 2 Shorts published today.")],
+    "researcher": [("Best stretch routine before a long run?", "Answered from memory and general guidance.")],
+    "engineer": [("Review last week's lessons", "Proposed a shorter morning brief (awaiting approval).")],
+}
+
+
+def _assistant(sim: Sim, db, clock: Clock, data_dir: Path) -> None:
+    """Assistant demo data through ``assistant.store`` and a DEMO vault."""
+    from assistant import store, vault
+
+    rng = sim.rng
+    now = sim.real_now
+    today = now.astimezone(sim.tz).date()
+    clock.now = now - timedelta(days=60)
+    root = vault.ensure_vault()
+    (root / DEMO_MARKER_FILE).write_text("Demo vault generated by seed_demo.py - invented persona.\n", encoding="utf-8")
+    for rel, (kind, body) in DEMO_NOTES.items():
+        vault.write_note(rel, body.replace("{d}", (today - timedelta(days=rng.randint(2, 40))).isoformat()),
+                         source="demo", note_type=kind, on_conflict="append")
+    vault.append_journal("Quiet day. Alex asked for a lighter dinner and logged a long Saturday shift.",
+                         today - timedelta(days=1), source="demo")
+    job = store.upsert_job("Spoke & Chain", hourly_rate=21.5, pay_schedule="weekly", est_tax_rate=0.15)
+    this_monday = store.week_start_of(today)
+    for w in range(1, 9):
+        ws = this_monday - timedelta(weeks=w)
+        hours = round(rng.uniform(22, 37) * 2) / 2
+        clock.now = datetime.combine(ws + timedelta(days=6), time(19, 5), tzinfo=sim.tz).astimezone(UTC)
+        store.log_hours(job, hours, week_start=ws, source="sms")
+        store.add_income(round(hours * 21.5, 2), source="job", day=ws + timedelta(days=11), ref=f"demo-pay-{ws}",
+                         note="Spoke & Chain pay")
+    clock.now = now - timedelta(hours=20)
+    store.log_hours(job, 18.0, week_start=this_monday, source="dashboard", note="so far")
+    store.add_income(42.10, source="reels", day=today.replace(day=1), ref="demo-reels-month", note="YouTube payout")
+    store.add_goal("Emergency fund", metric="usd", target=3000, current=1840, due=f"{today.year + 1}-06-01")
+    store.add_goal("Half marathon training runs", metric="runs", target=36, current=21)
+    store.add_goal("Post 5 Shorts a week", metric="shorts", target=5, current=4)
+    # check-ins: answered most days (a streak), one unanswered weekly-hours question
+    for i in range(1, 12):
+        if i == 5:
+            continue
+        day = today - timedelta(days=i)
+        at = datetime.combine(day, time(20, 30), tzinfo=sim.tz).astimezone(UTC)
+        clock.now = at
+        cid = store.add_checkin("evening", "How did today go?", db.to_iso(at))
+        store.mark_checkin_sent(cid)
+        clock.now = at + timedelta(minutes=12)
+        store.answer_checkin(cid, rng.choice(["Good, long shift", "Tired but fine", "Great run this morning"]),
+                             {"mood": rng.choice(["good", "ok"])})
+    clock.now = now - timedelta(hours=2)
+    cid = store.add_checkin("weekly_hours", "How many hours did you work at Spoke & Chain this week?",
+                            db.to_iso(now - timedelta(hours=2)))
+    store.mark_checkin_sent(cid)
+    later = datetime.combine(today, time(20, 30), tzinfo=sim.tz).astimezone(UTC)
+    store.add_checkin("evening", "How did today go?", db.to_iso(later))
+    # meals: history with feedback, today's plan waiting for a yes/no
+    menu = ["Overnight oats with berries", "Leftover peanut noodles", "Black bean tacos", "Greek yoghurt and granola",
+            "Lentil soup and bread", "Veggie stir-fry with rice", "Egg and avocado toast", "Halloumi wraps",
+            "Chickpea curry"]
+    for i in range(1, 6):
+        for slot in store.MEAL_SLOTS:
+            mid = store.add_meal(slot, rng.choice(menu), day=today - timedelta(days=i))
+            store.update_meal(mid, status=rng.choice(["accepted", "accepted", "eaten", "declined"]),
+                              feedback=rng.choice([None, "Too heavy", "Loved it", None]))
+    store.add_meal("breakfast", "Overnight oats with berries", day=today)
+    mid = store.add_meal("lunch", "Leftover peanut noodles", day=today)
+    store.update_meal(mid, status="accepted")
+    store.add_meal("dinner", "Black bean tacos with lime slaw", day=today)
+    # conversation
+    convo = [(26, "in", "sms", "Worked a double on Saturday, ugh"),
+             (26, "out", "sms", "Noted, sir. That puts last week at 36 hours. Rest well."),
+             (6, "in", "dashboard", "What's my emergency fund at?"),
+             (6, "out", "dashboard", "1,840 dollars of 3,000, sir. About 61 percent; on pace for June."),
+             (3, "in", "dashboard", "Suggest something light for dinner"),
+             (3, "out", "dashboard", "Black bean tacos with a lime slaw. Quick, and no mushrooms in sight."),
+             (1, "out", "sms", "Good morning, sir. One approval waits for you, and lunch is sorted.")]
+    for hours_ago, direction, channel, body in convo:
+        clock.now = now - timedelta(hours=hours_ago)
+        store.add_message(direction, channel, body, kind="chat" if direction == "in" else "reply",
+                          agent=None if direction == "in" else "main",
+                          cost_usd=0.0 if direction == "in" else round(rng.uniform(0.004, 0.02), 4))
+    # agent runs across every agent, including one failure and one still running
+    for agent, tasks in AGENT_TASKS.items():
+        for j, (task, summary) in enumerate(tasks):
+            clock.now = now - timedelta(hours=rng.randint(1, 70), minutes=rng.randint(0, 59))
+            store.record_agent_run(agent, task, model="claude-opus-5-5" if agent != "main" else "claude-fable-5-2",
+                                   duration_ms=rng.randint(900, 9000), cost_usd=round(rng.uniform(0.002, 0.03), 4),
+                                   status="ok", summary=summary, fake=True)
+    clock.now = now - timedelta(hours=3)
+    store.record_agent_run("researcher", "Look up race-day nutrition", model="claude-opus-5-5", duration_ms=4100,
+                           cost_usd=0.011, status="error", summary="Web search is switched off, so I could not look it up.",
+                           fake=True)
+    clock.now = now - timedelta(minutes=4)
+    store.record_agent_run("archivist", "Filing today's journal", model="claude-opus-5-5", duration_ms=0,
+                           cost_usd=0.0, status="running", fake=True)
+    # lessons
+    clock.now = now - timedelta(days=4)
+    store.add_lesson("briefs", "Keep the morning brief under three lines on workdays.",
+                     evidence="Owner replied 'shorter please' twice.", status="adopted")
+    store.add_lesson("meals", "Offer leftovers for lunch before suggesting something new.",
+                     evidence="Leftover suggestions accepted 5 of 6 times.", status="adopted")
+    store.add_lesson("money", "Ask for hours on Sunday evening, not Friday.", evidence="Friday asks went unanswered.")
 
 
 # ---------------------------------------------------------------------------

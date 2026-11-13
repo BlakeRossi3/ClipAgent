@@ -265,6 +265,9 @@ def process_pending(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
                 counts["llm_unavailable"] = 1
                 db.log_event(MODULE, f"LLM unavailable at source {src.id}; judgment skipped this run",
                              level="warning", data={"source_id": src.id, "error": str(exc)[:300]})
+            except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this item
+                counts["skipped_concurrent"] += 1
+                log.info("source %s changed status concurrently: %s", src.id, exc)
             except fetch.LicenceRejected:
                 counts["rejected"] += 1
             except (fetch.FetchError, transcribe.TranscribeError, pick.PickError) as exc:
@@ -304,6 +307,8 @@ def upload_ready(limit: int | None = None) -> list[int]:
                 break
             except upload.UploadError as exc:
                 log.warning("upload of clip %s failed: %s", clip.id, exc)
+            except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this clip
+                log.info("clip %s changed status concurrently: %s", clip.id, exc)
     return ids
 
 
@@ -581,6 +586,27 @@ def job_specs() -> list[JobSpec]:
         JobSpec("daily_summary", notify.daily_summary, "cron", {"hour": 20, "minute": 55}, "evening call"),
         JobSpec("weekly_review", strategist.weekly_review, "cron", {"day_of_week": "sun", "hour": 18, "minute": 5},
                 "Sonnet strategy review"),
+    ] + assistant_job_specs()
+
+
+def assistant_job_specs() -> list[JobSpec]:
+    """The personal assistant's jobs - only when ASSISTANT_ENABLED."""
+    from assistant.settings import get_assistant_settings
+
+    if not get_assistant_settings().enabled:
+        return []
+    from assistant import checkins, runtime
+
+    def tidy() -> Any:
+        return runtime.run_task("archivist", "Weekly tidy of the memory vault: follow the memory-curation skill. "
+                                "Merge duplicates, file inbox items, flag contradictions. Report briefly.").status
+
+    return [
+        JobSpec("assistant_plan_startup", checkins.plan_day, "date", {}, "plan today's check-ins at startup"),
+        JobSpec("assistant_plan", checkins.plan_day, "cron", {"hour": 0, "minute": 7}, "plan the day's check-ins"),
+        JobSpec("assistant_checkins", checkins.send_due, "interval", {"minutes": 5}, "send due check-ins"),
+        JobSpec("assistant_tidy", tidy, "cron", {"day_of_week": "sun", "hour": 4, "minute": 15},
+                "archivist memory tidy"),
     ]
 
 
@@ -822,16 +848,113 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
     public_ok = base.scheme == "https" and base.hostname not in ("localhost", "127.0.0.1")
     checks.append(Check("PUBLIC_BASE_URL", "pass" if public_ok else sev, s.public_base_url,
                         "set PUBLIC_BASE_URL to the HTTPS address of this server (deploy/README.md)"))
-    checks.append(Check("DASHBOARD_TOKEN", "pass" if s.dashboard_token else "warn",
-                        "set" if s.dashboard_token else "dashboard has no password",
-                        "set DASHBOARD_TOKEN in config.env"))
+    tok = s.dashboard_token or ""
+    if not tok:
+        tok_status, tok_detail = ("fail" if public_ok else "warn"), "dashboard has no password"
+    elif len(tok) < 20:
+        tok_status, tok_detail = "warn", f"only {len(tok)} characters"
+    else:
+        tok_status, tok_detail = "pass", "set"
+    checks.append(Check("DASHBOARD_TOKEN", tok_status, tok_detail,
+                        "set DASHBOARD_TOKEN in config.env to a random string of 20+ characters "
+                        "(python -c 'import secrets; print(secrets.token_urlsafe(32))')"))
+    if s.dashboard_allow_unauthenticated:
+        checks.append(Check("DASHBOARD_ALLOW_UNAUTHENTICATED", "fail" if public_ok else "warn",
+                            "true: anyone who reaches the dashboard can approve changes",
+                            "set DASHBOARD_ALLOW_UNAUTHENTICATED=false"))
     checks.append(Check("DRY_RUN", "warn" if s.dry_run else "pass",
                         "on: nothing is uploaded, called or texted" if s.dry_run else "off: live",
                         "set DRY_RUN=false when the go-live checklist is done (README)"))
     checks.append(_whisper_check(s))
+    checks += assistant_checks(s)
     if network:
         checks += _network_checks()
     return checks
+
+
+def assistant_checks(s: Settings) -> list[Check]:
+    """Doctor section for the personal assistant."""
+    from assistant import registry, store, tools
+    from assistant.settings import get_assistant_settings
+
+    a = get_assistant_settings()
+    out = [Check("assistant", "pass", "enabled" if a.enabled else "disabled (ASSISTANT_ENABLED=false)")]
+    if not a.enabled:
+        return out
+    out.append(Check("assistant models", "pass", f"main {a.model} ({a.effort}), sub-agents {a.subagent_model} "
+                     f"({a.subagent_effort}){', FAKE' if a.fake else ''}"))
+    out.append(Check("assistant budget", "pass" if a.daily_budget_usd > 0 else "warn",
+                     f"${a.daily_budget_usd:.2f}/day, ${a.max_turn_usd:.2f}/turn, {a.max_sms_per_day} texts/day "
+                     f"(separate from the pipeline's ${budget.daily_cap_usd():.2f})",
+                     "set ASSISTANT_DAILY_BUDGET_USD"))
+    vault_ok = a.vault_dir.is_dir()
+    ignored = True
+    try:
+        rel = a.vault_dir.resolve().relative_to(Path(__file__).resolve().parent)
+        ignored = subprocess.run(["git", "check-ignore", "-q", str(rel)], cwd=Path(__file__).resolve().parent,
+                                 capture_output=True).returncode == 0
+    except ValueError:
+        pass  # outside the repository: cannot be committed
+    except OSError:
+        pass
+    out.append(Check("vault", "pass" if vault_ok and ignored else ("fail" if not ignored else "warn"),
+                     f"{a.vault_dir}" + ("" if vault_ok else " (not created yet)")
+                     + ("" if ignored else " is NOT git-ignored"),
+                     "move VAULT_DIR outside the repo or into an ignored folder; it is created on first use"))
+    errs = registry.validate_all(tools.known_tool_names())
+    out.append(Check("agents/skills", "fail" if errs else "pass", "; ".join(errs)[:300] or "registry validates",
+                     "run: python main.py assistant validate"))
+    rated = [j for j in store.list_jobs() if j.hourly_rate > 0]
+    out.append(Check("pay rate", "pass" if rated else "warn",
+                     ", ".join(f"{j.name} ${j.hourly_rate:.2f}/h" for j in rated) or "not set: earnings unknown",
+                     "python main.py assistant job --rate <usd> (or answer the assistant's question)"))
+    out.append(Check("owner phone (assistant)", "pass" if s.owner_phone else "fail",
+                     s.owner_phone or "OWNER_PHONE missing", "set OWNER_PHONE"))
+    return out
+
+
+def assistant_cli(args: argparse.Namespace) -> int:
+    from assistant import checkins, ledger, registry, runtime, store, tools, vault
+    from assistant.settings import get_assistant_settings
+
+    a = get_assistant_settings()
+    store.init_store()
+    if args.acmd == "validate":
+        errs = registry.validate_all(tools.known_tool_names())
+        skills = registry.load_skills(strict=False)
+        agents = registry.load_agents(skills=skills, strict=False)
+        print("\n".join(errs) if errs else f"ok: {len(agents)} agents, {len(skills)} skills, "
+              f"{len(tools.available(sorted(tools.known_tool_names())))} tools installed")
+        return 1 if errs else 0
+    if args.acmd == "reindex":
+        vault.ensure_vault()
+        print(f"reindexed: {vault.reindex()}")
+    elif args.acmd == "status":
+        print(f"assistant {'ENABLED' if a.enabled else 'disabled'}  name {a.name}  fake {a.fake}  vault {a.vault_dir}")
+        print(f"spend today ${store.assistant_spent_today():.4f} of ${a.daily_budget_usd:.2f}   "
+              f"texts today {tools.outbound_sms_today()}/{a.max_sms_per_day}")
+        s = ledger.summary(weeks=4)
+        print("money: " + (ledger.brief_line(s) or "no job set"))
+        if s["missing"]:
+            print("missing: " + "; ".join(s["missing"]))
+        open_c = store.open_checkin()
+        print(f"open check-in: #{open_c.id} {open_c.kind}: {open_c.question}" if open_c else "open check-in: none")
+    elif args.acmd == "chat":
+        res = runtime.run_turn(" ".join(args.message), channel="dashboard")
+        print(res.text)
+        print(f"[{res.status}, ${res.cost_usd:.4f}, tools: {[c.name for c in res.tool_calls]}]")
+    elif args.acmd == "hours":
+        res = ledger.log_hours(args.hours, week=args.week, job=args.job, source="cli")
+        print(ledger.confirmation(res, a.owner_honorific))
+    elif args.acmd == "job":
+        job = ledger.set_job(args.name, hourly_rate=args.rate, pay_schedule=args.schedule, est_tax_rate=args.tax)
+        print(f"job {job.name}: ${job.hourly_rate:.2f}/h, paid {job.pay_schedule}, tax set-aside "
+              f"{job.est_tax_rate:.0%}")
+    elif args.acmd == "plan":
+        new = checkins.plan_day()
+        print(f"{db.local_today()}: {len(new)} newly planned (routine: {checkins.ROUTINE_NOTE} in the vault)")
+        print("\n".join(checkins.status_lines()))
+    return 0
 
 
 def format_checks(checks: list[Check]) -> str:
@@ -934,6 +1057,23 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a pending decision")
         p.add_argument("decision_id", type=int)
+    pa = sub.add_parser("assistant", help="the personal assistant (chat, hours, job, plan, status...)")
+    asub = pa.add_subparsers(dest="acmd", required=True)
+    p = asub.add_parser("chat", help="send the assistant a message (dashboard channel)")
+    p.add_argument("message", nargs="+")
+    asub.add_parser("status", help="assistant spend, texts, money, open check-in")
+    asub.add_parser("validate", help="validate agents/*.md and skills/*/SKILL.md")
+    asub.add_parser("reindex", help="rebuild the vault search index")
+    p = asub.add_parser("hours", help="log hours worked this week (or --week)")
+    p.add_argument("hours", type=float)
+    p.add_argument("--week", type=date.fromisoformat, help="any date in that week (YYYY-MM-DD)")
+    p.add_argument("--job")
+    p = asub.add_parser("job", help="set a job's hourly rate / pay schedule / tax set-aside")
+    p.add_argument("--rate", type=float, required=True, help="USD per hour before tax")
+    p.add_argument("--name", default="Job")
+    p.add_argument("--schedule", choices=["weekly", "biweekly", "semimonthly", "monthly"])
+    p.add_argument("--tax", type=float, help="tax set-aside, e.g. 0.2 or 20")
+    asub.add_parser("plan", help="plan and show today's check-ins")
     return ap
 
 
@@ -1012,6 +1152,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "cleanup":
             out = cleanup()
             print(f"freed {out['bytes'] / 1e6:.1f} MB ({out['sources']} sources, {out['renders']} renders)")
+        elif args.cmd == "assistant":
+            return assistant_cli(args)
         elif args.cmd in ("approve", "reject"):
             import notify
             ok = notify.handle_decision(args.decision_id, args.cmd == "approve", via="cli")

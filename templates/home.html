@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% import "home_parts.html" as p with context %}
+{% block title %}Home{% endblock %}
+{% block content %}
+{% set a = h.a %}
+<div class="home" data-refresh="{{ h.refresh }}">
+<section class="hero mood-{{ h.hello.mood }}" id="hero" aria-labelledby="salute">
+  <div class="avatar" aria-hidden="true">
+    <span class="avatar-glow"></span>
+    {{ h.avatar.idle | safe }}{{ h.avatar.alert | safe }}
+    <span class="bubble">!</span>
+  </div>
+  <div class="hero-text">
+    <p class="hero-name">{{ a.name }} <span>· at your service</span></p>
+    <h1 id="salute" data-live-text="salute">{{ h.hello.salute }}</h1>
+    <p class="hero-line" data-live-text="line">{{ h.hello.line }}</p>
+    <p class="hero-chips">
+      <span class="chip">{{ h.today_date.strftime("%A %-d %B") }}</span>
+      {% if dry_run %}<span class="chip">Dry run</span>{% endif %}
+      {% if a.enabled and a.fake %}<span class="chip">Practice mode</span>{% endif %}
+      {% if not a.enabled %}<span class="chip">Assistant off</span>{% endif %}
+    </p>
+  </div>
+</section>
+
+{% if h.fresh or h.steps_left >= 3 %}
+<section class="card setup" aria-labelledby="setup-title">
+  <h2 class="sec-title" id="setup-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Getting settled<span class="sec-extra">{{ h.steps | length - h.steps_left }} of {{ h.steps | length }}</span></h2>
+  <ol class="steps">
+    {% for st in h.steps %}
+    <li class="{{ 'done' if st.done else '' }}"><span class="step-box" aria-hidden="true">{{ "✓" if st.done else loop.index }}</span>
+      <div><strong>{{ st.title }}</strong>{% if st.done %}<span class="sr-only"> (done)</span>{% endif %}<p>{{ st.body }}</p></div></li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+<div class="home-grid">
+  <div class="col col-main">
+    <div data-live="needs">{{ p.needs(h) }}</div>
+
+    <section aria-labelledby="life-title" class="block">
+      <h2 class="sec-title" id="life-title"><span class="sec-glyph">{{ glyph("spark") | safe }}</span>Your week</h2>
+      <div data-live="tiles">{{ p.tiles(h) }}</div>
+    </section>
+
+    <section class="card talk" id="talk" aria-labelledby="talk-title">
+      <h2 class="sec-title" id="talk-title"><span class="sec-glyph">{{ glyph("chat") | safe }}</span>Talk to {{ a.name }}<span class="sec-extra"><kbd>/</kbd> to type</span></h2>
+      <ol class="chat-log" data-chat-log aria-live="polite">
+        {% for m in h.history %}
+        <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
+          <p class="msg-body">{{ m.body }}</p>
+          <p class="msg-meta">{{ m.channel }} · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
+        </li>
+        {% else %}
+        <li class="msg msg-them msg-hint" data-empty><p class="msg-body">{% if a.can_chat %}Ask me anything, {{ a.honorific }} — or tell me something worth remembering.{% else %}{{ a.reason }}{% endif %}</p></li>
+        {% endfor %}
+      </ol>
+      <form class="chat-form" method="post" action="/dashboard/chat" data-chat data-name="{{ a.name }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label class="sr-only" for="chat-input">Message to {{ a.name }}</label>
+        <textarea id="chat-input" name="message" rows="1" maxlength="{{ chat_max }}" placeholder="{{ 'Message ' ~ a.name ~ '…' if a.can_chat else 'Unavailable just now' }}" {% if not a.can_chat %}disabled{% endif %}></textarea>
+        <button type="submit" class="hbtn hbtn-accent" {% if not a.can_chat %}disabled{% endif %}>Send</button>
+      </form>
+      <p class="chat-note">{% if not a.can_chat %}{% if h.history %}{{ a.reason }}{% else %}Chat opens once I am switched on.{% endif %}{% elif a.fake %}Practice mode: replies are scripted and cost nothing.{% else %}{{ a.remaining | usd }} left of today's {{ a.budget | usd }} allowance.{% endif %}</p>
+    </section>
+  </div>
+
+  <div class="col col-side">
+    <section class="card" aria-labelledby="team-title">
+      <h2 class="sec-title" id="team-title"><span class="sec-glyph">{{ glyph("team") | safe }}</span>The staff<span class="sec-extra">{{ h.roster | length }} on duty</span></h2>
+      <div data-live="roster">{{ p.roster(h) }}</div>
+    </section>
+
+    <section class="card memory-card" aria-labelledby="mem-title">
+      <h2 class="sec-title" id="mem-title"><span class="sec-glyph">{{ glyph("book") | safe }}</span>What I know<span class="sec-extra">{{ h.memory.count }} notes</span></h2>
+      <form class="mem-search" method="get" action="/dashboard/memory" role="search">
+        <label class="sr-only" for="mem-q">Search memory</label>
+        <input id="mem-q" name="q" placeholder="Search my memory…" maxlength="200">
+      </form>
+      {% if h.memory.recent %}
+      <ul class="mem-recent">{% for r in h.memory.recent[:4] %}
+        <li><a href="/dashboard/memory?note={{ r.path | urlencode }}">{{ r.title }}</a><span>{{ r.line | truncate(90) }}</span></li>{% endfor %}</ul>
+      {% else %}<p class="voice">My notebook is still blank. Tell me about yourself and it fills up.</p>{% endif %}
+      {% if h.memory.lessons %}
+      <h3 class="mini-head">Lessons learned</h3>
+      <ul class="lessons">{% for l in h.memory.lessons[:3] %}<li><span class="chip chip-{{ l.status }}">{{ l.status }}</span> {{ l.lesson | truncate(120) }}</li>{% endfor %}</ul>
+      {% endif %}
+      <a class="tile-link" href="/dashboard/memory">Browse the vault →</a>
+    </section>
+
+    <section class="card" aria-labelledby="feed-title">
+      <h2 class="sec-title" id="feed-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Lately</h2>
+      <div data-live="feed">{{ p.feed(h) }}</div>
+    </section>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/dashboard/static/home.js" defer></script>{% endblock %}

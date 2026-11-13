@@ -454,7 +454,7 @@ The owner's personal assistant; the Shorts pipeline is one division. Architectur
 safety model and how-tos: `docs/ASSISTANT.md`. Everything lives in new files - the package
 `assistant/` (flat modules inside it), `agents/*.md`, `skills/<name>/SKILL.md`, `vault_template/`,
 `tests/test_assistant_*.py` (+ shared fixtures in `tests/assistant_fixtures.py`, used via
-`pytestmark = pytest.mark.usefixtures("assistant_env")`), `config.assistant.env.example`.
+`pytestmark = pytest.mark.usefixtures("assistant_env")`); env vars in `config.env.example` (Phase 2 section).
 Phase-1 conventions above apply (UTC ISO in DB, `db.utcnow()`, no import side effects, DRY_RUN,
 `db.log_event`, offline tests).
 

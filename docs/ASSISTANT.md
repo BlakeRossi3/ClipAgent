@@ -108,10 +108,61 @@ check every golden reply passes and every counter-example is caught and fixed.
 * **Privacy**: the vault is outside git (`data/` and `vault/` are ignored; a test fails if the
   default vault path is not ignored). Only the empty `vault_template/` is committed.
 
-## How it improves (honestly)
+## How it gets better
 
-Fine-tuning is not available for these models, so the system does not "learn" in its weights. It
-improves through: memory (the vault grows and is curated), lessons (`as_lessons`, proposed by the
-briefer's weekly self-review), skills and agent prompts as editable files, evals built on the golden
-examples, and the engineer agent, which proposes patches to skills/agents for the owner's approval -
-it never applies them itself. Model ids are settings, so newer models drop in without code changes.
+Fine-tuning is not available for these models, so nothing is learned "in the weights". The
+honest equivalent is three things, all inspectable: **measured behaviour** (evals),
+**remembered lessons**, and **reviewed edits** to the files that define the assistant. It
+never changes itself unreviewed.
+
+**Evals** (`assistant/evals.py`, cases in `evals/*.yaml` + the golden replies in
+`skills/persona/examples.md`). A case is a situation (channel, message or scheduled task,
+memory/notes/jobs/check-in/clip fixtures) plus plain-code checks: persona lint, length,
+must/must-not contain, tool called/refused/not called, delegation, approval requested, nothing
+sent to anyone, memory saved, untrusted text wrapped, forged delimiters escaped, safety rules
+present in the prompt. Offline (`python -m assistant.evals run`, free, part of `pytest`) replays a
+scripted "good" model through the real runtime, so it catches regressions in code and prompt
+files. Live (`--live --max-usd 1`) uses the real model and also judges `rubric` checks with a
+model; it estimates cost first and refuses above the ceiling or today's assistant budget.
+Every case runs in a throwaway sandbox (temp DB and vault, DRY_RUN, generic owner); results
+are kept in the DB (`kv evals:*`) for the dashboard (`evals.eval_results()`).
+
+*Add a case*: append to `evals/core.yaml` (or a new `evals/<topic>.yaml`) - `id`, `category`,
+`message` or `task`, optional `context` and `script`, `checks`, optional `rubric`. Invented,
+generic content only: the repo is public. `pytest tests/test_assistant_evals.py` validates it.
+
+**The loop** (`assistant/improve.py`, weekly and `python -m assistant.improve run`):
+observe (plain code: corrections/praise by keyword, check-ins ignored vs answered, tool errors,
+budget cut-offs, expensive runs, unused sub-agents, eval regressions) -> reflect (one `engineer`
+run with the `self-improvement` skill: lessons via `lessons_propose`, at most 3 diffs via
+`improvement_propose`; a deterministic stub in fake mode) -> **gate** -> owner approval.
+
+**The gate** (plain code, `python -m assistant.improve rules`): one file per proposal, only
+`skills/<name>/*.md`, `agents/<name>.md` or the vault routine note (`Agent/Routine.md`); never
+code, config, budgets, `skills/persona/examples.md`, the self-improvement skill or
+`agents/engineer.md`; an agent's name/model/tools (its allowlist) cannot change; no line of the
+persona's "Never" rules, nor any line about approval, untrusted input, secrets, budgets,
+privacy, medical matters or third parties, may be removed or reworded; at most 40 changed
+lines; no personal data in added lines (phone numbers, emails, URLs, his name, text copied from
+his messages); the diff must apply exactly; the registry must validate; and the offline evals,
+run in a subprocess on a patched temp copy, must show no new failures. A proposal that fails is
+stored as `rejected_by_gate` with its reasons and never offered.
+
+**Approval and apply.** A passing proposal becomes a phase-1 decision (`assistant_action`,
+handler `improvement`) with a one-sentence spoken summary. On YES it is re-gated against the
+current tree, written, and re-checked (registry + offline evals); any failure rolls it back.
+It is **never committed or pushed**: the edit stays in the working tree and a ready commit
+message is written to `<data_dir>/assistant/improve/proposal-<id>.commit.txt`; a human (or the
+deploy process) reviews `git diff` and commits. `python -m assistant.improve revert <id>`
+restores the previous content. Lessons are adopted in one weekly batch approval and then go into
+every agent's system prompt (`improve.lessons_context`, max 12 / 1,200 chars, most reinforced and
+newest first; an older lesson in the same area that a new one overlaps is retired).
+
+**Where the private record lives**: proposals and evidence in the DB (`kv improve:proposal:*`)
+and the vault (`Agent/Proposals/`), lessons in `as_lessons` and `Agent/Lessons/Lessons.md`,
+conversations in `as_messages`, agent runs in `as_agent_runs`. None of it is in the repo.
+
+**If fine-tuning becomes available** for these models, the eval cases (what good looks like),
+the adopted lessons, the approved/rejected proposals and the owner's conversations with their
+corrections are exactly the dataset one would use - all already in the places above. No exporter
+is built yet. Model ids are settings, so newer models drop in without code changes.

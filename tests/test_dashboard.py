@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
 import shutil
 import sys
@@ -18,14 +19,22 @@ from fastapi.testclient import TestClient
 import config
 import dashboard
 import db
+import home
 import seed_demo
+from assistant import runtime, store
+from assistant import settings as asettings
+from assistant_fixtures import assistant_env, fake_model  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("assistant_env")
 
 PAGES = ["/dashboard/", "/dashboard", "/dashboard/clips", "/dashboard/insights", "/dashboard/strategy",
          "/dashboard/sources", "/dashboard/costs", "/dashboard/decisions", "/dashboard/events",
          "/dashboard/clips?sort=cost&dir=asc&status=published", "/dashboard/insights?metric=pct&period=28",
          "/dashboard/costs?period=7", "/dashboard/sources?status=rejected", "/dashboard/events?level=error",
-         "/dashboard/?period=all", "/dashboard/?period=90", "/dashboard/decisions?nstatus=sent"]
-APIS = ["/dashboard/api/summary", "/dashboard/api/series", "/dashboard/api/clips", "/dashboard/api/insights",
+         "/dashboard/studio?period=all", "/dashboard/studio?period=90", "/dashboard/decisions?nstatus=sent",
+         "/dashboard/studio", "/dashboard/memory", "/dashboard/memory?q=coffee", "/dashboard/agents/main",
+         "/dashboard/agents/researcher"]
+APIS = ["/dashboard/api/home", "/dashboard/api/summary", "/dashboard/api/series", "/dashboard/api/clips", "/dashboard/api/insights",
         "/dashboard/api/costs", "/dashboard/licences.csv"]
 
 
@@ -84,12 +93,18 @@ def seeded(tmp_path_factory, clock, monkeypatch):
         cache = tmp_path_factory.mktemp("demo-template")
         for name in ("clipagent.db", "strategy.json", seed_demo.DEMO_MARKER_FILE):
             shutil.copy(data_dir / name, cache / name)
+        shutil.copytree(data_dir / "vault", cache / "vault")
         _SEED_CACHE.update(dir=cache, counts=counts)
     else:
         for name in ("clipagent.db", "strategy.json", seed_demo.DEMO_MARKER_FILE):
             shutil.copy(_SEED_CACHE["dir"] / name, data_dir / name)
+        shutil.copytree(_SEED_CACHE["dir"] / "vault", data_dir / "vault", dirs_exist_ok=True)
     monkeypatch.setenv("CLIPAGENT_STRATEGY_PATH", str(data_dir / "strategy.json"))
+    monkeypatch.setenv("VAULT_DIR", str(data_dir / "vault"))
+    for k in ("ASSISTANT_ENABLED", "FAKE_ASSISTANT", "OWNER_NAME"):
+        monkeypatch.setenv(k, os.environ.get(k, ""))  # seed_demo sets these; restore after the test
     config.reset_settings()
+    asettings.reset_assistant_settings()
     return _SEED_CACHE["counts"]
 
 
@@ -103,8 +118,10 @@ def test_every_page_200_on_empty_db(client, clock, path):
 
 
 def test_empty_overview_shows_onboarding(client, clock):
-    html = client.get("/dashboard/").text
+    html = client.get("/dashboard/studio").text
     assert "Getting started" in html
+    home_html = client.get("/dashboard/").text
+    assert "Getting settled" in home_html and "tell me your pay rate" in home_html
     assert "DEMO DATA" not in html
     assert "<script src=\"http" not in html and "https://cdn" not in html
 
@@ -323,7 +340,7 @@ def test_malicious_title_is_escaped_everywhere(client, clock, make_source, make_
     db.add_decision("other", EVIL, {"x": EVIL})
     db.log_event("pick", EVIL, level="error", data={"t": EVIL})
     db.add_notification("sms", EVIL, "sms", status="sent")
-    for path in ["/dashboard/", "/dashboard/clips", f"/dashboard/clips/{cid}", f"/dashboard/sources/{sid}",
+    for path in ["/dashboard/", "/dashboard/studio", "/dashboard/clips", f"/dashboard/clips/{cid}", f"/dashboard/sources/{sid}",
                  "/dashboard/sources", "/dashboard/decisions", "/dashboard/events", "/dashboard/insights",
                  "/dashboard/clips?q=%3Cscript%3E"]:
         html = client.get(path).text
@@ -347,19 +364,19 @@ def test_json_island_cannot_break_out(client, clock, make_source, make_clip, mak
 def test_revenue_tiles_only_with_revenue_data(client, clock, make_upload):
     make_upload(video_id="vidREV00001")
     db.upsert_stat("vidREV00001", "2026-11-10", views=1000, avg_view_pct=70.0)
-    assert "RPM" not in client.get("/dashboard/").text  # no revenue reported -> no revenue tiles
+    assert "RPM" not in client.get("/dashboard/studio").text  # no revenue reported -> no revenue tiles
     conn = db.connect()
     try:
         col = dashboard.revenue_column(conn)
         if col is None:  # older schema: emulate the optional revenue column
             conn.execute("ALTER TABLE stats ADD COLUMN estimated_revenue REAL")
             col = "estimated_revenue"
-        assert "RPM" not in client.get("/dashboard/").text
+        assert "RPM" not in client.get("/dashboard/studio").text
         conn.execute(f"UPDATE stats SET {col} = 2.5")
         conn.commit()
     finally:
         conn.close()
-    html = client.get("/dashboard/").text
+    html = client.get("/dashboard/studio").text
     assert "RPM" in html and "Revenue − LLM cost" in html
     s = client.get("/dashboard/api/summary").json()
     assert s["kpis"]["revenue"]["value"] == pytest.approx(2.5)
@@ -541,3 +558,174 @@ def test_seed_demo_ignores_db_path_from_config_env(tmp_path, monkeypatch):
     assert s.db_path == demo / "clipagent.db" and str(s.downloads_dir).startswith(str(demo))
     assert s.dry_run and not s.twilio_auth_token
     assert not real_db.exists()
+
+
+# --------------------------------------------------------------------------- command-centre home
+
+
+def _enable(monkeypatch, **extra):
+    monkeypatch.setenv("ASSISTANT_ENABLED", "true")
+    monkeypatch.setenv("FAKE_ASSISTANT", "true")
+    for k, v in extra.items():
+        monkeypatch.setenv(k, v)
+    config.reset_settings()
+    asettings.reset_assistant_settings()
+
+
+def _json_post(client, path, data, **headers):
+    return client.post(path, data=data, headers={"Accept": "application/json", **headers})
+
+
+def test_old_urls_redirect_to_studio(client, clock):
+    r = client.get("/dashboard/?period=28", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/dashboard/studio?period=28"
+    r = client.get("/dashboard/overview?period=7", follow_redirects=False)
+    assert r.status_code == 301 and r.headers["location"] == "/dashboard/studio?period=7"
+    assert 'href="/dashboard/studio"' in client.get("/dashboard/clips").text  # studio sub-nav
+
+
+def test_seeded_home_shows_everything(client, seeded):
+    html = client.get("/dashboard/").text
+    assert "DEMO DATA" in html and "Needs you" in html and "Spoke &amp; Chain" in html
+    for name in ("Studio", "Ledger", "Quartermaster", "Archivist", "Briefer", "Researcher", "Engineer"):
+        assert name in html
+    assert "Black bean tacos" in html and "Emergency fund" in html
+    j = client.get("/dashboard/api/home").json()
+    assert j["mood"] == "alert" and set(j["html"]) == {"needs", "tiles", "roster", "feed"}
+    statuses = {a["name"]: a["status"] for a in j["agents"]}
+    assert statuses["researcher"] == "error" and statuses["archivist"] == "working"
+    note = client.get("/dashboard/memory?note=Profile/About.md")
+    assert note.status_code == 200 and 'class="wikilink"' in note.text
+
+
+def test_new_posts_require_csrf_and_auth(client, clock, monkeypatch):
+    _enable(monkeypatch)
+    meal = store.add_meal("dinner", "Tacos")
+    chk = store.add_checkin("evening", "How was today?", db.now_iso())
+    posts = [("/dashboard/chat", {"message": "hi"}), (f"/dashboard/meals/{meal}/accept", {}),
+             (f"/dashboard/checkins/{chk}/answer", {"answer": "fine"}), ("/dashboard/jobs", {"name": "X", "rate": "20"})]
+    html = client.get("/dashboard/").text
+    for path, data in posts:
+        assert client.post(path, data=data).status_code == 403, path
+        assert client.post(path, data={**data, "csrf": "0" * 64}).status_code == 403, path
+        cross = client.post(path, data={**data, "csrf": _csrf(html)}, headers={"Origin": "https://evil.example"})
+        assert cross.status_code == 403, path
+        assert client.get(path).status_code == 405, path
+    assert store.get_meal(meal).status == "suggested" and store.get_checkin(chk).status == "pending"
+    assert not store.list_jobs() and not store.list_messages()
+    token = _with_token(monkeypatch)
+    for path, data in posts:
+        assert client.post(path, data={**data, "csrf": _csrf(html)}).status_code == 401, path
+    assert client.get("/dashboard/api/home").status_code == 401
+    assert client.get("/dashboard/memory").status_code == 401
+    assert client.get("/dashboard/api/home", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_meal_checkin_and_job_posts(client, clock, monkeypatch):
+    html = client.get("/dashboard/").text
+    c = _csrf(html)
+    r = client.post("/dashboard/jobs", data={"csrf": c, "name": "Bike shop", "rate": "$21.50"}, follow_redirects=False)
+    assert r.status_code == 303 and "msg=job_saved" in r.headers["location"]
+    assert store.list_jobs()[0].hourly_rate == 21.5
+    meal = store.add_meal("lunch", "Noodles")
+    assert _json_post(client, f"/dashboard/meals/{meal}/decline", {"csrf": c}).json()["status"] == "declined"
+    chk = store.add_checkin("weekly_hours", "Hours this week?", db.now_iso())
+    assert _json_post(client, f"/dashboard/checkins/{chk}/answer", {"csrf": c, "answer": "lots"}).status_code == 400
+    r = _json_post(client, f"/dashboard/checkins/{chk}/answer", {"csrf": c, "answer": "about 32.5 hours"})
+    assert r.json()["logged"]["hours"] == 32.5 and store.get_checkin(chk).status == "answered"
+    assert store.get_work_log(store.list_jobs()[0].id).hours == 32.5
+    assert _json_post(client, f"/dashboard/checkins/{chk}/answer", {"csrf": c, "answer": "1"}).status_code == 409
+
+
+def test_chat_runs_turn_escapes_and_is_rate_limited(client, clock, monkeypatch, fake_model):
+    _enable(monkeypatch)
+    monkeypatch.setattr(home, "_hits", {})
+    fake_model.queue(EVIL)
+    c = _csrf(client.get("/dashboard/").text)
+    r = _json_post(client, "/dashboard/chat", {"csrf": c, "message": "hello"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert [m.channel for m in store.list_messages()] == ["dashboard", "dashboard"]
+    html = client.get("/dashboard/").text
+    assert "<script>alert" not in html and "<img src=x" not in html and "&lt;script&gt;" in html
+    assert _json_post(client, "/dashboard/chat", {"csrf": c, "message": "x" * (home.CHAT_MAX_CHARS + 1)}).status_code == 413
+    assert _json_post(client, "/dashboard/chat", {"csrf": c, "message": "  "}).status_code == 400
+    codes = [_json_post(client, "/dashboard/chat", {"csrf": c, "message": "again"}).status_code for _ in range(8)]
+    assert 429 in codes
+    blocked = _json_post(client, "/dashboard/chat", {"csrf": c, "message": "again"})
+    assert blocked.status_code == 429 and int(blocked.headers["retry-after"]) > 0
+
+
+def test_chat_disabled_states(client, clock, monkeypatch):
+    c = _csrf(client.get("/dashboard/").text)
+    html = client.get("/dashboard/").text
+    assert "switched off" in html and 'name="message"' in html and "disabled" in html
+    r = _json_post(client, "/dashboard/chat", {"csrf": c, "message": "hi"})
+    assert r.status_code == 503 and "ASSISTANT_ENABLED" in r.json()["reason"]
+    _enable(monkeypatch, ASSISTANT_DAILY_BUDGET_USD="0")
+    r = _json_post(client, "/dashboard/chat", {"csrf": c, "message": "hi"})
+    assert r.status_code == 503 and "allowance" in r.json()["reason"]
+    assert not store.list_messages()
+
+
+def test_untrusted_text_is_escaped_on_home(client, clock):
+    store.add_meal("dinner", EVIL)
+    store.record_agent_run("studio", EVIL, model="m", duration_ms=1, cost_usd=0, status="error", summary=EVIL)
+    store.add_message("in", "sms", EVIL)
+    store.add_lesson("x", EVIL)
+    store.add_goal(EVIL, target=10, current=1)
+    store.add_checkin("evening", EVIL, db.now_iso())
+    for path in ("/dashboard/", "/dashboard/agents/studio", "/dashboard/memory"):
+        html = client.get(path).text
+        assert "<script>alert" not in html and "<img src=x" not in html, path
+    assert "<script>alert" not in str(client.get("/dashboard/api/home").json()["html"])
+
+
+def test_memory_browser_safe_markdown_and_traversal(client, clock, tmp_path):
+    from assistant import vault
+
+    vault.write_note("People/Sam.md", "# Sam\n\n" + EVIL + "\n\n- **bold** [[About]] [[Nowhere|x]]\n"
+                     "[click](javascript:alert(1))\n```\n<b>code</b>\n```", source="test")
+    vault.write_note("Profile/About.md", "# About\nSee [[Sam]]", source="test")
+    r = client.get("/dashboard/memory?note=People/Sam.md")
+    assert r.status_code == 200
+    body = r.text
+    assert "<script>alert" not in body and "<img src=x" not in body and "<b>code</b>" not in body
+    assert 'href="javascript:' not in body and "<strong>bold</strong>" in body
+    assert 'href="/dashboard/memory?note=Profile%2FAbout.md"' in body and "is-missing" in body
+    assert "Profile/About.md" in body  # backlink
+    outside = tmp_path / "secret.md"
+    outside.write_text("TOP SECRET")
+    for bad in ("../secret.md", "../../etc/passwd", "/etc/passwd", "%2e%2e/secret.md", ".obsidian/x.md", "x.py"):
+        resp = client.get("/dashboard/memory", params={"note": bad})
+        assert resp.status_code == 404 and "TOP SECRET" not in resp.text, bad
+
+
+def test_render_markdown_never_emits_raw_html():
+    out = home.render_markdown('<div onclick="x">hi</div>\n# <i>t</i>\n- [ ] <a href="y">z</a>\n> <svg/onload=1>',
+                               resolve=lambda t: None)
+    assert "<div" not in out and "<i>" not in out and "<a href" not in out and "<svg" not in out
+    tags = set(re.findall(r"</?([a-z0-9]+)", out))
+    assert tags <= {"p", "br", "h2", "h3", "h4", "ul", "ol", "li", "strong", "em", "code", "pre", "blockquote",
+                    "hr", "span", "a"}
+
+
+def test_greeting_and_streak():
+    from datetime import date
+
+    today = date(2026, 11, 13)
+    assert home.streak_of({today, today - timedelta(days=1), today - timedelta(days=3)}, today) == 2
+    assert home.streak_of({today - timedelta(days=1), today - timedelta(days=2)}, today) == 2
+    a = {"honorific": "sir", "enabled": True}
+    needs = {"decisions": [], "checkins": [], "failures_24h": 0, "run_errors": []}
+    g = home.greeting(datetime(2026, 11, 13, 19, 0), a, needs, {"missing": []}, {}, {}, False)
+    assert g["salute"] == "Good evening, sir." and g["mood"] == "idle"
+    assert "sprite" in home.sprite_svg("main", pose="alert") and "crispEdges" in home.glyph("coin")
+
+
+def test_seed_demo_vault_stays_inside_demo_dir(seeded):
+    root = asettings.get_assistant_settings().vault_dir.resolve()
+    assert root.is_relative_to(config.get_settings().data_dir.resolve())
+    assert (root / seed_demo.DEMO_MARKER_FILE).exists()
+    assert store.list_jobs()[0].name == "Spoke & Chain"
+    assert any(r.status == "error" for r in store.list_agent_runs(200))
+    assert store.list_checkins("pending")

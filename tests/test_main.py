@@ -457,3 +457,32 @@ def test_llm_outage_stops_judgment_without_failing_sources(stages, make_source, 
     assert counters["llm_unavailable"] == 1
     assert [c for c in stages["calls"] if c[0] == "pick"] == [("pick", t1)]
     assert db.require_source(t1).status == db.require_source(t2).status == "transcribed"
+
+
+def test_doctor_dashboard_token_rules(settings):
+    def tok(**kw):
+        config.set_settings(settings.replace(**kw))
+        return {c.name: c.status for c in main.doctor_checks()}
+    assert tok(public_base_url="https://agent.example.com", dashboard_token="")["DASHBOARD_TOKEN"] == "fail"
+    assert tok(public_base_url="http://localhost:8000", dashboard_token="")["DASHBOARD_TOKEN"] == "warn"
+    assert tok(public_base_url="https://agent.example.com", dashboard_token="short")["DASHBOARD_TOKEN"] == "warn"
+    assert tok(public_base_url="https://agent.example.com", dashboard_token="x" * 24)["DASHBOARD_TOKEN"] == "pass"
+    st = tok(public_base_url="https://agent.example.com", dashboard_token="x" * 24, dashboard_allow_unauthenticated=True)
+    assert st["DASHBOARD_ALLOW_UNAUTHENTICATED"] == "fail"
+
+
+def test_assistant_cli(capsys, clock, monkeypatch, tmp_path):
+    monkeypatch.setenv("ASSISTANT_ENABLED", "true")
+    config.reset_settings()
+    from assistant import settings as aset
+    aset.reset_assistant_settings()
+    assert main.main(["assistant", "job", "--rate", "25"]) == 0
+    assert main.main(["assistant", "hours", "38.5"]) == 0
+    assert "Logged, sir: 38.5 hours, roughly $963 before tax" in capsys.readouterr().out
+    assert main.main(["assistant", "plan"]) == 0
+    assert "weekly_hours" in capsys.readouterr().out
+    assert main.main(["assistant", "validate"]) == 0
+    assert {j.id for j in main.job_specs()} >= {"assistant_plan", "assistant_checkins", "assistant_tidy"}
+    checks = {c.name: c for c in main.doctor_checks()}
+    assert checks["pay rate"].status == "pass" and checks["assistant"].detail == "enabled"
+    aset.reset_assistant_settings()

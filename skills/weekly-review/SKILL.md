@@ -18,4 +18,6 @@ description: Sunday review of the owner's week - money, hours, goals, the Shorts
 ## Self-review (lessons)
 - Look at the week's agent runs and his replies: where did he correct you, ignore you, or answer "stop"?
 - For each clear pattern, call `lessons_propose` with area, the lesson as one sentence, and the evidence.
-- Lessons are proposals; the engineer turns adopted lessons into skill edits, which he approves.
+- Lessons are proposals: he approves them in one batch, then they are added to every agent's prompt.
+- The separate weekly self-improvement run (the engineer, `assistant/improve.py`) turns persistent
+  patterns into at most three gated file edits, each needing his approval.

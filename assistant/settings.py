@@ -4,7 +4,7 @@ The assistant has its own frozen dataclass so ``config.py`` stays untouched. It 
 cached against the identity of ``config.get_settings()``: whenever phase-1 settings
 are reset (tests do this per test) these are re-read too.
 
-Variables are documented in ``config.assistant.env.example``.
+Variables are documented in ``config.env.example`` (Phase 2 section).
 """
 
 from __future__ import annotations

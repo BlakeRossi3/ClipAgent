@@ -178,6 +178,50 @@ Exact spend per call is in the dashboard's costs page and `status`.
   you paused it).
 * **Logs**: `journalctl -u clipagent -f`; operator events are on the dashboard's events page.
 
+## Your assistant
+
+Besides the Shorts pipeline there is a personal assistant (code in `assistant/`, design in
+`docs/ASSISTANT.md`) that texts you like a discreet chief of staff:
+
+* **Check-ins** (times editable in the vault note `Agent/Routine.md`): morning brief 08:05
+  (yesterday's Shorts, money this week, anything due, a breakfast idea), a dinner idea 16:45 on
+  weekdays (only once it knows your tastes), "How many hours did you work this week, sir?" Friday
+  18:40, a light wellbeing question Tuesday/Thursday 19:15, evening wrap 21:05, weekly review
+  Sunday 18:20, and one get-to-know-you question a day at 12:10 (pay rate first) until it has
+  what it needs. Nothing in quiet hours; at most `ASSISTANT_MAX_SMS_PER_DAY` texts (questions win
+  over briefs, briefs over nudges); unanswered questions are asked again once, then dropped.
+* **Money**: answer the hours question in plain words ("about 38 and a half", "8 a day, 4 days",
+  "same as last week") and it logs them and replies with your pay before tax and the month so far.
+  Shorts revenue minus AI costs is tracked too.
+* **Anything else you text** goes to the assistant, which can remember things, look things up in
+  its notes, and answer.
+
+Switch it on safely: keep `DRY_RUN=true` (texts are only recorded) and `FAKE_ASSISTANT=true`, set
+`ASSISTANT_ENABLED=true`, then try
+`.venv/bin/python main.py assistant job --rate 25`, `... assistant hours 38.5`,
+`... assistant plan`, `... assistant chat "how am I doing this week?"`, `... assistant status`
+and `... doctor`. Then set `FAKE_ASSISTANT=false` (real model calls), and only then `DRY_RUN=false`.
+
+SMS commands: `YES <id>` / `NO <id>`, `PAUSE`, `RESUME`, `STATUS`, `HELP` work as before.
+Check-ins: `SNOOZE` (3 h, or `SNOOZE 1h`), `QUIET` (nothing more today), `STOP CHECK-INS`,
+`START CHECK-INS`. (`STOP` on its own is Twilio's opt-out and blocks all texts - avoid it.)
+
+Pay rate: answer its question, or `main.py assistant job --rate 25 [--name Warehouse]
+[--schedule biweekly] [--tax 20]`.
+
+Memory: an Obsidian vault at `data/vault` (or `VAULT_DIR`), git-ignored and never committed.
+Open that folder as a vault in Obsidian to read or edit what it knows; your edits win.
+
+Costs: the assistant uses Claude Fable 5.2 ($8 / $40 per million tokens in/out) for the main
+agent and Opus 5.5 ($4 / $20) for helpers - many times the price of the pipeline's Haiku/Sonnet.
+It has its own cap (`ASSISTANT_DAILY_BUDGET_USD`, default $3/day, and `ASSISTANT_MAX_TURN_USD`
+per message), separate from the pipeline's budget: neither eats into the other. Briefs and
+check-ins are composed in plain code (no model cost) except meal ideas and the weekly review.
+
+Honest limits: it does not "learn" by fine-tuning - it improves through its notes, feedback and
+editable skills. Nothing in the assistant has been verified against live Twilio or the live
+Anthropic API yet; tax figures are rough estimates; there is no weather or calendar access.
+
 ## Not yet verified against live services
 
 Everything below is implemented and covered by offline tests with fakes, but has **not** been

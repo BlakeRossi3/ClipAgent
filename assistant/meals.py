@@ -76,7 +76,7 @@ def avoid_words(facts: Sequence[str]) -> set[str]:
         tail = f[_AVOID_HINT.search(f).end():]  # type: ignore[union-attr]
         for w in re.findall(r"[a-z]{3,}", tail.lower()):
             if w not in _STOP:
-                out.add(w.rstrip("s") if len(w) > 4 else w)
+                out.add(w[:-1] if len(w) > 3 and w.endswith("s") else w)
     return out
 
 

@@ -30,7 +30,7 @@ from datetime import timedelta
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import Response
 
 import budget
@@ -431,9 +431,14 @@ def decide(decision_id: int, approved: bool, *, via: str) -> DecisionOutcome:
         return DecisionOutcome(True, status)
     applied = False
     try:
-        import strategist  # late import: strategist imports notify
+        if isinstance(d.payload, dict) and d.payload.get("action") == "assistant_action":
+            from assistant import tools as assistant_tools  # late import: assistant imports notify
 
-        applied = bool(strategist.apply_decision(decision_id))
+            applied = bool(assistant_tools.apply_approved_decision(decision_id))
+        else:
+            import strategist  # late import: strategist imports notify
+
+            applied = bool(strategist.apply_decision(decision_id))
         db.log_event(MODULE, f"decision {decision_id} applied" if applied
                      else f"decision {decision_id} approved but apply_decision returned False",
                      level="info" if applied else "warning", data={"decision_id": decision_id})
@@ -887,8 +892,10 @@ def handle_sms_command(body: str) -> str:
 
 
 @router.post("/sms")
-async def sms_webhook(request: Request) -> Response:
-    """Inbound SMS from the owner: YES/NO <id>, PAUSE, RESUME, STATUS, HELP."""
+async def sms_webhook(request: Request, background_tasks: BackgroundTasks) -> Response:
+    """Inbound SMS from the owner: YES/NO <id>, PAUSE, RESUME, STATUS, HELP. With the assistant
+    enabled, anything else is handed to it in the background (signature, owner-number and
+    MessageSid checks above still apply to every message)."""
     p = await _twilio_params(request)
     from twilio.twiml.messaging_response import MessagingResponse
 
@@ -904,7 +911,56 @@ async def sms_webhook(request: Request) -> Response:
         db.log_event(MODULE, "duplicate inbound SMS ignored (replay or Twilio retry)", level="warning",
                      data={"message_sid": msid})
         return _xml(resp)
+    if _assistant_enabled() and not is_pipeline_command(body):
+        # Hand off: reply with empty TwiML now (Twilio times out after 15 s), answer in the
+        # background - check-in answers in plain code first, else the conversational agent.
+        db.log_event(MODULE, "owner SMS handed to the assistant", data={"chars": len(body)})
+        background_tasks.add_task(assistant_inbound, body)
+        return _xml(resp)
     reply = handle_sms_command(body)
+    if _assistant_enabled() and reply == HELP_TEXT:
+        reply = HELP_TEXT + " " + ASSISTANT_HELP
     db.log_event(MODULE, "owner SMS command", data={"command": body[:80], "reply": reply[:200]})
     resp.message(reply)
     return _xml(resp)
+
+
+ASSISTANT_HELP = ("Check-ins: SNOOZE [2h], QUIET (rest of today), STOP CHECK-INS, START CHECK-INS. "
+                  "Anything else goes to your assistant.")
+_COMMAND_WORDS = frozenset({"PAUSE", "RESUME", "UNPAUSE", "STATUS", "HELP"})
+
+
+def _assistant_enabled() -> bool:
+    try:
+        from assistant.settings import get_assistant_settings
+
+        return get_assistant_settings().enabled
+    except Exception:  # the assistant must never break the pipeline's own commands
+        log.exception("assistant settings unreadable")
+        return False
+
+
+def is_pipeline_command(body: str) -> bool:
+    """YES/NO <id>, PAUSE, RESUME, STATUS, HELP - exactly what :func:`handle_sms_command` acts on.
+
+    A bare YES/NO stays a pipeline command while any approval is pending (so the id-required
+    rule still answers it); with nothing pending it is ordinary conversation.
+    """
+    text = (body or "").strip()
+    m = _ANSWER_RE.match(text)
+    if m:
+        return bool(m.group(2)) or bool(db.list_decisions("pending", limit=1))
+    return bool(text) and text.split()[0].upper() in _COMMAND_WORDS
+
+
+def assistant_inbound(body: str) -> None:
+    """Background: an owner text the pipeline does not handle (already authenticated + de-duplicated)."""
+    try:
+        from assistant import checkins, runtime
+
+        if checkins.handle_reply(body):
+            return
+        runtime.handle_inbound_sms(body)
+    except Exception as exc:
+        db.log_event(MODULE, "assistant failed to handle an owner SMS", level="error",
+                     data={"error": repr(exc)[:500]})

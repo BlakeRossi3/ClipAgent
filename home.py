@@ -49,7 +49,7 @@ CHAT_HISTORY = 14
 CHAT_LIMITS = ((60, 6), (3600, 60))          # (window seconds, max chat posts) per session
 POST_LIMITS = ((60, 30), (3600, 300))        # every other new POST, per session
 ANSWER_MAX_CHARS = 500
-FEED_ITEMS = 14
+FEED_ITEMS = 10
 REFRESH_SECONDS = 25
 WORKING_MINUTES = 15                          # a "running" agent run older than this is stale
 
@@ -645,6 +645,8 @@ def memory_data() -> dict[str, Any]:
             facts = vault.facts_in(n.body)
             line = facts[-1] if facts else next((ln.strip("#- ").strip() for ln in n.body.splitlines()
                                                  if ln.strip() and not ln.startswith("#")), "")
+            line = re.sub(r"^\[[ xX]\]\s*", "", line)
+            line = re.sub(r"\s+—\s+_[^_]*_\s*$", "", line)
             recent.append({"path": rel, "title": n.title, "line": line[:140],
                            "updated": str(n.meta.get("updated") or "")})
         count = len(notes)

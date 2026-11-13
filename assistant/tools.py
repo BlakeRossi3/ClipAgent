@@ -94,6 +94,7 @@ PLANNED_TOOLS: dict[str, str] = {
     "meals_record_feedback": "assistant.meals",
     "improvement_propose": "assistant.improve",
     "eval_results": "assistant.improve",
+    "improvement_read": "assistant.improve",
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
@@ -154,6 +155,7 @@ def register_approval_handler(name: str, fn: Callable[[db.Decision, dict[str, An
 
 def apply_approved_decision(decision_id: int) -> bool:
     """Phase-1 hook: run the handler for an approved ``assistant_action`` decision. Idempotent."""
+    load_extensions()  # handlers are registered by extension modules (e.g. assistant.improve)
     d = db.get_decision(decision_id)
     if d is None or d.status != "approved" or not isinstance(d.payload, dict):
         return False

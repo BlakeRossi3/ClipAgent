@@ -1,0 +1,235 @@
+{# Live sections of the command-centre home. Rendered in the page and by /dashboard/api/home. #}
+
+{% macro section_head(icon, title, extra="") %}
+<h2 class="sec-title"><span class="sec-glyph">{{ glyph(icon) | safe }}</span>{{ title }}{% if extra %}<span class="sec-extra">{{ extra }}</span>{% endif %}</h2>
+{% endmacro %}
+
+{% macro needs(h) %}
+{% set n = h.needs %}
+{% if n.count %}
+<section class="card needs" aria-labelledby="needs-title" id="needs">
+  <h2 class="sec-title" id="needs-title"><span class="sec-glyph">{{ glyph("bell") | safe }}</span>Needs you<span class="count-badge">{{ n.count }}</span></h2>
+  <ul class="needs-list">
+    {% for d in n.decisions %}
+    <li class="need need-decision">
+      <p class="need-kind">Approval · {{ d.kind | replace("_", " ") }} · {{ d.requested_at | ago }}</p>
+      <p class="need-text">{{ d.summary }}</p>
+      <div class="need-actions">
+        <form method="post" action="/dashboard/decisions/{{ d.id }}/approve">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="/dashboard/">
+          <button type="submit" class="hbtn hbtn-accent">Approve</button>
+        </form>
+        <form method="post" action="/dashboard/decisions/{{ d.id }}/reject">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="/dashboard/">
+          <button type="submit" class="hbtn">Reject</button>
+        </form>
+      </div>
+    </li>
+    {% endfor %}
+    {% for c in n.checkins %}
+    <li class="need need-checkin">
+      <p class="need-kind">Question · {{ c.kind | replace("_", " ") }} · {{ (c.sent_at or c.scheduled_for) | ago }}</p>
+      <p class="need-text">{{ c.question }}</p>
+      <form class="answer-form" method="post" action="/dashboard/checkins/{{ c.id }}/answer" data-async="answer">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label class="sr-only" for="ans-{{ c.id }}">Your answer</label>
+        <input id="ans-{{ c.id }}" name="answer" maxlength="500" autocomplete="off" required
+               {% if "hour" in c.kind %}inputmode="decimal" placeholder="e.g. 32.5"{% else %}placeholder="Your answer"{% endif %}>
+        <button type="submit" class="hbtn hbtn-accent">Answer</button>
+      </form>
+    </li>
+    {% endfor %}
+    {% if n.failures_24h %}
+    <li class="need need-fail">
+      <p class="need-kind">Studio · last 24 h</p>
+      <p class="need-text">{{ n.failures_24h }} failure{{ "s" if n.failures_24h != 1 else "" }}{% if n.last_error %} — latest: {{ n.last_error.message | truncate(110) }}{% endif %}</p>
+      <a class="need-link" href="/dashboard/events?level=error">See the log →</a>
+    </li>
+    {% endif %}
+    {% for r in n.run_errors[:1] %}
+    <li class="need need-fail">
+      <p class="need-kind">{{ r.agent | capitalize }} · {{ r.ts | ago }}</p>
+      <p class="need-text">{{ (r.summary or r.task) | truncate(140) }}</p>
+      <a class="need-link" href="/dashboard/agents/{{ r.agent }}">Open {{ r.agent }} →</a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro ring(pct, label) %}
+{% set r = 15.5 %}{% set c = 97.39 %}
+<svg class="ring" viewBox="0 0 36 36" width="44" height="44" role="img" aria-label="{{ label }}: {{ pct | round(0) | int }}%">
+  <circle cx="18" cy="18" r="{{ r }}" class="ring-track"/>
+  <circle cx="18" cy="18" r="{{ r }}" class="ring-fill" stroke-dasharray="{{ '%.2f' | format(c * pct / 100) }} {{ c }}" transform="rotate(-90 18 18)"/>
+  <text x="18" y="21" text-anchor="middle" class="ring-text">{{ pct | round(0) | int }}%</text>
+</svg>
+{% endmacro %}
+
+{% macro tiles(h) %}
+{% set m = h.money %}{% set s = h.studio %}{% set t = h.today %}{% set g = h.goals %}
+<div class="tiles">
+  <details class="tile-x" id="money" data-keep>
+    <summary>
+      <span class="tile-label">{{ glyph("coin") | safe }} Money</span>
+      {% if m.has_job %}
+      <span class="tile-big">{{ m.week_pay | usd }}</span>
+      <span class="tile-sub">earned this week · {{ m.week_hours | round(1) }} h</span>
+      {% if m.max_pay > 0 %}
+      <span class="weekbars" aria-hidden="true">{% for w in m.series %}<i style="height: {{ '%.0f' | format(4 + 20 * w.pay / m.max_pay) }}px"{% if loop.last %} class="is-now"{% endif %}></i>{% endfor %}</span>
+      {% endif %}
+      {% else %}
+      <span class="tile-big tile-big-muted">—</span>
+      <span class="tile-sub">tell me your pay rate</span>
+      {% endif %}
+    </summary>
+    <div class="tile-body">
+      {% if m.has_job %}
+      <dl class="kv">
+        <div><dt>Last week</dt><dd>{{ m.last_week_pay | usd }}</dd></div>
+        <div><dt>Received this month</dt><dd>{{ m.received_month | usd }}</dd></div>
+        {% for j in m.jobs %}<div><dt>{{ j.name }}</dt><dd>{{ j.rate | usd }}/h</dd></div>{% endfor %}
+      </dl>
+      {% if m.goal %}
+      <div class="goal-ring">{{ ring(m.goal.pct, m.goal.title) }}<p><strong>{{ m.goal.title }}</strong><br><span class="muted">{{ m.goal.current | usd }} of {{ m.goal.target | usd }}</span></p></div>
+      {% endif %}
+      <table class="mini-table"><caption class="sr-only">Pay by week</caption>
+        <thead><tr><th scope="col">Week of</th><th scope="col" class="num">Hours</th><th scope="col" class="num">Pay</th></tr></thead>
+        <tbody>{% for w in m.series | reverse %}{% if loop.index <= 4 %}<tr><td>{{ w.label }}</td><td class="num">{{ w.hours | round(1) }}</td><td class="num">{{ w.pay | usd }}</td></tr>{% endif %}{% endfor %}</tbody>
+      </table>
+      {% else %}
+      <p class="voice">I would keep your books if you tell me what you are paid. Your weekly hours do the rest.</p>
+      <form class="job-form" method="post" action="/dashboard/jobs">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label>Job <input name="name" maxlength="80" required placeholder="e.g. Warehouse"></label>
+        <label>Hourly rate ($) <input name="rate" inputmode="decimal" required placeholder="22.50"></label>
+        <button type="submit" class="hbtn hbtn-accent">Save</button>
+      </form>
+      {% endif %}
+      <p class="reels-line">Reels profit this month:
+        {% if m.reels_profit is not none %}<strong>{{ m.reels_profit | usd }}</strong> <span class="muted">({{ m.reels_revenue | usd }} revenue − {{ m.reels_costs | usd }} AI)</span>
+        {% else %}<span class="muted">no revenue reported yet · AI spend {{ m.reels_costs | usd }}</span>{% endif %}</p>
+    </div>
+  </details>
+
+  <details class="tile-x" id="studio-tile" data-keep>
+    <summary>
+      <span class="tile-label">{{ glyph("film") | safe }} Studio</span>
+      <span class="tile-big">{{ s.views_7d | compact }}</span>
+      <span class="tile-sub">views · {{ s.posted_7d }} Short{{ "s" if s.posted_7d != 1 else "" }} this week</span>
+      {% if s.spark %}<svg class="tile-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d="{{ s.spark }}"/></svg>{% endif %}
+    </summary>
+    <div class="tile-body">
+      <dl class="kv">
+        <div><dt>Subscribers</dt><dd>{{ s.subscribers | compact if s.subscribers is not none else "—" }}</dd></div>
+        <div><dt>Uploads today</dt><dd>{{ s.uploads_today }}{% if s.upload_cap %} of {{ s.upload_cap }}{% endif %}</dd></div>
+        {% if s.top %}<div><dt>Best this week</dt><dd class="clip-title">{{ s.top.title }}</dd></div>{% endif %}
+      </dl>
+      {% if not s.has_data %}<p class="voice">The studio has not published anything yet. Once it runs, its numbers appear here.</p>{% endif %}
+      <a class="tile-link" href="/dashboard/studio">Open the Studio →</a>
+    </div>
+  </details>
+
+  <details class="tile-x" id="today" data-keep>
+    <summary>
+      <span class="tile-label">{{ glyph("sun") | safe }} Today</span>
+      {% set planned = t.meals | selectattr(1) | list | length %}
+      <span class="tile-big">{{ t.checkins | length + planned }}</span>
+      <span class="tile-sub">{{ t.checkins | length }} check-in{{ "s" if t.checkins | length != 1 else "" }} · {{ planned }} meal{{ "s" if planned != 1 else "" }} planned</span>
+    </summary>
+    <div class="tile-body">
+      {% if t.checkins %}
+      <ul class="plain">{% for c in t.checkins %}<li><span class="when">{{ c.scheduled_for | dt }}</span> {{ c.question }}</li>{% endfor %}</ul>
+      {% endif %}
+      <ul class="meals">
+        {% for slot, meal in t.meals %}
+        <li class="meal{% if meal %} meal-{{ meal.status }}{% endif %}" data-meal>
+          <span class="meal-slot">{{ slot | capitalize }}</span>
+          {% if meal %}
+          <span class="meal-text">{{ meal.suggestion }}</span>
+          <span class="meal-actions">
+            {% if meal.status == "suggested" %}
+            <form method="post" action="/dashboard/meals/{{ meal.id }}/accept" data-async="meal"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn hbtn-sm hbtn-accent" type="submit">Yes</button></form>
+            <form method="post" action="/dashboard/meals/{{ meal.id }}/decline" data-async="meal"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn hbtn-sm" type="submit">No</button></form>
+            {% else %}<span class="meal-state">{{ meal.status }}</span>{% endif %}
+          </span>
+          {% else %}<span class="meal-text muted">No suggestion yet</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </details>
+
+  <details class="tile-x" id="goals" data-keep>
+    <summary>
+      <span class="tile-label">{{ glyph("flag") | safe }} Streak</span>
+      <span class="tile-big">{{ g.streak }}<small> day{{ "s" if g.streak != 1 else "" }}</small></span>
+      <span class="week-dots" aria-label="{{ g.answered_7d }} of the last 7 days checked in">{% for day, on in g.week_dots %}<i class="{{ 'on' if on else '' }}" title="{{ day | date }}"></i>{% endfor %}</span>
+    </summary>
+    <div class="tile-body">
+      {% if g.goals %}
+      <ul class="goals">{% for x in g.goals %}
+        <li><span class="goal-title">{{ x.title }}</span>
+          {% if x.pct is not none %}<span class="bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ x.pct | round(0) }}" aria-label="{{ x.title }}"><i style="width: {{ '%.0f' | format(x.pct) }}%"></i></span>
+          <span class="goal-num">{{ x.current | round(1) if x.current is not none else 0 }} / {{ x.target | round(1) }}{% if x.metric %} {{ x.metric }}{% endif %}</span>{% endif %}
+        </li>{% endfor %}</ul>
+      {% else %}<p class="voice">No goals yet. Tell me one in the chat — "save $2,000 by March" will do — and I will keep score.</p>{% endif %}
+    </div>
+  </details>
+</div>
+{% endmacro %}
+
+{% macro agent_sheet(a) %}
+<div class="agent-sheet-head">{{ a.sprite_big | safe }}
+  <div><p class="agent-name">{{ a.display }}</p><p class="agent-role">{{ a.role }} · <code>{{ a.model }}</code></p>
+  <p class="status status-{{ a.status }}"><i></i>{{ a.status }}</p></div></div>
+<p class="agent-desc">{{ a.description }}</p>
+{% if a.skills %}<p class="chips">{% for k in a.skills %}<span class="chip" title="{{ k.description }}">{{ k.name }}</span>{% endfor %}</p>{% endif %}
+<h3 class="mini-head">Recent runs</h3>
+{% if a.runs %}
+<ul class="runs">{% for r in a.runs %}
+  <li class="run run-{{ r.status }}"><span class="run-meta">{{ r.ts | ago }} · {{ r.status }} · {{ r.cost_usd | usd }}</span>
+  <span class="run-text">{{ (r.summary or r.task) | truncate(160) }}</span></li>{% endfor %}</ul>
+{% else %}<p class="muted">No runs yet — waiting to be called upon.</p>{% endif %}
+{% endmacro %}
+
+{% macro roster(h) %}
+{% if h.roster %}
+<ul class="roster">
+  {% for a in h.roster %}
+  <li class="agent agent-{{ a.status }}">
+    <a href="/dashboard/agents/{{ a.name }}" data-sheet="sheet-{{ a.name }}" aria-label="{{ a.display }}, {{ a.role }}, {{ a.status }}">
+      <span class="agent-px">{{ a.sprite | safe }}</span>
+      <span class="agent-name">{{ a.display }}</span>
+      <span class="agent-role">{{ a.role }}</span>
+      <span class="agent-stat"><i class="dot-{{ a.status }}"></i>{% if a.runs_today %}{{ a.runs_today }} today{% elif a.last %}{{ a.last.ts | ago }}{% else %}idle{% endif %}</span>
+    </a>
+    <dialog class="sheet" id="sheet-{{ a.name }}" aria-label="{{ a.display }}">
+      <form method="dialog" class="sheet-close"><button class="hbtn hbtn-sm" type="submit" aria-label="Close">✕</button></form>
+      {{ agent_sheet(a) }}
+      <p class="sheet-foot"><a href="/dashboard/agents/{{ a.name }}">Full record →</a></p>
+    </dialog>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="voice">The staff room is empty — no agent files were found.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro feed(h) %}
+{% if h.feed %}
+<ol class="feed">
+  {% for i in h.feed %}
+  <li class="feed-item tone-{{ i.tone }}">
+    <span class="feed-icon">{{ glyph(i.icon) | safe }}</span>
+    <div class="feed-main"><p class="feed-who">{{ i.who }} <span class="feed-meta">{{ i.meta }} · {{ i.ts | ago }}</span></p>
+    <p class="feed-text">{{ i.text | truncate(160) }}</p></div>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="voice">Nothing has happened yet. It will, {{ h.a.honorific }}.</p>
+{% endif %}
+{% endmacro %}

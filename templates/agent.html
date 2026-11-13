@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% import "home_parts.html" as p with context %}
+{% block title %}{{ ag.display }}{% endblock %}
+{% block content %}
+<div class="home agent-page">
+  <p><a href="/dashboard/">← Home</a></p>
+  <section class="card">{{ p.agent_sheet(ag) }}
+    {% if ag.tools %}<h3 class="mini-head">Tools</h3><p class="chips">{% for t in ag.tools %}<span class="chip">{{ t }}</span>{% endfor %}</p>{% endif %}
+    <p class="muted">{{ ag.runs_today }} run{{ "s" if ag.runs_today != 1 else "" }} today · {{ ag.cost_today | usd }}</p>
+  </section>
+</div>
+{% endblock %}

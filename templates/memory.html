@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Memory{% endblock %}
+{% block content %}
+<div class="home memory-page">
+<div class="page-head-h">
+  <h1>What {{ a.name }} knows</h1>
+  <p class="lede-h">A read-only view of your private vault: {{ count }} note{{ "s" if count != 1 else "" }}. Edit them in Obsidian or tell {{ a.name }} in the chat.</p>
+  <form class="mem-search" method="get" action="/dashboard/memory" role="search">
+    <label class="sr-only" for="mq">Search memory</label>
+    <input id="mq" name="q" value="{{ q }}" placeholder="Search notes…" maxlength="200">
+    <button class="hbtn" type="submit">Search</button>
+  </form>
+</div>
+{% if error %}<p class="card voice">{{ error }}</p>{% endif %}
+<div class="mem-grid">
+  <div class="mem-main">
+    {% if q %}
+    <section class="card"><h2 class="sec-title">{{ hits | length }} result{{ "s" if hits | length != 1 else "" }} for “{{ q }}”</h2>
+      {% if hits %}<ul class="hits">{% for x in hits %}<li><a href="{{ note_href(x.path) }}">{{ x.title }}</a> <span class="muted">{{ x.path }}</span><p>{{ x.snippet }}</p></li>{% endfor %}</ul>
+      {% else %}<p class="voice">Nothing on that, I am afraid.</p>{% endif %}
+    </section>
+    {% endif %}
+    {% if note %}
+    <article class="card note">
+      <p class="note-path">{{ note.folder }}/</p>
+      <h2 class="note-title">{{ note.title }}</h2>
+      <p class="chips">{% for k in ("type", "confidence", "source", "updated") %}{% if note.meta.get(k) %}<span class="chip">{{ k }}: {{ note.meta.get(k) }}</span>{% endif %}{% endfor %}</p>
+      <div class="md">{{ note.html | safe }}</div>
+      {% if note.backlinks %}<h3 class="mini-head">Linked from</h3><ul class="plain">{% for b in note.backlinks %}<li><a href="{{ note_href(b) }}">{{ b }}</a></li>{% endfor %}</ul>{% endif %}
+    </article>
+    {% elif not q %}
+    <section class="card"><p class="voice">{% if count %}Pick a note to read it.{% else %}The vault is empty so far. It fills up as you talk to {{ a.name }}.{% endif %}</p></section>
+    {% endif %}
+    {% if lessons %}
+    <section class="card"><h2 class="sec-title">Lessons learned</h2>
+      <ul class="lessons">{% for l in lessons %}<li><span class="chip chip-{{ l.status }}">{{ l.status }}</span> <strong>{{ l.area }}</strong> — {{ l.lesson }}{% if l.evidence %}<br><span class="muted">{{ l.evidence | truncate(160) }}</span>{% endif %}</li>{% endfor %}</ul>
+    </section>
+    {% endif %}
+  </div>
+  <nav class="card mem-tree" aria-label="Notes">
+    {% for folder, paths in tree %}
+    <details{% if note and note.folder == folder %} open{% endif %}><summary>{{ folder or "Top level" }} <span class="muted">{{ paths | length }}</span></summary>
+      <ul class="plain">{% for p in paths %}<li><a href="{{ note_href(p) }}"{% if note and note.path == p %} aria-current="page"{% endif %}>{{ p.split("/")[-1][:-3] }}</a></li>{% endfor %}</ul>
+    </details>
+    {% endfor %}
+  </nav>
+</div>
+</div>
+{% endblock %}
