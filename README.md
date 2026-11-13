@@ -31,6 +31,9 @@ one module per stage (`scout fetch transcribe pick edit upload analytics strateg
 
 * **Licence gate** (`fetch.check_licence`): government footage only from allowlisted official
   publishers (C-SPAN and news re-uploads are always rejected), CC BY only (no NC/ND/SA),
+  official YouTube channels are matched only by their pinned `channel_id` (or, if none is
+  pinned, their exact `@handle`) - never by display name, so an allowlist entry with neither
+  admits nothing until you fill one in (`main.py doctor` lists them),
   descriptions mentioning copyright or licensed music are rejected - checked *before* anything
   is downloaded. Every clip stores the source URL, licence and evidence, and credits the
   source on screen and in the description.

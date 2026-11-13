@@ -257,6 +257,15 @@ def fmt_ago(iso: str | None) -> str:
     return f"in {n} {unit}" if future else f"{n} {unit} ago"
 
 
+def ext_url(value: Any) -> str:
+    """An external link target that is safe in ``href``: only http(s) URLs, else "#".
+
+    Source URLs come from scraped metadata / the CLI; ``javascript:`` or ``data:`` URLs must never
+    become clickable (autoescaping does not neutralise a URL scheme)."""
+    v = str(value or "").strip()
+    return v if urlparse(v).scheme.lower() in ("http", "https") and "\\" not in v else "#"
+
+
 def fmt_json(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -289,20 +298,83 @@ def _session_value(token: str) -> str:
     return hmac.new(_b(token), b"clipagent-dashboard-session:v1", hashlib.sha256).hexdigest()
 
 
+# --- failed-auth throttling (per client IP, in memory; one process serves the web) -------------
+AUTH_FAIL_LIMIT = 10                 # failed token attempts per client ...
+AUTH_FAIL_WINDOW_SEC = 15 * 60       # ... within this window -> 429 until the oldest ages out
+_auth_failures: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+def _auth_throttled(request: Request) -> bool:
+    import time
+
+    now = time.monotonic()
+    ip = _client_ip(request)
+    hits = [t for t in _auth_failures.get(ip, []) if now - t < AUTH_FAIL_WINDOW_SEC]
+    if hits:
+        _auth_failures[ip] = hits
+    else:
+        _auth_failures.pop(ip, None)
+    return len(hits) >= AUTH_FAIL_LIMIT
+
+
+def _record_auth_failure(request: Request) -> None:
+    import time
+
+    if len(_auth_failures) > 10_000:  # bound memory under a spray from many addresses
+        _auth_failures.clear()
+    _auth_failures.setdefault(_client_ip(request), []).append(time.monotonic())
+
+
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient", "testserver"}
+_FORWARD_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host", "cf-connecting-ip",
+                    "true-client-ip")
+
+
+def _is_direct_local(request: Request) -> bool:
+    """A request made on this machine to 127.0.0.1 (e.g. through ``ssh -L``), not relayed by a proxy.
+
+    A reverse proxy or tunnel on the same box also connects from 127.0.0.1, so the client address
+    alone proves nothing: relayed requests carry forwarding headers and/or the public Host name.
+    """
+    if not _is_loopback(request):
+        return False
+    if any(h in request.headers for h in _FORWARD_HEADERS):
+        return False
+    host = (request.headers.get("host") or "").strip().lower()
+    hostname = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
+    return hostname in _LOCAL_HOSTS
+
+
 def _auth_method(request: Request) -> str | None:
-    """How this request is authenticated ("open", "bearer", "query", "cookie") or None."""
-    token = get_settings().dashboard_token
+    """How this request is authenticated ("open", "bearer", "query", "cookie") or None.
+
+    Without ``DASHBOARD_TOKEN`` the dashboard is "open" only to direct loopback requests (or
+    everyone with ``DASHBOARD_ALLOW_UNAUTHENTICATED=true``): it can approve strategy changes.
+    """
+    s = get_settings()
+    token = s.dashboard_token
     if not token:
-        return "open"
+        return "open" if (s.dashboard_allow_unauthenticated or _is_direct_local(request)) else None
     auth = request.headers.get("authorization", "")
-    if auth[:7].lower() == "bearer " and hmac.compare_digest(_b(auth[7:].strip()), _b(token)):
-        return "bearer"
+    presented = False
+    if auth[:7].lower() == "bearer ":
+        presented = True
+        if hmac.compare_digest(_b(auth[7:].strip()), _b(token)):
+            return "bearer"
     q = request.query_params.get("token")
-    if q is not None and hmac.compare_digest(_b(q), _b(token)):
-        return "query"
+    if q is not None:
+        presented = True
+        if hmac.compare_digest(_b(q), _b(token)):
+            return "query"
     c = request.cookies.get(COOKIE_NAME)
     if c and hmac.compare_digest(_b(c), _b(_session_value(token))):
         return "cookie"
+    if presented:
+        _record_auth_failure(request)
     return None
 
 
@@ -332,7 +404,18 @@ def _safe_next(value: str | None, default: str = "/dashboard/") -> str:
 
 def _guard(request: Request, *, api: bool = False) -> tuple[Response | None, str]:
     """Return (response_to_send_instead, auth_method)."""
+    if _auth_throttled(request):
+        return _too_many(request, api), ""
     method = _auth_method(request)
+    if method is None and not get_settings().dashboard_token:
+        msg = ("The dashboard has no password (DASHBOARD_TOKEN is not set), so it only answers "
+               "requests made directly on the server, e.g. through an SSH tunnel to 127.0.0.1. "
+               "Set DASHBOARD_TOKEN in config.env and restart to use it from here.")
+        if api:
+            return _security_headers(JSONResponse({"error": "dashboard_token_not_set", "detail": msg},
+                                                  status_code=403)), ""
+        return _render(request, "error.html", {"title": "Dashboard locked", "message": msg},
+                       status_code=403, nav="login"), ""
     if method is None:
         if api:
             return JSONResponse({"error": "unauthorized", "detail": "set ?token= or Authorization: Bearer"},
@@ -345,6 +428,17 @@ def _guard(request: Request, *, api: bool = False) -> tuple[Response | None, str
         _security_headers(resp)
         return resp, method
     return None, method
+
+
+def _too_many(request: Request, api: bool) -> Response:
+    msg = "Too many wrong tokens from this address. Wait 15 minutes and try again."
+    if api:
+        return _security_headers(JSONResponse({"error": "too_many_attempts", "detail": msg}, status_code=429,
+                                              headers={"Retry-After": str(AUTH_FAIL_WINDOW_SEC)}))
+    resp = _render(request, "error.html", {"title": "Too many attempts", "message": msg}, status_code=429,
+                   nav="login")
+    resp.headers["Retry-After"] = str(AUTH_FAIL_WINDOW_SEC)
+    return resp
 
 
 def _csrf_secret() -> str:
@@ -403,7 +497,7 @@ def _env():
     )
     env.filters.update(
         compact=fmt_compact, int=fmt_int, usd=fmt_usd, pct=fmt_pct, duration=fmt_duration, hours=fmt_hours,
-        dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json,
+        dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json, ext_url=ext_url,
     )
     return env
 
@@ -1746,7 +1840,10 @@ async def login_submit(request: Request) -> Response:
     given = str(form.get("token") or "")
     if not token:
         return RedirectResponse(nxt, status_code=303)
+    if _auth_throttled(request):
+        return _too_many(request, api=False)
     if not _origin_ok(request) or not hmac.compare_digest(_b(given), _b(token)):
+        _record_auth_failure(request)
         return _render(request, "login.html", {"next": nxt, "error": "That token is not right."},
                        status_code=401, nav="login")
     resp = RedirectResponse(nxt, status_code=303)

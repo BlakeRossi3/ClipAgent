@@ -47,7 +47,7 @@
   <div class="card">
     <div class="card-head"><h3>Why this clip</h3></div>
     <dl class="kv">
-      <dt>Haiku score</dt><dd>{{ "%.1f" | format(clip.haiku_score) if clip.haiku_score is not none else "—" }} / 10</dd>
+      <dt>Haiku score</dt><dd>{{ "%.1f" | format(clip.haiku_score) if clip.haiku_score is not none else "—" }} / 10{% if clip.haiku_reason %}<div class="muted small">{{ clip.haiku_reason }}</div>{% endif %}</dd>
       <dt>Haiku reason</dt><dd class="muted">Not stored by the pipeline (only the score is recorded).</dd>
       <dt>Sonnet rationale</dt><dd>{{ clip.sonnet_rationale or "—" }}</dd>
       <dt>Hook</dt><dd>{{ clip.hook_text or "—" }} <span class="muted">({{ hook_form }})</span></dd>
@@ -63,7 +63,7 @@
     <dl class="kv">
       <dt>Licence</dt><dd>{{ m.pill(clip.licence | replace("_", " "), "good" if clip.licence in ("us_gov_public_domain", "cc_by") else "warning") }}</dd>
       <dt>Credit line</dt><dd>{{ clip.credit_text or "—" }}</dd>
-      <dt>Source URL</dt><dd class="break"><a href="{{ clip.source_url }}" rel="noopener noreferrer" target="_blank">{{ clip.source_url }}</a></dd>
+      <dt>Source URL</dt><dd class="break"><a href="{{ clip.source_url | ext_url }}" rel="noopener noreferrer" target="_blank">{{ clip.source_url }}</a></dd>
       {% if source %}
       <dt>Source</dt><dd><a href="/dashboard/sources/{{ source.id }}">{{ source.title or source.url }}</a></dd>
       <dt>Publisher</dt><dd>{{ source.channel or "—" }}{% if source.channel_id %} <span class="muted">({{ source.channel_id }})</span>{% endif %}</dd>

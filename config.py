@@ -80,6 +80,9 @@ class Settings:
     owner_name: str = "Blake"
     public_base_url: str = "http://localhost:8000"
     dashboard_token: str = ""
+    # Without DASHBOARD_TOKEN the dashboard only answers direct loopback requests (SSH tunnel).
+    # true = serve it to anyone without a password (only on a trusted private network).
+    dashboard_allow_unauthenticated: bool = False
     # Local "HH:MM" window in which only urgent calls ring; equal start/end disables it.
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "08:00"
@@ -207,6 +210,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         owner_name=s("OWNER_NAME", "Blake"),
         public_base_url=s("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
         dashboard_token=s("DASHBOARD_TOKEN", ""),
+        dashboard_allow_unauthenticated=_bool(env.get("DASHBOARD_ALLOW_UNAUTHENTICATED"), False),
         quiet_hours_start=_hhmm(s("QUIET_HOURS_START", "22:00")),
         quiet_hours_end=_hhmm(s("QUIET_HOURS_END", "08:00")),
         urgent_call_dedup_hours=float(s("URGENT_CALL_DEDUP_HOURS", "6")),

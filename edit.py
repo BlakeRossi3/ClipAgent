@@ -295,7 +295,9 @@ def ass_escape(text: str) -> str:
 
 
 def _font_field(name: str) -> str:
-    return (name or "Sans").replace(",", " ").strip() or "Sans"
+    """A Style ``Fontname``: no field separators or line breaks (it comes from strategy.json)."""
+    clean = re.sub(r"[,\x00-\x1f\x7f\u2028\u2029{}\\]+", " ", name or "")
+    return re.sub(r" {2,}", " ", clean).strip()[:64] or "Sans"
 
 
 def ass_time(t: float) -> str:

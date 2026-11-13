@@ -710,6 +710,10 @@ def check_proposal(current: Strategy, view: Mapping[str, Any], experiment: Any) 
         return ProposalCheck(None, [f"malformed strategy: {exc}"], notes, [])
     new["version"] = current.version
     new["updated_at"] = current["updated_at"]
+    if new.get("timezone") != current.get("timezone"):
+        # posting slots, budgets and caps are reasoned about in one local day; not the model's call
+        notes.append(f"kept timezone {current.get('timezone')!r} (model proposed {new.get('timezone')!r})")
+        new["timezone"] = current.get("timezone")
     _clamp(new, current, notes, problems)
     new["experiment"] = _check_experiment(experiment, current, db.local_today(), problems, notes)
     problems += licence_problems(current, new)

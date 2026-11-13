@@ -472,6 +472,14 @@ def _allowlist_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[s
             changed.append(f"remove the allowlist entry for {_spoken(st)}")
             continue
         added, removed = _publishers(n) - _publishers(o), _publishers(o) - _publishers(n)
+        # same name, different id/handle: say so explicitly - this decides who counts as "official"
+        renamed = {a[0] for a in added if a[0]} & {r[0] for r in removed if r[0]}
+        for name in sorted(renamed):
+            new_ids = next(a for a in added if a[0] == name)
+            changed.append(f"change the official channel id or handle of {name} to "
+                           f"{new_ids[2] or 'none'} {new_ids[1] or ''}".rstrip())
+        added = {a for a in added if a[0] not in renamed}
+        removed = {r for r in removed if r[0] not in renamed}
         if added:
             changed.append(f"allow {', '.join(a[0] or a[1] or a[2] for a in sorted(added))} for {_spoken(st)}")
         if removed:

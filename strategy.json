@@ -20,7 +20,7 @@
   ],
   "source_types": ["nasa", "congress", "cc_by_youtube"],
   "allowlist": {
-    "_comment": "Per source type: publishers whose uploads are eligible. Channels match on channel_id first, else case-insensitive exact channel name or handle. Domains match the URL host or any parent domain. any_channel=true means any channel passes as long as the per-video licence check passes (used for CC-BY).",
+    "_comment": "Per source type: publishers whose uploads are eligible. Channels match only on YouTube URLs: a pinned channel_id must equal the video's channel_id (name/handle never substitute for it); an entry without channel_id matches its exact @handle; a channel name alone NEVER matches (anyone can name a channel 'NASA'), so entries with channel_id and handle both null admit nothing until the owner fills one in. Domains match the URL host or any parent domain. any_channel=true means any channel passes as long as the per-video licence check passes (used for CC-BY).",
     "nasa": {
       "any_channel": false,
       "channels": [

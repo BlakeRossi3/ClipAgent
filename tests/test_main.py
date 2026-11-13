@@ -411,7 +411,7 @@ def test_cli_init_status_doctor(monkeypatch, capsys, settings):
     assert main.main(["status"]) == 0
     assert main.main(["doctor"]) == (1 if any(c.status == "fail" for c in main.doctor_checks()) else 0)
     out = capsys.readouterr().out
-    assert "schema v2" in out and "Pending approvals: 0" in out and "[PASS] strategy.json" in out
+    assert f"schema v{db.SCHEMA_VERSION}" in out and "Pending approvals: 0" in out and "[PASS] strategy.json" in out
 
 
 def test_cli_approve(capsys, clock):
@@ -429,3 +429,22 @@ def test_retry_spacing_uses_updated_at(stages, make_source, clock):
     assert main.retry_failed_sources() == []
     clock.advance(minutes=45)
     assert main.retry_failed_sources() == [sid] and db.require_source(sid).status == "candidate"
+
+
+def test_unexpected_error_is_not_retried_forever(stages, make_source, clock):
+    """A bug-type exception in a stage must count against the retry budget like any failure,
+    not leave the source in place to be re-run (and re-billed) every hour."""
+    sid = make_source(status="transcribed")
+    stages["fail"]["pick"] = KeyError("bug in postprocess")
+    for _ in range(10):
+        main.process_pending()
+        clock.advance(hours=1)
+    picks = [c for c in stages["calls"] if c == ("pick", sid)]
+    assert len(picks) == 1 + main.MAX_SOURCE_RETRIES
+    assert db.require_source(sid).status == "failed"
+
+
+def test_doctor_warns_about_allowlist_entries_without_ids(monkeypatch):
+    monkeypatch.setattr(main, "_whisper_check", lambda s: main.Check("whisper model", "warn", "not cached"))
+    chk = {c.name: c for c in main.doctor_checks()}["allowlist channel ids"]
+    assert chk.status == "warn" and "House Committee on Science" in chk.detail

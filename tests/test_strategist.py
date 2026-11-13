@@ -415,3 +415,25 @@ def test_clips_uploaded_before_the_period_still_count(clock, make_source, make_c
     assert data["tracked_clips"] == 1 and data["uploaded_in_period"] == 0
     assert db.get_upload(old).clip_id == row["clip_id"]
     assert "clips_active=1 uploaded_in_period=0" in strategist.build_digest(data)
+
+
+def test_timezone_is_not_the_models_call(seeded, fake_llm, notify_stub):
+    fake_llm.queue(reply(lambda v: v.update(timezone="Asia/Tokyo", notes="tweak")))
+    review = strategist.weekly_review()
+    assert review.status == "applied", review.problems
+    assert _current()["timezone"] == "America/New_York"
+    assert any("timezone" in n for n in review.notes)
+
+
+def test_channel_id_swap_is_spelled_out_for_approval(seeded, fake_llm, notify_stub):
+    """Re-pointing an allowlisted name at another channel id is major and the summary says so."""
+    def mutate(v):
+        nasa = next(e for e in v["allowlist"] if e["source_type"] == "nasa")
+        nasa["channels"][0]["channel_id"] = "UCattacker000000000000"
+
+    fake_llm.queue(reply(mutate))
+    review = strategist.weekly_review()
+    assert review.status == "approval_requested"
+    assert _current()["allowlist"]["nasa"]["channels"][0]["channel_id"] == "UCLA_DiR1FfKNvjuUpBHmylQ"
+    summary = db.get_decision(review.decision_id).summary
+    assert "channel id" in summary and "UCattacker000000000000" in summary

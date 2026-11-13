@@ -164,7 +164,8 @@ def test_stats_upsert_and_performance(make_upload):
     assert len(perf) == 1
     row = perf[0]
     assert row["youtube_video_id"] == "vidA" and row["views"] == 200 and row["days_tracked"] == 2
-    assert row["avg_view_pct"] == pytest.approx(60.0)
+    # view-weighted: (150 * 62 + 50 * 58) / 200, not the mean of the daily percentages (60)
+    assert row["avg_view_pct"] == pytest.approx(61.0)
     assert row["clip_id"] == db.get_upload(uid).clip_id
     db.upsert_channel_stat("2026-11-13", subscribers=10, total_views=1000)
     db.upsert_channel_stat("2026-11-13", subscribers=12, total_views=1100)
@@ -258,8 +259,8 @@ def test_v1_database_upgrades_in_place(tmp_path, monkeypatch):
     assert db.schema_version(path) == 1
 
     monkeypatch.undo()
-    assert db.init_db(path) == db.SCHEMA_VERSION == 2
-    assert db.schema_version(path) == 2
+    assert db.init_db(path) == db.SCHEMA_VERSION == 3
+    assert db.schema_version(path) == 3
     with db.transaction(db.connect(path)) as c:
         up = db.get_upload(7, conn=c)
         assert up.youtube_video_id == "vidOld" and up.quota_units == 1600 and up.lifetime_views is None
@@ -267,7 +268,9 @@ def test_v1_database_upgrades_in_place(tmp_path, monkeypatch):
         assert db.get_upload(7, conn=c).status == "superseded"
         assert db.get_stats("vidOld", conn=c)[0].estimated_revenue is None
         idx = {r["name"] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-        assert {"idx_uploads_clip", "idx_uploads_uploaded_at", "idx_notifications_sid"} <= idx
+        assert {"idx_uploads_clip", "idx_uploads_uploaded_at", "idx_notifications_sid", "idx_llm_usage_clip",
+                "idx_llm_usage_source", "idx_events_module_ts"} <= idx
+        assert db.get_clip(1, conn=c).haiku_reason is None
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
         c.commit()
 
@@ -338,7 +341,7 @@ def test_clip_performance_period_filters_stats_days(clock, make_upload, make_sou
     assert set(rows) == {"vOld", "vNew"}                     # old clip earned views in the period
     o = rows["vOld"]
     assert o["views"] == 37 and o["days_tracked"] == 2 and o["total_views"] == 137
-    assert o["avg_view_duration_sec"] == pytest.approx(35.0) and o["topic"] == "Mars rover"
+    assert o["avg_view_duration_sec"] == pytest.approx((30 * 30 + 7 * 40) / 37) and o["topic"] == "Mars rover"
     assert o["estimated_revenue"] is None and o["upload_status"] == "uploaded"
     assert rows["vNew"]["views"] == 0 and rows["vNew"]["days_tracked"] == 0   # new, no data yet
 
@@ -348,3 +351,93 @@ def test_clip_performance_period_filters_stats_days(clock, make_upload, make_sou
     db.update_upload(old, status="removed")
     assert db.clip_performance("2026-11-20")[0]["upload_status"] == "removed"
     assert db.clip_performance("2026-12-01") == []
+
+
+def test_v2_database_upgrades_to_v3_and_failed_migration_rolls_back(tmp_path, monkeypatch):
+    path = tmp_path / "v2.db"
+    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:2])
+    assert db.init_db(path) == 2
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO sources (id, url, source_type, licence, status, discovered_at, updated_at) "
+                 "VALUES (1, 'https://nasa.gov/a.mp4', 'nasa', 'us_gov_public_domain', 'picked', 't', 't')")
+    conn.execute("INSERT INTO clips (id, source_id, start_sec, end_sec, licence, source_url, status, created_at, "
+                 "updated_at, title) VALUES (1, 1, 0, 30, 'us_gov_public_domain', 'u', 'picked', 't', 't', 'Kept')")
+    conn.commit()
+    conn.close()
+    # a migration that dies half way leaves the database exactly at v2 (one transaction per migration)
+    monkeypatch.setattr(db, "MIGRATIONS", [*db.MIGRATIONS[:2], "ALTER TABLE clips ADD COLUMN x TEXT; BROKEN SQL"])
+    with pytest.raises(sqlite3.Error):
+        db.init_db(path)
+    assert db.schema_version(path) == 2
+    conn = sqlite3.connect(path)
+    assert "x" not in {r[1] for r in conn.execute("PRAGMA table_info(clips)")}
+    conn.close()
+    monkeypatch.undo()
+    assert db.init_db(path) == 3
+    c = db.connect(path)
+    try:
+        clip = db.get_clip(1, conn=c)
+        assert clip.title == "Kept" and clip.haiku_reason is None
+        db.update_clip(1, haiku_reason="strong hook", conn=c)
+        assert db.get_clip(1, conn=c).haiku_reason == "strong hook"
+    finally:
+        c.close()
+
+
+def test_add_clip_stores_haiku_reason(make_source):
+    sid = make_source(status="transcribed")
+    cid = db.add_clip(sid, 1.0, 30.0, haiku_score=8, haiku_reason="clear question, punchy answer")
+    assert db.get_clip(cid).haiku_reason == "clear question, punchy answer"
+
+
+def test_status_change_is_compare_and_set(make_clip, monkeypatch):
+    """Two processes that both read 'rendered' must not both move the clip (lost update)."""
+    cid = make_clip(status="rendered")
+    real = db.require_clip
+
+    def stale_read(clip_id, *, conn=None):
+        clip = real(clip_id, conn=conn)
+        # another process wins the race between our read and our write
+        other = db.connect()
+        try:
+            other.execute("UPDATE clips SET status = 'skipped' WHERE id = ?", (clip_id,))
+            other.commit()
+        finally:
+            other.close()
+        return clip
+
+    monkeypatch.setattr(db, "require_clip", stale_read)
+    with pytest.raises(db.InvalidTransition):
+        db.set_clip_status(cid, "uploaded")
+    monkeypatch.undo()
+    assert db.get_clip(cid).status == "skipped"
+
+
+def test_claim_upload_is_exclusive(make_clip):
+    cid = make_clip(status="rendered")
+    first = db.claim_upload(cid, privacy="private")
+    assert first is not None
+    assert db.claim_upload(cid, privacy="private") is None          # live upload in flight
+    db.mark_upload_failed(first, "boom")
+    second = db.claim_upload(cid, privacy="private")
+    assert second is not None and second != first
+    db.mark_upload_succeeded(second, "vid1")
+    assert db.claim_upload(cid, privacy="private") is None          # already live
+    dry_clip = make_clip(status="rendered")
+    d = db.claim_upload(dry_clip, privacy="private", dry_run=True)
+    db.mark_upload_succeeded(d, "dryrun-x", quota_units=0)
+    assert db.claim_upload(dry_clip, privacy="private", dry_run=True) is None   # dry run already done
+    assert db.claim_upload(dry_clip, privacy="private", dry_run=False) is not None  # going live is allowed
+
+
+def test_count_notifications_between(clock):
+    a = db.add_notification("x", "a", "sms", status="sent")
+    db.add_notification("x", "b", "call", status="sent")
+    db.add_notification("x", "c", "sms", status="dry_run")
+    s, e = db.local_day_bounds()
+    assert db.count_notifications_between(s, e) == 3
+    assert db.count_notifications_between(s, e, status="sent") == 2
+    assert db.count_notifications_between(s, e, status="sent", channels=["sms"]) == 1
+    clock.advance(days=1)
+    db.update_notification(a, status="failed")
+    assert db.count_notifications_between(s, e, status="sent") == 1

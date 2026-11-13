@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import time as dtime
 from datetime import timedelta
 from typing import Any
@@ -55,6 +56,9 @@ GATHER_MAX_ATTEMPTS = 3             # prompts per approval call before falling b
 RING_TIMEOUT_SEC = 25               # how long the phone rings before "no-answer"
 MAX_SPOKEN_CHARS = 700              # ~45 s of speech
 MAX_SMS_CHARS = 1500                # Twilio hard limit is 1600
+# Backstop against call loops / SMS storms: at most this many calls+texts reach the owner's phone
+# per local day (sent or attempted). Further sends are recorded as ``skipped`` with a warning event.
+MAX_NOTIFICATIONS_PER_DAY = 25
 
 _MACHINE_PREFIXES = ("machine", "fax")
 _FAILED_CALL_STATUSES = {"busy", "no-answer", "failed", "canceled"}
@@ -232,6 +236,16 @@ def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_
         db.log_event(MODULE, f"[dry run] would {channel} owner ({kind})", data={
             "notification_id": notification_id, "reason": why, "decision_id": decision_id, "text": text[:300]})
         return "dry_run"
+    day_start, day_end = db.local_day_bounds()
+    used = db.count_notifications_between(day_start, day_end, status=("sent", "failed"), channels=("call", "sms"))
+    if used >= MAX_NOTIFICATIONS_PER_DAY:
+        db.update_notification(notification_id, status="skipped",
+                               error=f"daily cap of {MAX_NOTIFICATIONS_PER_DAY} calls/texts reached")
+        if db.kv_set_if_absent(f"notify:daily_cap:{db.local_today().isoformat()}", db.now_iso()):
+            db.log_event(MODULE, f"daily cap of {MAX_NOTIFICATIONS_PER_DAY} calls/texts reached; "
+                         "further notifications today are only recorded", level="warning",
+                         data={"notification_id": notification_id, "kind": kind})
+        return "skipped"
     try:
         client = _get_client(s)
         if channel == "call":
@@ -384,38 +398,58 @@ def request_approval(kind: str, summary: str, payload: dict, *, expires_hours: i
     return decision_id
 
 
-def handle_decision(decision_id: int, approved: bool, *, via: str) -> bool:
-    """Resolve a pending decision (first answer wins). Approved -> ``strategist.apply_decision``.
+@dataclass(frozen=True)
+class DecisionOutcome:
+    """What one answer did. ``applied`` is None unless this answer approved the decision."""
 
-    Returns True if this answer resolved the decision; False if it was unknown, already
-    resolved or expired (nothing is re-applied).
+    resolved: bool                 # this answer resolved it (first answer wins)
+    status: str | None             # decision status afterwards (None = unknown decision)
+    applied: bool | None = None    # approved: did strategist.apply_decision save the change?
+
+
+def decide(decision_id: int, approved: bool, *, via: str) -> DecisionOutcome:
+    """Resolve a pending decision (first answer wins); approved -> ``strategist.apply_decision``.
+
+    The outcome says whether the change was actually applied, so the owner is never told
+    "applied" when the strategist refused (conflict, invalid proposal) or crashed.
     """
     d = _current_decision(decision_id)
     if d is None:
         db.log_event(MODULE, "answer for unknown decision ignored", level="warning",
                      data={"decision_id": decision_id, "via": via})
-        return False
+        return DecisionOutcome(False, None)
     status = "approved" if approved else "rejected"
     if d.status != "pending" or not db.resolve_decision(decision_id, status, via=via):
         current = db.get_decision(decision_id)
         db.log_event(MODULE, "answer for already-resolved decision ignored", level="warning",
                      data={"decision_id": decision_id, "via": via, "answer": status,
                            "status": current.status if current else None})
-        return False
+        return DecisionOutcome(False, current.status if current else None)
     db.log_event(MODULE, f"decision {decision_id} {status} via {via}",
                  data={"decision_id": decision_id, "kind": d.kind})
-    if approved:
-        try:
-            import strategist  # late import: strategist imports notify
+    if not approved:
+        return DecisionOutcome(True, status)
+    applied = False
+    try:
+        import strategist  # late import: strategist imports notify
 
-            applied = strategist.apply_decision(decision_id)
-            db.log_event(MODULE, f"decision {decision_id} applied" if applied
-                         else f"decision {decision_id} approved but apply_decision returned False",
-                         level="info" if applied else "warning", data={"decision_id": decision_id})
-        except Exception as exc:
-            db.log_event(MODULE, f"applying decision {decision_id} failed", level="error",
-                         data={"decision_id": decision_id, "error": repr(exc)[:500]})
-    return True
+        applied = bool(strategist.apply_decision(decision_id))
+        db.log_event(MODULE, f"decision {decision_id} applied" if applied
+                     else f"decision {decision_id} approved but apply_decision returned False",
+                     level="info" if applied else "warning", data={"decision_id": decision_id})
+    except Exception as exc:
+        db.log_event(MODULE, f"applying decision {decision_id} failed", level="error",
+                     data={"decision_id": decision_id, "error": repr(exc)[:500]})
+    return DecisionOutcome(True, status, applied)
+
+
+def handle_decision(decision_id: int, approved: bool, *, via: str) -> bool:
+    """Resolve a pending decision (first answer wins). Approved -> ``strategist.apply_decision``.
+
+    Returns True if this answer resolved the decision; False if it was unknown, already
+    resolved or expired (nothing is re-applied). :func:`decide` also reports whether it applied.
+    """
+    return decide(decision_id, approved, via=via).resolved
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +603,7 @@ def status_line() -> str:
 
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 
-HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval (bare YES/NO if only one is pending), "
+HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval, "
              "STATUS, PAUSE (stop AI spending), RESUME, HELP.")
 
 
@@ -598,14 +632,37 @@ def _public_url(request: Request) -> str:
     return _base_url() + path + (f"?{query}" if query else "")
 
 
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient", "testserver"}
+_FORWARD_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host", "cf-connecting-ip",
+                    "true-client-ip")
+
+
+def _is_direct_local(request: Request) -> bool:
+    """Made on this machine to 127.0.0.1, not relayed by a reverse proxy / tunnel (those also
+    connect from 127.0.0.1 but add forwarding headers and/or the public Host name)."""
+    client = request.client.host if request.client else ""
+    if client not in _LOCAL_HOSTS:
+        return False
+    if any(h in request.headers for h in _FORWARD_HEADERS):
+        return False
+    host = (request.headers.get("host") or "").strip().lower()
+    hostname = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
+    return hostname in _LOCAL_HOSTS
+
+
 async def _twilio_params(request: Request) -> dict[str, str]:
-    """Read the form and enforce ``X-Twilio-Signature``. Raises 403 when it does not verify."""
+    """Read the form and enforce ``X-Twilio-Signature``. Raises 403 when it does not verify.
+
+    Without ``TWILIO_AUTH_TOKEN`` nothing can be verified: unsigned posts are accepted only in
+    DRY_RUN *and* only from this machine (local testing with curl), never from the internet -
+    an unsigned ``YES <id>`` would otherwise approve a strategy change.
+    """
     s = config.get_settings()
     form = await request.form()
     params = {k: str(v) for k, v in form.items()}
     token = s.twilio_auth_token
     if not token:
-        if s.dry_run:
+        if s.dry_run and _is_direct_local(request):
             return params
         db.log_event(MODULE, "webhook refused: no TWILIO_AUTH_TOKEN to verify signatures", level="error",
                      data={"path": request.url.path})
@@ -681,7 +738,7 @@ async def gather_webhook(decision_id: int, request: Request, attempt: int = 1) -
     refuse = None
     if not _is_owner(to):
         refuse = "call was not to the owner number"
-    elif d is not None and d.call_sid and call_sid != d.call_sid:
+    elif d is not None and (not d.call_sid or not call_sid or call_sid != d.call_sid):
         refuse = "call sid does not match the approval call"
     elif _is_machine(p.get("AnsweredBy")) or _is_machine(db.kv_get(f"notify:answered_by:{call_sid}")):
         refuse = "call was answered by a machine"
@@ -702,9 +759,15 @@ async def gather_webhook(decision_id: int, request: Request, attempt: int = 1) -
     digits = (p.get("Digits") or "").strip()
     if digits in ("1", "2"):
         approved = digits == "1"
-        if handle_decision(decision_id, approved, via="call"):
-            _say(resp, "Approved. I'll apply the change now. Thanks, goodbye." if approved
-                 else "Rejected. Nothing will change. Thanks, goodbye.")
+        out = decide(decision_id, approved, via="call")
+        if out.resolved:
+            if not approved:
+                _say(resp, "Rejected. Nothing will change. Thanks, goodbye.")
+            elif out.applied:
+                _say(resp, "Approved, and the change has been applied. Thanks, goodbye.")
+            else:
+                _say(resp, "Approved, but I could not apply the change automatically, so nothing has "
+                           "changed yet. The details are on the dashboard. Goodbye.")
         else:
             current = db.get_decision(decision_id)
             _say(resp, f"That request was already {current.status if current else 'handled'}, "
@@ -778,7 +841,8 @@ async def status_webhook(request: Request, notification_id: int | None = None) -
     return _xml(_voice())
 
 
-_ANSWER_RE = re.compile(r"^\s*(yes|y|approve|no|n|reject)\b[\s#:.,-]*(\d+)?\s*[.!]?\s*$", re.IGNORECASE)
+_ANSWER_RE = re.compile(r"^\s*(yes|y|approve|no|n|reject)\b[\s#:.,-]*([0-9]{1,9})?\s*[.!]?\s*$",
+                        re.IGNORECASE | re.ASCII)
 
 
 def handle_sms_command(body: str) -> str:
@@ -788,19 +852,24 @@ def handle_sms_command(body: str) -> str:
     m = _ANSWER_RE.match(text)
     if m:
         approved = m.group(1).lower() in ("yes", "y", "approve")
-        if m.group(2):
-            decision_id = int(m.group(2))
-        else:
+        if not m.group(2):
+            # A bare YES is never bound to "whatever is pending now": the request the owner is
+            # answering may have expired and a different one taken its place.
             pending = db.list_decisions("pending")
             pending = [d for d in pending if (c := _current_decision(d.id)) and c.status == "pending"]
             if not pending:
                 return "Nothing is waiting for approval."
-            if len(pending) > 1:
-                ids = ", ".join(f"#{d.id}" for d in pending[:5])
-                return f"Several approvals are pending ({ids}). Reply YES <id> or NO <id>."
-            decision_id = pending[0].id
-        if handle_decision(decision_id, approved, via="sms"):
-            return f"#{decision_id} approved. Applying it now." if approved else f"#{decision_id} rejected. Nothing changes."
+            ids = ", ".join(f"#{d.id}" for d in pending[:5])
+            word = "YES" if approved else "NO"
+            return (f"Please include the request number, e.g. {word} {pending[0].id}. "
+                    f"Pending: {ids}. Nothing was changed.")
+        decision_id = int(m.group(2))
+        out = decide(decision_id, approved, via="sms")
+        if out.resolved:
+            if not approved:
+                return f"#{decision_id} rejected. Nothing changes."
+            return (f"#{decision_id} approved and applied." if out.applied else
+                    f"#{decision_id} approved, but applying it failed, so nothing changed yet. See the dashboard.")
         d = db.get_decision(decision_id)
         if d is None:
             return f"No request #{decision_id}. Reply STATUS to see pending ones."
@@ -830,6 +899,11 @@ async def sms_webhook(request: Request) -> Response:
                      data={"from": _mask(sender), "body": (p.get("Body") or "")[:40]})
         return _xml(resp)
     body = p.get("Body") or ""
+    msid = p.get("MessageSid") or p.get("SmsSid") or ""
+    if msid and not db.kv_set_if_absent(f"notify:sms_in:{msid}", db.now_iso()):
+        db.log_event(MODULE, "duplicate inbound SMS ignored (replay or Twilio retry)", level="warning",
+                     data={"message_sid": msid})
+        return _xml(resp)
     reply = handle_sms_command(body)
     db.log_event(MODULE, "owner SMS command", data={"command": body[:80], "reply": reply[:200]})
     resp.message(reply)

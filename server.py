@@ -8,6 +8,7 @@ dashboard module cannot be imported.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,6 +21,28 @@ import notify
 from config import get_settings
 
 log = logging.getLogger(__name__)
+
+_TOKEN_IN_URL = re.compile(r"([?&]token=)[^&\s\"]*", re.IGNORECASE)
+
+
+class RedactTokenFilter(logging.Filter):
+    """Blank ``?token=...`` in log records (uvicorn's access log prints the full request path, and
+    the dashboard accepts its token as a query parameter once to set the session cookie)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and record.args:
+            record.args = tuple(_TOKEN_IN_URL.sub(r"\1[redacted]", a) if isinstance(a, str) else a
+                                for a in record.args)
+        if isinstance(record.msg, str) and "token=" in record.msg.lower():
+            record.msg = _TOKEN_IN_URL.sub(r"\1[redacted]", record.msg)
+        return True
+
+
+def _install_log_redaction() -> None:
+    for name in ("uvicorn.access", "uvicorn.error"):
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, RedactTokenFilter) for f in lg.filters):
+            lg.addFilter(RedactTokenFilter())
 
 
 def _dashboard_router() -> APIRouter | None:
@@ -37,6 +60,7 @@ def _dashboard_router() -> APIRouter | None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _install_log_redaction()
     get_settings().ensure_dirs()
     db.init_db()
     yield

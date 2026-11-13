@@ -14,7 +14,7 @@
     <div class="card-head"><h3>Licence decision</h3></div>
     <dl class="kv">
       <dt>Licence</dt><dd>{% if s.licence %}{{ m.pill(s.licence | replace("_", " "), "good") }}{% else %}<span class="muted">none recorded</span>{% endif %}</dd>
-      <dt>URL</dt><dd class="break"><a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.url }}</a></dd>
+      <dt>URL</dt><dd class="break"><a href="{{ s.url | ext_url }}" rel="noopener noreferrer" target="_blank">{{ s.url }}</a></dd>
       <dt>Publisher</dt><dd>{{ s.channel or "—" }}{% if s.channel_id %} <span class="muted">({{ s.channel_id }})</span>{% endif %}</dd>
       <dt>Platform</dt><dd>{{ s.platform or "—" }} · {{ s.source_type | replace("_", " ") }}</dd>
     </dl>

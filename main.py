@@ -221,6 +221,18 @@ def retry_failed_sources() -> list[int]:
     return retried
 
 
+def _mark_failed(source_id: int, reason: str) -> None:
+    """Fail a source left in a working status by an unexpected error, so the bounded
+    :func:`retry_failed_sources` policy applies instead of an hourly (possibly paid) re-run."""
+    try:
+        src = db.require_source(source_id)
+        # not ``picked``: a retry would resume at ``transcribed`` and pay for picking again
+        if src.status in ("candidate", "fetched", "transcribed"):
+            db.set_source_status(source_id, "failed", reason[:500])
+    except Exception:  # never let the error handler mask the original problem
+        log.exception("could not mark source %s failed", source_id)
+
+
 def process_pending(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
     """Advance up to ``max_sources`` sources (closest to done first), then render stray clips."""
     import fetch
@@ -248,6 +260,11 @@ def process_pending(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
                 counts["budget_stopped"] = 1
                 db.log_event(MODULE, f"LLM budget exhausted at source {src.id}; judgment paused until tomorrow",
                              level="warning", data={"source_id": src.id, "error": str(exc)})
+            except pick.LLMUnavailable as exc:   # API outage/auth: not the source's fault
+                llm_ok = False
+                counts["llm_unavailable"] = 1
+                db.log_event(MODULE, f"LLM unavailable at source {src.id}; judgment skipped this run",
+                             level="warning", data={"source_id": src.id, "error": str(exc)[:300]})
             except fetch.LicenceRejected:
                 counts["rejected"] += 1
             except (fetch.FetchError, transcribe.TranscribeError, pick.PickError) as exc:
@@ -257,6 +274,7 @@ def process_pending(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
                 counts["failed"] += 1
                 db.log_event(MODULE, f"source {src.id}: unexpected {type(exc).__name__}: {exc}", level="error",
                              data={"source_id": src.id, "traceback": traceback.format_exc()[-2000:]})
+                _mark_failed(src.id, f"unexpected {type(exc).__name__}: {exc}")
         # clips picked outside this run (requeued, earlier render failures with retries left)
         counts["clips_rendered"] += len(render_clips(strategy=strat))
         for src in db.list_sources("picked"):
@@ -757,6 +775,14 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
         checks.append(Check("strategy.json", "fail", "; ".join(exc.errors)[:300], f"fix {s.strategy_path}"))
     except (OSError, ValueError) as exc:
         checks.append(Check("strategy.json", "fail", str(exc)[:200], f"restore {s.strategy_path} from git"))
+    if strat is not None:
+        inert = [f"{st}: {ch.get('name')}" for st, entry in strat["allowlist"].items() if not st.startswith("_")
+                 for ch in entry.get("channels", []) if not ch.get("channel_id") and not ch.get("handle")]
+        checks.append(Check("allowlist channel ids", "warn" if inert else "pass",
+                            ("no channel_id/handle, so never matched: " + "; ".join(inert))[:300] if inert
+                            else "every allowlisted channel has a channel_id or handle",
+                            "verify each official channel (linked from its .gov site) and add its channel_id "
+                            "to strategy.json - display names are never trusted"))
     checks.append(_font_check(strat))
 
     try:

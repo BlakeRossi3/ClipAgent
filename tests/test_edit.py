@@ -439,3 +439,11 @@ def test_resolve_font_falls_back_and_reads_bundled_fonts(monkeypatch, tmp_path):
     (tmp_path / "Montserrat-ExtraBold.ttf").unlink()
     (tmp_path / "Montserrat[wght].ttf").unlink()
     assert edit.resolve_font("Nope Font") == "DejaVu Sans"
+
+
+def test_font_name_cannot_inject_ass_lines():
+    evil = "Arial\nDialogue: 0,0:00:00.00,0:00:09.00,Hook,,0,0,0,,VISIT SCAM DOT COM"
+    ass = edit.build_ass([], 0.0, {"font": evil}, duration=5.0)
+    assert not [l for l in ass.splitlines() if l.startswith("Dialogue") and "SCAM" in l]
+    assert all(l.startswith(("Style:", "Format:", "[", ";", "Dialogue:")) or ":" in l or not l
+               for l in ass.splitlines())

@@ -331,8 +331,12 @@ def test_status_voicemail_info_call_texts(live, client, clock):
 # inbound SMS
 # ---------------------------------------------------------------------------
 
-def sms_params(body: str, sender: str = OWNER) -> dict[str, str]:
-    return {"From": sender, "To": FROM, "Body": body, "MessageSid": "SM1", "AccountSid": "AC1"}
+_MSIDS = iter(range(1, 1_000_000))
+
+
+def sms_params(body: str, sender: str = OWNER, msid: str | None = None) -> dict[str, str]:
+    return {"From": sender, "To": FROM, "Body": body, "MessageSid": msid or f"SM{next(_MSIDS):06d}",
+            "AccountSid": "AC1"}
 
 
 def test_sms_yes_with_id(approval, client, applied):
@@ -344,20 +348,99 @@ def test_sms_yes_with_id(approval, client, applied):
     assert "already approved" in r.text and applied == [approval]
 
 
-def test_sms_bare_no_with_single_pending(approval, client, applied):
+def test_sms_bare_answer_needs_an_id(approval, client, applied):
+    """A bare YES/NO is never bound to whatever happens to be pending now."""
     r = post(client, "/twilio/sms", sms_params("No"))
-    assert "rejected" in r.text and db.get_decision(approval).status == "rejected"
-
-
-def test_sms_bare_yes_ambiguous(approval, client, applied):
+    assert f"NO {approval}" in r.text and "Nothing was changed" in r.text
+    assert db.get_decision(approval).status == "pending"
     other = db.add_decision("other", "Second thing?", {})
     r = post(client, "/twilio/sms", sms_params("YES"))
-    assert "Several approvals" in r.text and f"#{other}" in r.text
+    assert f"#{other}" in r.text and f"#{approval}" in r.text
     assert db.get_decision(approval).status == "pending" and applied == []
+
+
+def test_sms_bare_yes_after_expiry_does_not_approve_the_next_request(approval, client, clock, applied):
+    """The owner answers request A with a bare YES after it expired and B took its place."""
+    clock.advance(hours=49)
+    newer = db.add_decision("budget_increase", "Raise the budget to 5 dollars", {"action": "apply_strategy"})
+    r = post(client, "/twilio/sms", sms_params("yes"))
+    assert db.get_decision(newer).status == "pending" and applied == []
+    assert f"YES {newer}" in r.text
+
+
+@pytest.mark.parametrize("body", ["YES 12abc", "YES \u0661", "YES 1 2", "yes please"])
+def test_sms_junk_answers_change_nothing(approval, client, applied, body):
+    r = post(client, "/twilio/sms", sms_params(body))
+    assert r.status_code == 200 and "Commands" in r.text
+    assert db.get_decision(approval).status == "pending" and applied == []
+
+
+def test_sms_replayed_message_is_ignored(approval, client, applied):
+    data = sms_params(f"NO {approval}", msid="SMreplay")
+    post(client, "/twilio/sms", data)
+    assert db.get_decision(approval).status == "rejected"
+    later = db.add_decision("other", "Another?", {})
+    r = post(client, "/twilio/sms", data)
+    assert "<Message" not in r.text                 # replay of the same signed message: no reply
+    assert db.get_decision(later).status == "pending"
+
+
+def test_sms_reports_failed_apply_truthfully(approval, client, monkeypatch):
+    mod = types.ModuleType("strategist")
+    mod.apply_decision = lambda decision_id: False  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "strategist", mod)
+    r = post(client, "/twilio/sms", sms_params(f"YES {approval}"))
+    assert "applying it failed" in r.text and "applied." not in r.text
+    assert db.get_decision(approval).status == "approved"
+
+
+def test_keypad_reports_failed_apply_truthfully(approval, client, monkeypatch):
+    mod = types.ModuleType("strategist")
+
+    def boom(decision_id):
+        raise RuntimeError("conflict")
+    mod.apply_decision = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "strategist", mod)
+    r = post(client, f"/twilio/gather/{approval}?attempt=1", call_params(Digits="1"))
+    assert "could not apply" in r.text and "has been applied" not in r.text
+
+
+def test_keypad_refused_when_no_approval_call_recorded(live, client, clock, applied):
+    """A decision whose approval call was never placed (call_sid NULL) accepts no keypad answer."""
+    did = db.add_decision("new_niche", "Switch niche?", {"action": "apply_strategy"})
+    r = post(client, f"/twilio/gather/{did}?attempt=1", call_params(Digits="1", CallSid="CAany"))
+    assert "can't accept" in r.text and db.get_decision(did).status == "pending" and applied == []
 
 
 def test_sms_bare_yes_nothing_pending(live, client, clock):
     assert "Nothing is waiting" in post(client, "/twilio/sms", sms_params("yes")).text
+
+
+def test_no_token_dry_run_refuses_requests_relayed_by_a_proxy(settings, clock):
+    """Behind Caddy/a tunnel every request comes from 127.0.0.1 - unsigned posts must still fail."""
+    config.set_settings(settings.replace(owner_phone=OWNER))
+    did = db.add_decision("budget_increase", "Raise budget", {"action": "apply_strategy"})
+    app = FastAPI()
+    app.include_router(notify.router)
+    c = TestClient(app, base_url="https://agent.example.com")
+    r = c.post("/twilio/sms", data=sms_params(f"YES {did}"), headers={"X-Forwarded-For": "203.0.113.9"})
+    assert r.status_code == 403
+    r = TestClient(app).post("/twilio/sms", data=sms_params(f"YES {did}"),
+                             headers={"X-Forwarded-For": "203.0.113.9"})
+    assert r.status_code == 403
+    assert db.get_decision(did).status == "pending"
+
+
+def test_daily_notification_cap_stops_a_storm(live, clock):
+    for i in range(notify.MAX_NOTIFICATIONS_PER_DAY + 5):
+        notify.sms(f"message {i}", kind="job_error")
+    assert len(live.messages.created) == notify.MAX_NOTIFICATIONS_PER_DAY
+    skipped = rows("skipped")
+    assert len(skipped) == 5 and "daily cap" in skipped[0].error
+    assert len([e for e in db.list_events(module="notify", level="warning") if "daily cap" in e.message]) == 1
+    clock.advance(days=1)
+    notify.sms("tomorrow", kind="job_error")
+    assert len(live.messages.created) == notify.MAX_NOTIFICATIONS_PER_DAY + 1
 
 
 def test_sms_from_stranger_ignored(approval, client, applied):

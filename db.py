@@ -364,8 +364,20 @@ CREATE TABLE retention (
 CREATE INDEX idx_notifications_sid ON notifications(sid);
 """
 
+# v3: the Haiku window-score reason kept on each clip (shown on the dashboard's clip page), plus
+# indexes for the dashboard's per-clip/per-source cost lookups, per-module event scans and the
+# overview's stats-by-day aggregate (covering index: the GROUP BY day never touches the table).
+_SCHEMA_V3 = """
+ALTER TABLE clips ADD COLUMN haiku_reason TEXT;
+CREATE INDEX idx_llm_usage_clip ON llm_usage(clip_id);
+CREATE INDEX idx_llm_usage_source ON llm_usage(source_id);
+CREATE INDEX idx_events_module_ts ON events(module, ts);
+CREATE INDEX idx_stats_day_cover ON stats(day, views, watch_minutes, avg_view_pct, subscribers_gained,
+                                          subscribers_lost, likes, shares, estimated_revenue);
+"""
+
 # Append new migrations; never edit a shipped one. Index i -> schema version i+1.
-MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2]
+MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 _initialised: set[str] = set()
@@ -557,6 +569,7 @@ class Clip(_Row):
     status_reason: str | None
     created_at: str
     updated_at: str
+    haiku_reason: str | None = None
     _JSON: ClassVar[tuple[str, ...]] = ("hashtags",)
 
     @property
@@ -859,8 +872,11 @@ def set_source_status(
         cur = require_source(source_id, conn=c).status
         if not force and status != cur and status not in SOURCE_TRANSITIONS[cur]:
             raise InvalidTransition(f"source {source_id}: {cur} -> {status}")
-        c.execute("UPDATE sources SET status = ?, status_reason = ?, updated_at = ? WHERE id = ?",
-                  (status, reason, now_iso(), source_id))
+        # compare-and-set: another process may have moved the row since we read it
+        upd = c.execute("UPDATE sources SET status = ?, status_reason = ?, updated_at = ? WHERE id = ? AND status = ?",
+                        (status, reason, now_iso(), source_id, cur))
+        if upd.rowcount == 0:
+            raise InvalidTransition(f"source {source_id}: status changed concurrently (was {cur})")
 
 
 def count_sources_by_status(*, conn: sqlite3.Connection | None = None) -> dict[str, int]:
@@ -876,7 +892,7 @@ def count_sources_by_status(*, conn: sqlite3.Connection | None = None) -> dict[s
 _CLIP_UPDATABLE = frozenset({
     "start_sec", "end_sec", "haiku_score", "sonnet_rationale", "title", "description", "hashtags",
     "hook_text", "credit_text", "strategy_version", "experiment_id", "experiment_variant",
-    "render_path", "status_reason",
+    "render_path", "status_reason", "haiku_reason",
 })
 
 
@@ -895,10 +911,12 @@ def add_clip(
     strategy_version: int | None = None,
     experiment_id: str | None = None,
     experiment_variant: str | None = None,
+    haiku_reason: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> int:
     """Insert a ``picked`` clip. Licence and source URL are copied from the source for audit.
 
+    ``haiku_reason`` is the Haiku window scorer's one-line reason (audit / dashboard).
     Raises ``ValueError`` if the source has no recorded licence (never clip unlicensed footage).
     """
     if end_sec <= start_sec:
@@ -914,7 +932,7 @@ def add_clip(
             "description": description, "hashtags": _dumps(list(hashtags)), "hook_text": hook_text,
             "credit_text": credit_text, "licence": src.licence, "source_url": src.url,
             "strategy_version": strategy_version, "experiment_id": experiment_id,
-            "experiment_variant": experiment_variant, "status": "picked",
+            "experiment_variant": experiment_variant, "haiku_reason": haiku_reason, "status": "picked",
             "created_at": now, "updated_at": now,
         })
 
@@ -977,8 +995,10 @@ def set_clip_status(
         cur = require_clip(clip_id, conn=c).status
         if not force and status != cur and status not in CLIP_TRANSITIONS[cur]:
             raise InvalidTransition(f"clip {clip_id}: {cur} -> {status}")
-        c.execute("UPDATE clips SET status = ?, status_reason = ?, updated_at = ? WHERE id = ?",
-                  (status, reason, now_iso(), clip_id))
+        upd = c.execute("UPDATE clips SET status = ?, status_reason = ?, updated_at = ? WHERE id = ? AND status = ?",
+                        (status, reason, now_iso(), clip_id, cur))
+        if upd.rowcount == 0:
+            raise InvalidTransition(f"clip {clip_id}: status changed concurrently (was {cur})")
 
 
 def count_clips(
@@ -1033,6 +1053,50 @@ def add_upload(
             "clip_id": clip_id, "privacy": privacy, "publish_at": publish_at, "status": "queued",
             "dry_run": int(dry_run), "created_at": now, "updated_at": now,
         })
+
+
+def claim_upload(
+    clip_id: int,
+    *,
+    privacy: str,
+    publish_at: str | None = None,
+    dry_run: bool = False,
+) -> int | None:
+    """Atomically create a ``queued`` upload row unless the clip already has one in flight or done.
+
+    Returns the new upload id, or ``None`` when another row blocks it: a live ``queued`` row
+    (an upload in progress in another process, or an orphan the caller has not reconciled) or an
+    ``uploaded`` row that counts in this mode (live rows always; dry-run rows only in a dry run).
+    The check and the insert run under one ``BEGIN IMMEDIATE`` write lock, so two processes
+    (scheduler + a CLI ``upload``) can never both start a videos.insert for the same clip.
+    """
+    if privacy not in ("private", "unlisted", "public"):
+        raise ValueError(f"bad privacy {privacy!r}")
+    c = connect()
+    try:
+        c.isolation_level = None
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            require_clip(clip_id, conn=c)
+            busy = c.execute(
+                "SELECT id FROM uploads WHERE clip_id = ? AND ((status = 'queued' AND dry_run = 0) "
+                "OR (status = 'uploaded' AND (dry_run = 0 OR ?))) LIMIT 1", (clip_id, int(dry_run))).fetchone()
+            if busy is not None:
+                c.execute("ROLLBACK")
+                return None
+            now = now_iso()
+            uid = _insert(c, "uploads", {
+                "clip_id": clip_id, "privacy": privacy, "publish_at": publish_at, "status": "queued",
+                "dry_run": int(dry_run), "created_at": now, "updated_at": now,
+            })
+            c.execute("COMMIT")
+            return uid
+        except BaseException:
+            if c.in_transaction:
+                c.execute("ROLLBACK")
+            raise
+    finally:
+        c.close()
 
 
 def mark_upload_succeeded(
@@ -1303,7 +1367,8 @@ def clip_performance(
     experiment_variant, youtube_video_id, publish_at, uploaded_at, upload_status (uploaded |
     removed), youtube_status, copyright_claim, views, watch_minutes, likes, comments, shares,
     subscribers_gained, subscribers_lost, estimated_revenue (None without revenue data),
-    avg_view_pct and avg_view_duration_sec (means of the daily values), days_tracked (stats days in
+    avg_view_pct and avg_view_duration_sec (view-weighted over the period's days, so a 3-view day
+    does not count as much as a 3,000-view day; plain mean only when no day had views), days_tracked (stats days in
     the period), total_views (all days), lifetime_views / lifetime_likes / lifetime_comments (Data
     API counters, None until fetched). Ordered by upload time.
     """
@@ -1341,8 +1406,14 @@ def clip_performance(
             SELECT youtube_video_id, SUM(views) AS views, SUM(watch_minutes) AS watch_minutes,
                    SUM(likes) AS likes, SUM(comments) AS comments, SUM(shares) AS shares,
                    SUM(subscribers_gained) AS subscribers_gained, SUM(subscribers_lost) AS subscribers_lost,
-                   SUM(estimated_revenue) AS estimated_revenue, AVG(avg_view_pct) AS avg_view_pct,
-                   AVG(avg_view_duration_sec) AS avg_view_duration_sec, COUNT(*) AS days_tracked
+                   SUM(estimated_revenue) AS estimated_revenue,
+                   COALESCE(SUM(CASE WHEN avg_view_pct IS NOT NULL THEN avg_view_pct * views END)
+                              / NULLIF(SUM(CASE WHEN avg_view_pct IS NOT NULL THEN views END), 0),
+                            AVG(avg_view_pct)) AS avg_view_pct,
+                   COALESCE(SUM(CASE WHEN avg_view_duration_sec IS NOT NULL THEN avg_view_duration_sec * views END)
+                              / NULLIF(SUM(CASE WHEN avg_view_duration_sec IS NOT NULL THEN views END), 0),
+                            AVG(avg_view_duration_sec)) AS avg_view_duration_sec,
+                   COUNT(*) AS days_tracked
             FROM stats {"WHERE " + " AND ".join(period) if period else ""}
             GROUP BY youtube_video_id
         ) p ON p.youtube_video_id = u.youtube_video_id
@@ -1583,6 +1654,28 @@ def update_notification(
     with transaction(conn) as c:
         _update(c, "notifications", notification_id, {"status": status, "sid": sid, "error": error},
                 allowed=frozenset({"status", "sid", "error"}))
+
+
+def count_notifications_between(
+    start_iso: str,
+    end_iso: str,
+    *,
+    status: str | Sequence[str] | None = None,
+    channels: Sequence[str] | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Notifications whose ``updated_at`` is in ``[start, end)`` (optionally by status / channel)."""
+    where, params = ["updated_at >= ?", "updated_at < ?"], [start_iso, end_iso]
+    if status is not None:
+        sts = [status] if isinstance(status, str) else list(status)
+        where.append(f"status IN ({','.join('?' * len(sts))})")
+        params += sts
+    if channels is not None:
+        where.append(f"channel IN ({','.join('?' * len(channels))})")
+        params += list(channels)
+    with transaction(conn) as c:
+        return int(c.execute(f"SELECT COUNT(*) AS n FROM notifications WHERE {' AND '.join(where)}",
+                             params).fetchone()["n"])
 
 
 def get_notification(notification_id: int, *, conn: sqlite3.Connection | None = None) -> Notification | None:
