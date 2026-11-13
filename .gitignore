@@ -1,0 +1,47 @@
+# Secrets / local config
+config.env
+*.env
+!config.env.example
+client_secret*.json
+youtube_token*.json
+token*.json
+*.pem
+
+# Runtime data
+data/
+media/
+downloads/
+renders/
+transcripts/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.wav
+*.mp3
+*.part
+*.ytdl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

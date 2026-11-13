@@ -1,0 +1,19 @@
+# Runtime dependencies for the Auto Shorts Agent (Python >= 3.12).
+# Minimum versions are the oldest we have tested against; upper bounds only
+# where a major version is known to break our usage.
+
+anthropic>=2.8,<3            # llm.py is the only importer
+yt-dlp>=2025.1.1             # fetch.py / scout.py
+faster-whisper>=1.1          # transcribe.py (default backend)
+google-api-python-client>=2.150
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+twilio>=9.3                  # notify.py
+fastapi>=0.115
+uvicorn[standard]>=0.32
+jinja2>=3.1                  # dashboard.py templates
+python-multipart>=0.0.18     # Twilio webhooks post form data
+apscheduler>=3.10,<4         # main.py uses the 3.x BackgroundScheduler/BlockingScheduler API
+python-dotenv>=1.0
+httpx>=0.27                  # scout.py (NASA / congress APIs), FastAPI TestClient
+tzdata>=2024.1               # zoneinfo data on platforms without a system tz database

@@ -1,0 +1,91 @@
+{
+  "_comment": "Live strategy. Rewritten by strategist.weekly_review() via strategy.save_strategy(); schema and licence rules are documented in strategy.py. Keys starting with '_' are comments and are ignored.",
+  "version": 1,
+  "updated_at": "2026-11-13T00:00:00Z",
+  "niche": "Space & science moments plus notable congressional hearing exchanges, clipped from US federal government and CC-BY footage",
+  "topic_areas": ["space", "science", "congressional_hearings"],
+  "topics": [
+    {"query": "NASA Artemis", "area": "space", "source_types": ["nasa"]},
+    {"query": "James Webb Space Telescope", "area": "space", "source_types": ["nasa", "cc_by_youtube"]},
+    {"query": "Mars rover", "area": "space", "source_types": ["nasa"]},
+    {"query": "International Space Station spacewalk", "area": "space", "source_types": ["nasa"]},
+    {"query": "rocket launch", "area": "space", "source_types": ["nasa", "cc_by_youtube"]},
+    {"query": "astronaut answers questions", "area": "space", "source_types": ["nasa"]},
+    {"query": "climate earth science", "area": "science", "source_types": ["nasa", "cc_by_youtube"]},
+    {"query": "physics explained", "area": "science", "source_types": ["cc_by_youtube"]},
+    {"query": "UAP hearing", "area": "congressional_hearings", "source_types": ["congress"]},
+    {"query": "artificial intelligence hearing", "area": "congressional_hearings", "source_types": ["congress"]},
+    {"query": "NASA budget hearing", "area": "congressional_hearings", "source_types": ["congress"]},
+    {"query": "tech CEO testimony", "area": "congressional_hearings", "source_types": ["congress"]}
+  ],
+  "source_types": ["nasa", "congress", "cc_by_youtube"],
+  "allowlist": {
+    "_comment": "Per source type: publishers whose uploads are eligible. Channels match on channel_id first, else case-insensitive exact channel name or handle. Domains match the URL host or any parent domain. any_channel=true means any channel passes as long as the per-video licence check passes (used for CC-BY).",
+    "nasa": {
+      "any_channel": false,
+      "channels": [
+        {"name": "NASA", "handle": "@NASA", "channel_id": "UCLA_DiR1FfKNvjuUpBHmylQ", "note": "Official NASA channel"},
+        {"name": "NASA Jet Propulsion Laboratory", "handle": "@NASAJPL", "channel_id": null, "note": "JPL is an FFRDC run by Caltech: check each video's description for third-party/Caltech copyright notices"},
+        {"name": "NASA Goddard", "handle": "@NASAGoddard", "channel_id": null, "note": ""},
+        {"name": "NASA Video", "handle": "@NASAVideo", "channel_id": null, "note": "Raw/B-roll uploads"}
+      ],
+      "domains": ["nasa.gov", "images.nasa.gov", "svs.gsfc.nasa.gov", "dvidshub.net"]
+    },
+    "congress": {
+      "any_channel": false,
+      "channels": [
+        {"name": "House Committee on Science, Space, and Technology", "handle": null, "channel_id": null, "note": "Official committee feed; verify channel is linked from science.house.gov before first use"},
+        {"name": "Senate Commerce, Science, and Transportation Committee", "handle": null, "channel_id": null, "note": "Official committee feed; verify via commerce.senate.gov"},
+        {"name": "House Committee on Oversight and Accountability", "handle": null, "channel_id": null, "note": "Official committee feed; verify via oversight.house.gov"}
+      ],
+      "domains": ["house.gov", "senate.gov", "congress.gov", "govinfo.gov"]
+    },
+    "cc_by_youtube": {
+      "any_channel": true,
+      "channels": [],
+      "domains": ["youtube.com", "youtu.be"]
+    }
+  },
+  "blocklist_channels": [
+    "C-SPAN",
+    "CSPAN",
+    "Forbes Breaking News",
+    "Associated Press",
+    "Reuters"
+  ],
+  "_licence_comment": "C-SPAN's own broadcasts and re-uploads by news outlets are copyrighted even when they show government proceedings: only official government-produced feeds count as US federal works. CC content must be CC-BY (not NC, ND or SA).",
+  "hook_style": "Open with a 3-7 word on-screen question or bold claim taken from what is said in the first 3 seconds; no clickbait that the clip does not pay off; no emojis.",
+  "title_style": "Under 70 characters, curiosity-driven but accurate, names the speaker or mission when known; no ALL CAPS words except acronyms.",
+  "caption_style": {
+    "font": "Montserrat ExtraBold",
+    "font_size": 78,
+    "primary_color": "#FFFFFF",
+    "highlight_color": "#FFD400",
+    "outline_color": "#000000",
+    "outline_px": 5,
+    "max_words_per_line": 3,
+    "position": "lower_third",
+    "uppercase": true,
+    "animation": "word_pop"
+  },
+  "clip_length_sec": {"min": 20, "target": 45, "max": 59},
+  "min_haiku_score": 7,
+  "windows_to_escalate": 3,
+  "max_clips_per_source": 2,
+  "uploads_per_day": 4,
+  "posting_times": ["08:45", "12:15", "17:10", "20:40"],
+  "timezone": "America/New_York",
+  "daily_llm_budget_usd": 1.0,
+  "default_hashtags": ["#Shorts", "#Science"],
+  "experiment": {
+    "id": "exp-001-hook-question-vs-claim",
+    "hypothesis": "Hooks phrased as a question retain viewers better than hooks phrased as a bold claim.",
+    "variable": "hook_style",
+    "control": "Open with a bold claim taken from the clip.",
+    "variant": "Open with a question the clip answers.",
+    "start": "2026-11-13",
+    "end": "2026-11-27",
+    "success_metric": "avg_view_pct"
+  },
+  "notes": "Initial strategy. Prioritise moments with a clear payoff inside 45 seconds: launches, landings, astronaut Q&A, sharp hearing exchanges. Always credit the source on screen and in the description."
+}
