@@ -698,7 +698,7 @@ def _upload_live(clip: db.Clip, upload_id: int, path: Path | None, body: dict, s
         try:
             db.mark_upload_succeeded(upload_id, video_id, quota_units=cost)
             break
-        except Exception:  # noqa: BLE001 - e.g. sqlite "database is locked"
+        except Exception:
             if attempt == 2:
                 log.critical("video %s uploaded for clip %s but DB write failed", video_id, clip_id)
                 raise

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import date
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httplib2
