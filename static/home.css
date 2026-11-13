@@ -15,7 +15,7 @@
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* ---- night palette for the assistant's pages --------------------------- */
-body.section-home, body.section-memory {
+body.section-home, body.section-memory, body.section-settings {
   --page: #f5f1e8; --surface: #fffdf8; --surface-2: #efe9dc; --ink: #1f1b14; --ink-2: #4c463a; --muted: #6e6758;
   --border: rgba(31, 27, 20, 0.10); --border-strong: rgba(31, 27, 20, 0.2); --link: #8a560c;
   --accent: #a8690f; --accent-ink: #fffaf0; --accent-wash: rgba(168, 105, 15, 0.10); --glow: rgba(214, 150, 60, 0.28);
@@ -23,21 +23,21 @@ body.section-home, body.section-memory {
   --radius: 14px; --shadow: 0 1px 2px rgba(31, 27, 20, 0.05), 0 6px 20px rgba(31, 27, 20, 0.05);
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) body.section-home, :root:not([data-theme="light"]) body.section-memory {
+  :root:not([data-theme="light"]) body.section-home, :root:not([data-theme="light"]) body.section-memory, :root:not([data-theme="light"]) body.section-settings {
     --page: #0e1117; --surface: #161a22; --surface-2: #1d222c; --ink: #ede8dd; --ink-2: #bdb6a7; --muted: #8b8577;
     --border: rgba(237, 232, 221, 0.08); --border-strong: rgba(237, 232, 221, 0.16); --link: #e6b25f;
     --accent: #e0a84e; --accent-ink: #1a1306; --accent-wash: rgba(224, 168, 78, 0.12); --glow: rgba(224, 168, 78, 0.22);
     --px-k: #07080b; --shadow: none;
   }
 }
-:root[data-theme="dark"] body.section-home, :root[data-theme="dark"] body.section-memory {
+:root[data-theme="dark"] body.section-home, :root[data-theme="dark"] body.section-memory, :root[data-theme="dark"] body.section-settings {
   --page: #0e1117; --surface: #161a22; --surface-2: #1d222c; --ink: #ede8dd; --ink-2: #bdb6a7; --muted: #8b8577;
   --border: rgba(237, 232, 221, 0.08); --border-strong: rgba(237, 232, 221, 0.16); --link: #e6b25f;
   --accent: #e0a84e; --accent-ink: #1a1306; --accent-wash: rgba(224, 168, 78, 0.12); --glow: rgba(224, 168, 78, 0.22);
   --px-k: #07080b; --shadow: none;
 }
-body.section-home, body.section-memory { background: var(--page); color: var(--ink); }
-body.section-home .topbar, body.section-memory .topbar { background: color-mix(in srgb, var(--page) 88%, transparent); backdrop-filter: blur(8px); }
+body.section-home, body.section-memory, body.section-settings { background: var(--page); color: var(--ink); }
+body.section-home .topbar, body.section-memory .topbar, body.section-settings .topbar { background: color-mix(in srgb, var(--page) 88%, transparent); backdrop-filter: blur(8px); }
 body.section-home .page, body.section-memory .page { padding-top: 14px; }
 
 /* ---- sprites ------------------------------------------------------------ */

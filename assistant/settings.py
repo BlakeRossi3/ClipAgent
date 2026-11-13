@@ -46,10 +46,8 @@ class AssistantSettings:
 def load_assistant_settings(environ: Mapping[str, str] | None = None) -> AssistantSettings:
     """Build settings from ``environ`` (default ``os.environ``) + the phase-1 ``config.env`` file."""
     env_in = dict(os.environ if environ is None else environ)
-    config_file = config._path(env_in.get("CLIPAGENT_CONFIG_FILE"), config.REPO_ROOT / "config.env",
-                               config.REPO_ROOT)
-    env = {**config._read_env_file(config_file), **env_in}
     base = config.get_settings() if environ is None else config.load_settings(environ)
+    env = {**config._read_env_file(base.config_file), **env_in}
 
     def s(key: str, default: str) -> str:
         v = env.get(key)

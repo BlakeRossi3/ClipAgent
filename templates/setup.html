@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}{% if wizard %}Setup{% else %}Settings{% endif %}{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/dashboard/static/setup.css">
+{% if step == "action" and reload %}<meta http-equiv="refresh" content="12;url=/setup/">{% endif %}
+{% endblock %}
+{% macro err(name) %}{% if errors.get(name) %}<span class="f-err" role="alert">{{ errors[name] }}</span>{% endif %}{% endmacro %}
+{% macro help(text) %}<span class="f-help">{{ text }}</span>{% endmacro %}
+{% macro buttons(primary="Save & continue") %}
+<div class="s-actions">
+  {% if wizard %}
+    <button type="submit" class="hbtn hbtn-accent">{{ primary }}</button>
+    {% if next_step %}<a class="s-skip" href="/setup/{{ next_step }}?msg=skipped">Skip for now</a>{% endif %}
+    {% if prev_step %}<a class="s-back" href="/setup/{{ prev_step }}">Back</a>{% endif %}
+  {% else %}
+    <button type="submit" class="hbtn hbtn-accent">Save</button>
+    <a class="s-back" href="/setup/">Back to Settings</a>
+  {% endif %}
+</div>
+{% endmacro %}
+{% macro secret_field(name, label, saved, placeholder, clear_name) %}
+<label class="f">{{ label }}
+  {% if saved %}<span class="f-saved">•••• saved</span>{% endif %}
+  <input type="password" name="{{ name }}" autocomplete="off" spellcheck="false" placeholder="{{ 'Paste a new one to replace it' if saved else placeholder }}">
+  {{ err(name) }}
+</label>
+{% if saved %}<label class="f-check"><input type="checkbox" name="{{ clear_name }}" value="1"> Remove the saved one</label>{% endif %}
+{% endmacro %}
+{% macro result_box(r) %}
+{% if r %}<div class="s-result {{ 'ok' if r.ok else 'bad' }}" role="status"><strong>{{ r.title }}</strong> {{ r.text }}</div>{% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="setup">
+{% if note %}<div class="flash flash-{{ note[0] }}" role="status">{{ note[1] }}</div>{% endif %}
+
+{% if step == "welcome" %}
+<section class="card s-hero">
+  <div class="s-butler">{{ butler | safe }}</div>
+  <div>
+    <p class="s-kicker">{{ a.name }} · at your service</p>
+    <h1>{{ salute }} Let's get you set up.</h1>
+    <p>A few short pages: who you are, the AI key, your job, your phone and YouTube. Anything optional can be skipped and filled in later under Settings. Nothing here costs money until you add a key and switch off practice mode.</p>
+    <a class="hbtn hbtn-accent s-go" href="/setup/about">Begin</a>
+  </div>
+</section>
+<ol class="s-list">{% for key, label in steps %}<li>{{ label }}</li>{% endfor %}</ol>
+
+{% elif step == "hub" %}
+<section class="s-hero s-hero-sm">
+  <div class="s-butler">{{ butler | safe }}</div>
+  <div><p class="s-kicker">Settings</p><h1>Everything you set up, in one place.</h1></div>
+</section>
+<div class="s-grid">
+  {% set sm = summary %}
+  <a class="card s-tile" href="/setup/about"><strong>About you</strong><span>{{ sm.about.owner_name }} · "{{ sm.about.honorific }}" · {{ sm.about.timezone }}</span></a>
+  <a class="card s-tile" href="/setup/brain"><strong>The brain</strong><span>{% if secrets.api_key %}Key saved{% else %}No key - practice mode{% endif %} · ${{ sm.brain.pipeline_cap }}/day studio, ${{ sm.brain.assistant_cap }}/day {{ a.name }}</span></a>
+  <a class="card s-tile" href="/setup/money"><strong>Job &amp; money</strong><span>{% if sm.money.job_name %}{{ sm.money.job_name }} · ${{ sm.money.rate }}/h{% else %}Not set{% endif %}</span></a>
+  <a class="card s-tile" href="/setup/phone"><strong>Your phone</strong><span>{{ sm.phone.owner_phone or "Not set" }}{% if sm.phone.twilio_sid %} · Twilio set{% endif %}</span></a>
+  <a class="card s-tile" href="/setup/youtube"><strong>YouTube</strong><span>{% if sm.youtube.has_token %}Connected{% elif sm.youtube.has_secret %}Sign-in file saved, not connected{% else %}Not connected{% endif %}</span></a>
+  <a class="card s-tile" href="/setup/memory"><strong>Memory</strong><span>{{ sm.memory.notes }} notes</span></a>
+  <a class="card s-tile" href="/setup/power"><strong>Power &amp; privacy</strong><span>{{ "GPU" if sm.power.whisper_device == "cuda" else "CPU" }} · {{ "Practice (dry run)" if sm.power.dry_run else "Live" }}{% if secrets.dashboard_token %} · phone password set{% endif %}</span></a>
+  <a class="card s-tile" href="/setup/done"><strong>Health check</strong><span>Run the checklist</span></a>
+</div>
+<section class="card s-maint">
+  <h2 class="sec-title">Maintenance</h2>
+  <div class="s-btnrow">
+    <form method="post" action="/setup/action/update"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Check for updates</button></form>
+    <form method="post" action="/setup/action/restart"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled title="Only when started from the ClipAgent shortcut"{% endif %}>Restart</button></form>
+    <form method="post" action="/setup/action/stop"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled{% endif %}>Stop</button></form>
+    <a class="hbtn" href="/setup/done">Run health check</a>
+    {% if windows %}<form method="post" action="/setup/action/open-data"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Open data folder</button></form>{% endif %}
+  </div>
+  <p class="f-help">Your settings live in <code>{{ s.config_file }}</code>; your data in <code>{{ s.data_dir }}</code>. Updates never touch either.</p>
+</section>
+
+{% elif step == "action" %}
+<section class="card">
+  <h1>{{ title }}</h1>
+  {% if hint %}<p>{{ hint }}</p>{% endif %}
+  {% for line in log %}{% if line %}<pre class="s-log">{{ line }}</pre>{% endif %}{% endfor %}
+  <p><a class="hbtn" href="/setup/">Back to Settings</a></p>
+</section>
+
+{% elif step == "help" %}
+<section class="card s-doc">{{ doc_html | safe }}<p><a class="hbtn" href="/setup/">Back to Settings</a></p></section>
+
+{% else %}
+{# ---------------------------------------------------------------- a wizard / settings step #}
+{% if wizard %}
+<nav class="s-progress" aria-label="Setup progress">
+  <div class="s-bar"><span style="width: {{ ((idx + 1) * 100 / steps|length)|round|int }}%"></span></div>
+  <p>Step {{ idx + 1 }} of {{ steps|length }} · <strong>{{ steps[idx][1] }}</strong></p>
+</nav>
+{% endif %}
+
+{% if step == "about" %}
+<section class="card s-step">
+  <div class="s-head"><div class="s-butler s-butler-sm">{{ butler | safe }}</div><div><h1>About you</h1><p class="voice">"{{ salute }} How shall I address you?"</p></div></div>
+  <form method="post" action="/setup/about">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="f">Your first name<input name="owner_name" value="{{ values.owner_name }}" maxlength="60" autocomplete="given-name" required>{{ err("owner_name") }}</label>
+    <label class="f">How the assistant addresses you<input name="honorific" value="{{ values.honorific }}" maxlength="30">{{ help('For example "sir", or just your name.') }}{{ err("honorific") }}</label>
+    <label class="f">The assistant's name<input name="assistant_name" value="{{ values.assistant_name }}" maxlength="30">{{ err("assistant_name") }}</label>
+    <label class="f">Your time zone<input name="timezone" value="{{ values.timezone }}" maxlength="64" data-detect-tz{% if wizard %} data-tz-auto{% endif %}>{{ help("Filled in from this browser. It sets what counts as \"today\" and the quiet hours (no calls 22:00-08:00).") }}{{ err("timezone") }}</label>
+    {{ buttons() }}
+  </form>
+</section>
+
+{% elif step == "brain" %}
+<section class="card s-step">
+  <h1>The brain</h1>
+  <p>ClipAgent and {{ a.name }} think with Claude, made by Anthropic. You pay Anthropic directly for what is used; the caps below are hard limits per day.</p>
+  {{ result_box(result) }}
+  <form method="post" action="/setup/brain">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ secret_field("api_key", "Anthropic API key", secrets.api_key, "sk-ant-...", "clear_api_key") }}
+    <p class="f-help">Where do I get this? Sign in at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>, press <em>Create key</em>, copy it and paste it here. Add a little credit under Billing first ($10 lasts weeks). Without a key everything runs in free practice mode with made-up answers.</p>
+    <label class="f">Shorts studio: most it may spend per day (USD)<input name="pipeline_cap" value="{{ values.pipeline_cap }}" inputmode="decimal">{{ help("Picking clips costs a few cents per video. The weekly review sets its own daily budget (about $1) but can never go above this.") }}{{ err("pipeline_cap") }}</label>
+    <label class="f">{{ a.name }}: most per day (USD)<input name="assistant_cap" value="{{ values.assistant_cap }}" inputmode="decimal">{{ help("A chat or text costs roughly 1-5 cents. At the cap the assistant politely goes quiet until tomorrow.") }}{{ err("assistant_cap") }}</label>
+    <label class="f-check"><input type="checkbox" name="assistant_on" value="1"{% if values.assistant_on in (true, "1") %} checked{% endif %}> Switch on {{ a.name }} (your personal assistant: check-ins, money, meals, memory)</label>
+    <div class="s-actions">
+      <button type="submit" name="action" value="test" class="hbtn">Save &amp; test the key</button>
+    </div>
+    {{ buttons() }}
+  </form>
+</section>
+
+{% elif step == "money" %}
+<section class="card s-step">
+  <h1>Your job &amp; money</h1>
+  <p class="voice">"So I can keep the books from your weekly hours, {{ a.owner_honorific }}."</p>
+  <form method="post" action="/setup/money">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="f">Job name<input name="job_name" value="{{ values.job_name }}" maxlength="80" placeholder="e.g. Target">{{ err("job_name") }}</label>
+    <label class="f">Hourly pay before tax (USD)<input name="rate" value="{{ values.rate }}" inputmode="decimal" placeholder="18.50">{{ err("rate") }}</label>
+    <label class="f">How often you are paid
+      <select name="schedule">{% for v, label in [("weekly", "Every week"), ("biweekly", "Every two weeks"), ("semimonthly", "Twice a month"), ("monthly", "Monthly")] %}<option value="{{ v }}"{% if values.schedule == v %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>{{ err("schedule") }}</label>
+    <label class="f">Set aside for tax (%)<input name="tax" value="{{ values.tax }}" inputmode="decimal">{{ help("Only used to estimate take-home pay. 15-25% is typical.") }}{{ err("tax") }}</label>
+    {{ buttons() }}
+  </form>
+</section>
+
+{% elif step == "phone" %}
+<section class="card s-step">
+  <h1>Your phone <span class="s-opt">optional</span></h1>
+  <p>{{ a.name }} can text and call you through Twilio (about $1.15/month for a number plus a cent or two per text). Skip this for now if you like - everything still works on this page.</p>
+  {{ result_box(result) }}
+  <form method="post" action="/setup/phone">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="f">Your mobile number<input name="owner_phone" value="{{ values.owner_phone }}" inputmode="tel" autocomplete="tel" placeholder="+1 555 123 4567">{{ err("owner_phone") }}</label>
+    <label class="f">Twilio Account SID<input name="twilio_sid" value="{{ values.twilio_sid }}" autocomplete="off" spellcheck="false" placeholder="AC...">{{ err("twilio_sid") }}</label>
+    {{ secret_field("twilio_token", "Twilio Auth Token", secrets.twilio_token, "32 letters and numbers", "clear_twilio_token") }}
+    <label class="f">Twilio phone number<input name="twilio_from" value="{{ values.twilio_from }}" inputmode="tel" placeholder="+1 555 000 1111">{{ err("twilio_from") }}</label>
+    <label class="f">Public web address (for replies and approvals)<input name="public_url" value="{{ values.public_url }}" inputmode="url" spellcheck="false">{{ help("Only needed so Twilio can reach this laptop when you text back. Leave it as is until you set that up.") }}{{ err("public_url") }}</label>
+    <p class="f-help">Where do I get these? <a href="/setup/help/twilio">The Twilio guide</a> walks through it step by step.{% if s.dry_run %} Practice mode (dry run) is on, so the test text is only recorded - you can switch it off under <a href="/setup/power#dry-run">Power &amp; privacy</a>.{% endif %}</p>
+    <div class="s-actions"><button type="submit" name="action" value="test" class="hbtn">Save &amp; send me a test text</button></div>
+    {{ buttons() }}
+  </form>
+</section>
+
+{% elif step == "youtube" %}
+<section class="card s-step">
+  <h1>YouTube <span class="s-opt">optional</span></h1>
+  <p>To upload Shorts, ClipAgent needs permission to your channel. Google keeps uploads from new apps private until the app passes Google's audit, so expect private videos at first.</p>
+  {{ result_box(result) }}
+  <ol class="s-checklist">
+    <li class="{{ 'ok' if values.has_secret else '' }}"><strong>1. Upload your Google sign-in file</strong>
+      <p class="f-help">Where do I get this? Follow <a href="/setup/help/youtube">the YouTube guide</a> (about 10 minutes in Google Cloud): create an OAuth client of type <em>Desktop app</em> and download its JSON.</p>
+      <form method="post" action="/setup/youtube/secret" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="file" name="file" accept=".json,application/json">{{ err("file") }}
+        <button type="submit" class="hbtn">{{ "Replace file" if values.has_secret else "Upload" }}</button>
+      </form></li>
+    <li class="{{ 'ok' if values.has_token else '' }}"><strong>2. Connect YouTube</strong>
+      <p class="f-help">Opens Google's sign-in. Choose the account that owns your channel and allow access; you come straight back here.</p>
+      <form method="post" action="/setup/youtube/connect">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="hbtn hbtn-accent"{% if not values.has_secret %} disabled{% endif %}>{{ "Reconnect YouTube" if values.has_token else "Connect YouTube" }}</button>
+      </form>
+      {% if values.has_token %}<p class="s-okline">Connected{% if not values.scopes_ok %} - but some permissions are missing; press Reconnect{% endif %}.</p>{% endif %}</li>
+  </ol>
+  {% if wizard %}<div class="s-actions"><a class="hbtn hbtn-accent" href="/setup/memory">Continue</a><a class="s-back" href="/setup/phone">Back</a></div>{% else %}<div class="s-actions"><a class="s-back" href="/setup/">Back to Settings</a></div>{% endif %}
+</section>
+
+{% elif step == "memory" %}
+<section class="card s-step">
+  <h1>Memory</h1>
+  <p class="voice">"Everything I learn about you lives in plain notes on this computer, {{ a.owner_honorific }}."</p>
+  {{ result_box(result) }}
+  <p>Your vault has <strong>{{ values.notes }}</strong> notes, in<br><code class="s-path">{{ values.vault_dir }}</code></p>
+  <p class="f-help">You can open that folder in <a href="https://obsidian.md" target="_blank" rel="noopener">Obsidian</a> (Open folder as vault) to read or edit them. They never leave this computer except as context in a conversation.</p>
+  <form method="post" action="/setup/memory/import" enctype="multipart/form-data" class="s-upload">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="f">Import my profile (a vault .zip or .tgz, up to 25 MB)<input type="file" name="file" accept=".zip,.tgz,.gz,.tar">{{ err("file") }}</label>
+    <p class="f-help">Notes are merged in. Nothing you already have is overwritten; a note that differs is kept side by side as "(imported)".</p>
+    <button type="submit" class="hbtn">Import</button>
+  </form>
+  {% if wizard %}<div class="s-actions"><a class="hbtn hbtn-accent" href="/setup/power">Continue</a><a class="s-back" href="/setup/youtube">Back</a></div>{% else %}<div class="s-actions"><a class="s-back" href="/setup/">Back to Settings</a></div>{% endif %}
+</section>
+
+{% elif step == "power" %}
+<section class="card s-step">
+  <h1>Power &amp; privacy</h1>
+  {% if new_token is defined and new_token %}
+  <div class="s-result ok" role="status"><strong>Your phone password</strong> Write this down now - it is shown only once:
+    <code class="s-token">{{ new_token }}</code>
+    You will type it when opening the dashboard from your phone later. On this laptop you do not need it.</div>
+  {% endif %}
+  <form method="post" action="/setup/power">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <fieldset class="f"><legend>Transcribing speech</legend>
+      <label class="f-check"><input type="radio" name="whisper_device" value="cpu"{% if values.whisper_device != "cuda" %} checked{% endif %}> Use the processor (recommended, always works)</label>
+      <label class="f-check"><input type="radio" name="whisper_device" value="cuda"{% if values.whisper_device == "cuda" %} checked{% endif %}> Use my NVIDIA GPU - faster, needs NVIDIA drivers. If it fails, ClipAgent switches back to the processor by itself.</label>
+      {{ err("whisper_device") }}</fieldset>
+    <fieldset class="f" id="dry-run"><legend>Practice mode</legend>
+      <label class="f-check"><input type="radio" name="dry_run" value="true"{% if values.dry_run in (true, "true") %} checked{% endif %}> On - nothing is uploaded, texted or called; everything is recorded so you can check it (recommended for the first days)</label>
+      <label class="f-check"><input type="radio" name="dry_run" value="false"{% if values.dry_run in (false, "false") %} checked{% endif %}> Off - go live: real uploads, texts and calls</label>
+      {{ err("dry_run") }}</fieldset>
+    {% if windows %}
+    <label class="f-check"><input type="checkbox" name="startup" value="1"{% if values.startup in (true, "1") %} checked{% endif %}> Start ClipAgent when Windows starts (quietly, without opening the browser)</label>{{ err("startup") }}
+    {% endif %}
+    {{ buttons() }}
+  </form>
+  <div class="s-sub">
+    <h2 class="sec-title">Phone password</h2>
+    <p class="f-help">To open this dashboard from your phone later you need a password (DASHBOARD_TOKEN). {% if secrets.dashboard_token %}One is saved.{% else %}None yet.{% endif %}</p>
+    <div class="s-btnrow">
+      <form method="post" action="/setup/power"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" name="action" value="new_token" class="hbtn">{{ "Make a new password" if secrets.dashboard_token else "Make a password" }}</button></form>
+      {% if secrets.dashboard_token %}<form method="post" action="/setup/power"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" name="action" value="clear_token" class="hbtn">Remove it</button></form>{% endif %}
+    </div>
+  </div>
+</section>
+
+{% elif step == "done" %}
+<section class="card s-step">
+  <div class="s-head"><div class="s-butler s-butler-sm">{{ butler | safe }}</div><div><h1>{{ "All set" if wizard else "Health check" }}</h1><p class="voice">"Here is how things stand, {{ a.owner_honorific }}."</p></div></div>
+  {% set todo = checks | rejectattr("status", "equalto", "pass") | list %}
+  {% set ok = checks | selectattr("status", "equalto", "pass") | list %}
+  <ul class="s-checks">
+    {% for c in todo %}
+    <li class="c-{{ c.status }}"><span class="c-dot" aria-hidden="true"></span>
+      <div><strong>{{ c.name }}</strong> <span class="c-detail">{{ c.detail }}</span>{% if c.fix %}<span class="f-help">{{ c.fix }}</span>{% endif %}</div>
+      {% if c.step %}<a class="hbtn hbtn-sm" href="/setup/{{ c.step }}">Fix</a>{% endif %}
+      <span class="sr-only">{{ c.status }}</span></li>
+    {% endfor %}
+  </ul>
+  {% if ok %}
+  <details class="s-passed"><summary><span class="c-dot c-dot-pass" aria-hidden="true"></span>{{ ok | length }} things working</summary>
+    <p class="f-help">{% for c in ok %}{{ c.name }}{{ ", " if not loop.last }}{% endfor %}</p></details>
+  {% endif %}
+  <p class="f-help">Amber items are fine to leave for now (practice mode, phone, YouTube). Red ones stop something from working.</p>
+  {% if wizard %}
+  <form method="post" action="/setup/finish" class="s-actions"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn hbtn-accent">Go to my home screen</button><a class="s-back" href="/setup/power">Back</a></form>
+  {% else %}
+  <div class="s-actions"><a class="hbtn hbtn-accent" href="/dashboard/">Home</a><a class="s-back" href="/setup/">Back to Settings</a></div>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script src="/dashboard/static/setup.js"></script>{% endblock %}

@@ -102,7 +102,25 @@ class FasterWhisperBackend:
             self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
         return self._model
 
+    def _fall_back_to_cpu(self, exc: BaseException) -> bool:
+        """GPU (``cuda`` / ``auto``) failed - typically missing cuBLAS/cuDNN DLLs on Windows, which only
+        shows up when decoding starts. Switch this backend to CPU int8 for good; True if switched."""
+        if self.device == "cpu":
+            return False
+        db.log_event("transcribe", f"GPU transcription failed ({type(exc).__name__}); using the CPU instead",
+                     level="warning", data={"device": self.device, "error": str(exc)[:300]})
+        self.device, self.compute_type, self._model = "cpu", "int8", None
+        return True
+
     def transcribe(self, media_path: Path) -> dict:
+        try:
+            return self._transcribe(media_path)
+        except (RuntimeError, ValueError) as exc:  # ctranslate2: missing cuBLAS DLL, no CUDA device...
+            if not self._fall_back_to_cpu(exc):
+                raise
+            return self._transcribe(media_path)
+
+    def _transcribe(self, media_path: Path) -> dict:
         model = self._load()
         segments, info = model.transcribe(
             str(media_path),
@@ -176,7 +194,7 @@ def extract_audio(media_path: Path, out_path: Path) -> Path:
     tmp = out_path.with_name(out_path.stem + ".partial.wav")
     cmd = build_extract_cmd(media_path, tmp, get_settings().ffmpeg_bin)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=FFMPEG_TIMEOUT_SEC)
     except FileNotFoundError as exc:
         raise TranscribeError(f"ffmpeg not found ({cmd[0]!r})") from exc
     except subprocess.TimeoutExpired as exc:

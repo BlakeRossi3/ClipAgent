@@ -447,3 +447,51 @@ def test_font_name_cannot_inject_ass_lines():
     assert not [l for l in ass.splitlines() if l.startswith("Dialogue") and "SCAM" in l]
     assert all(l.startswith(("Style:", "Format:", "[", ";", "Dialogue:")) or ":" in l or not l
                for l in ass.splitlines())
+
+
+# ---------------------------------------------------------------------------
+# Windows: filter-graph paths and fonts without fontconfig
+# ---------------------------------------------------------------------------
+
+def test_windows_paths_are_escaped_for_the_filter_graph(settings):
+    p = r"C:\Users\Blake O'Neil\AppData\Local\ClipAgent\data\media\renders\7.ass"
+    esc = edit._escape_filter_value(edit._filter_path(p, windows=True))
+    assert esc == r"C\\:/Users/Blake O\\\'Neil/AppData/Local/ClipAgent/data/media/renders/7.ass"
+    assert edit._filter_path(r"/tmp/a\b.ass", windows=False) == r"/tmp/a\b.ass"   # POSIX untouched
+
+
+def test_build_ffmpeg_cmd_on_windows(monkeypatch, settings):
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    cmd = edit.build_ffmpeg_cmd(Path(r"C:\data\video.mp4"), Path(r"C:\data\renders\1.ass"),
+                                Path(r"C:\data\renders\1.tmp.mp4"), 1.0, 20.0, settings,
+                                fonts_dir=Path(r"C:\Users\Me\AppData\Local\ClipAgent\data\fonts"))
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert r"ass=filename=C\\:/data/renders/1.ass:fontsdir=C\\:/Users/Me/AppData/Local/ClipAgent/data/fonts," in graph
+    assert "\\\\data" not in graph
+
+
+def test_windows_fonts_found_by_file_name(monkeypatch, tmp_path, settings):
+    import sys
+
+    sysfonts, userfonts = tmp_path / "Fonts", tmp_path / "UserFonts"
+    sysfonts.mkdir()
+    userfonts.mkdir()
+    (sysfonts / "ARIBLK.TTF").write_bytes(b"font")
+    (sysfonts / "seguibl.ttf").write_bytes(b"font")
+    (userfonts / "Montserrat-ExtraBold.ttf").write_bytes(b"font")
+    monkeypatch.setattr(edit, "WINDOWS_FONT_DIRS", (sysfonts, userfonts))
+    monkeypatch.setattr(edit, "ASSETS_FONTS_DIR", tmp_path / "no-assets")
+    monkeypatch.setattr(edit.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    edit._installed_families.cache_clear()
+    try:
+        assert edit.resolve_font("Montserrat ExtraBold") == "Montserrat ExtraBold"
+        (userfonts / "Montserrat-ExtraBold.ttf").unlink()
+        edit._installed_families.cache_clear()
+        assert edit.resolve_font("Montserrat ExtraBold") == "Arial Black"      # always on Windows
+        d = edit.windows_fonts_dir("Arial Black", settings)
+        assert d == settings.data_dir / "fonts" and (d / "ARIBLK.TTF").read_bytes() == b"font"
+    finally:
+        edit._installed_families.cache_clear()

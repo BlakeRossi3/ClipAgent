@@ -33,7 +33,10 @@ approval before any major change.
 | `notify.py` | Twilio voice/SMS + webhook `router` | **done** |
 | `dashboard.py` | FastAPI `router` + `templates/` | **done** |
 | `server.py` | FastAPI `app` (notify + dashboard routers) | **done** |
-| `main.py` | APScheduler jobs + CLI | **done** |
+| `main.py` | APScheduler jobs + CLI; portable locks (fcntl / msvcrt), Restart/Stop control | **done** |
+| `config_store.py` | comment-preserving atomic edits of `config.env` (wizard writes) | **done** |
+| `setup_web.py` | `/setup` wizard + Settings page (forms, YouTube OAuth, vault import, update/restart/stop) | **done** |
+| `windows/` | `ClipAgent-Setup.bat` + `setup.ps1` installer, `ClipAgent.ps1` launcher (docs/WINDOWS.md) | |
 | `tests/` | pytest; `conftest.py` fixtures are shared; `test_e2e.py` runs the real pipeline with ffmpeg | |
 | `deploy/` | systemd unit, reverse proxy + backup notes | |
 

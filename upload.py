@@ -341,7 +341,7 @@ def probe_video(path: Path, settings: Settings | None = None) -> tuple[int, int,
     try:
         out = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration",
-             "-of", "json", str(path)], capture_output=True, text=True, timeout=60, check=True).stdout
+             "-of", "json", str(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=True).stdout
     except FileNotFoundError:
         return None
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

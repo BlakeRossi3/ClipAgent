@@ -58,6 +58,15 @@ def _dashboard_router() -> APIRouter | None:
     return router
 
 
+def _setup_router() -> APIRouter | None:
+    try:
+        import setup_web
+    except Exception as exc:  # the wizard is optional; webhooks + dashboard keep working without it
+        log.warning("setup wizard unavailable: %s: %s", type(exc).__name__, exc)
+        return None
+    return setup_web.router
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _install_log_redaction()
@@ -74,6 +83,9 @@ def create_app() -> FastAPI:
     if dashboard is not None:
         app.include_router(dashboard)
     app.state.dashboard = dashboard is not None
+    setup = _setup_router() if dashboard is not None else None
+    if setup is not None:
+        app.include_router(setup)
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, Any]:
@@ -81,6 +93,8 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
+        if setup is not None and not get_settings().setup_complete:
+            return RedirectResponse("/setup/")
         return RedirectResponse("/dashboard/" if app.state.dashboard else "/healthz")
 
     return app

@@ -896,10 +896,14 @@ def _render_home_parts(request: Request, data: Mapping[str, Any]) -> dict[str, s
 
 
 def home_page(request: Request) -> Response:
+    import config
+
     d = _d()
     resp, _ = d._guard(request)
     if resp is not None:
         return resp
+    if not config.get_settings().setup_complete:  # first run: the web setup wizard
+        return d._security_headers(RedirectResponse("/setup/", status_code=303))
     if request.query_params.get("period"):  # an old overview link: the analytics moved to /studio
         return d._security_headers(RedirectResponse("/dashboard/studio?" + urlencode(
             [(k, v) for k, v in request.query_params.multi_items() if k != "token"]), status_code=303))

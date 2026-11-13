@@ -156,7 +156,7 @@ def test_security_headers(client, clock):
     r = client.get("/dashboard/")
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-frame-options"] == "DENY"
-    assert r.headers["referrer-policy"] == "no-referrer"
+    assert r.headers["referrer-policy"] == "same-origin"   # no-referrer made browsers send Origin: null
 
 
 # --------------------------------------------------------------------------- JSON

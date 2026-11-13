@@ -486,3 +486,95 @@ def test_assistant_cli(capsys, clock, monkeypatch, tmp_path):
     checks = {c.name: c for c in main.doctor_checks()}
     assert checks["pay rate"].status == "pass" and checks["assistant"].detail == "enabled"
     aset.reset_assistant_settings()
+
+
+# ---------------------------------------------------------------------------
+# Windows portability: locks, signals, restart control
+# ---------------------------------------------------------------------------
+
+def test_main_has_no_module_level_fcntl_and_imports_on_windows(monkeypatch):
+    import importlib
+    import sys
+
+    assert "fcntl" not in vars(main)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "fcntl", None)       # importing it would raise ImportError
+    importlib.reload(main)                                # module import must not touch fcntl
+    monkeypatch.undo()
+    importlib.reload(main)
+
+
+def test_lock_uses_msvcrt_on_windows(monkeypatch, settings):
+    import sys
+    import types
+
+    held: dict[str, int] = {}
+    calls = []
+
+    def locking(fd, mode, nbytes):
+        calls.append((mode, nbytes))
+        key = "lock"
+        if mode == fake.LK_NBLCK:
+            if key in held and held[key] != fd:
+                raise OSError(13, "Permission denied")
+            held[key] = fd
+        elif mode == fake.LK_UNLCK:
+            held.pop(key, None)
+
+    fake = types.SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setitem(sys.modules, "fcntl", None)       # the POSIX path must not be used
+    with main.stage_lock("upload"):
+        with pytest.raises(main.Busy, match=f"pid {os.getpid()}"):   # pid stays readable while locked
+            main.acquire_lock("upload")
+    assert held == {} and calls[0] == (fake.LK_NBLCK, 1)
+    assert main.lock_holder("upload") is None
+
+
+def test_stop_signals_include_sigbreak_where_it_exists(monkeypatch):
+    import signal
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.setdefault(sig, handler))
+    monkeypatch.setattr(signal, "SIGBREAK", 21, raising=False)
+    got = main._install_stop_signals()
+    assert set(got) == {int(signal.SIGTERM), 21}
+    assert all(h is signal.default_int_handler for h in installed.values())
+
+
+def test_request_shutdown_and_relaunch(monkeypatch):
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(main, "_control", {"server": None, "restart": False})
+    assert main.request_shutdown(restart=True) is False and not main.control_available()
+    srv = SimpleNamespace(should_exit=False)
+    main._control["server"] = srv
+    assert main.request_shutdown(restart=True) and srv.should_exit and main._control["restart"]
+    started = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: started.append((argv, kw)))
+    main._relaunch()
+    assert started[0][0] == [sys.executable, *sys.argv] and "shell" not in started[0][1]
+    execs = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "execv", lambda exe, argv: execs.append((exe, argv)))
+    main._relaunch()
+    assert execs == [(sys.executable, [sys.executable, *sys.argv])]
+
+
+def test_font_check_does_not_need_fc_list_on_windows(monkeypatch, strategy):
+    import shutil
+    import sys
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(edit, "windows_font_files", lambda: {"arial black": Path("C:/Windows/Fonts/ariblk.ttf")})
+    edit._installed_families.cache_clear()
+    try:
+        chk = main._font_check(strategy)
+    finally:
+        edit._installed_families.cache_clear()
+    assert chk.status == "warn" and "Arial Black" in chk.detail and "apt" not in chk.fix

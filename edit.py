@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
 import time
 from collections.abc import Callable, Sequence
@@ -96,9 +97,20 @@ DEFAULT_CAPTION_STYLE: dict[str, Any] = {
 # Heavy, legible fonts tried in order when the configured font is not installed. Plain
 # "Montserrat" matches the variable-weight install (Bold=-1 then selects a heavy weight);
 # the last two ship with almost every Linux box, so captions always render.
+# "Arial Black" / "Segoe UI Black" ship with every Windows 10/11 install.
 FONT_FALLBACKS = ("Montserrat ExtraBold", "Montserrat Black", "Montserrat", "Anton", "Inter Black",
-                  "Inter ExtraBold", "Inter Display Black", "Liberation Sans", "DejaVu Sans")
+                  "Inter ExtraBold", "Inter Display Black", "Arial Black", "Segoe UI Black", "Liberation Sans",
+                  "DejaVu Sans")
 ASSETS_FONTS_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+# Windows has no fc-list: fonts are found by file name in these folders (system + per-user installs).
+WINDOWS_FONT_DIRS = (Path("C:/Windows/Fonts"), Path.home() / "AppData" / "Local" / "Microsoft" / "Windows" / "Fonts")
+# Windows system fonts use 8.3 file names, so their family cannot be guessed from the name.
+WINDOWS_FONT_FILES = {"ariblk.ttf": "Arial Black", "seguibl.ttf": "Segoe UI Black", "impact.ttf": "Impact",
+                      "arialbd.ttf": "Arial", "segoeuib.ttf": "Segoe UI", "verdanab.ttf": "Verdana"}
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
 
 _SENTENCE_END = re.compile(r"[.?!;:]['\")\]]*$")
 _CLAUSE_END = re.compile(r"[,]['\")\]]*$")
@@ -194,7 +206,7 @@ def probe_media(path: Path | str, settings: Settings | None = None) -> MediaInfo
     """ffprobe ``path`` (subprocess; tests monkeypatch this)."""
     cmd = [ffprobe_bin(settings), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise RenderError(f"ffprobe failed for {path}: {e}") from e
     if proc.returncode != 0:
@@ -517,6 +529,15 @@ def _escape_filter_value(value: str) -> str:
     return re.sub(r"([\\'\[\],;])", r"\\\1", lvl1)
 
 
+def _filter_path(path: Path | str, *, windows: bool | None = None) -> str:
+    """A path as ffmpeg filter options want it: on Windows ``C:\\x\\y.ass`` -> ``C:/x/y.ass`` (the drive
+    colon is then escaped by :func:`_escape_filter_value`, giving ``C\\\\:/x/y.ass`` in the graph)."""
+    text = str(path)
+    if _is_windows() if windows is None else windows:
+        text = text.replace("\\", "/")
+    return text
+
+
 def framing_filters(framing: str, info: MediaInfo, crop_x: int | None = None) -> str:
     """Filter chain from ``[v0]`` (fps-normalised source) to ``[vf]`` (1080x1920, SAR 1)."""
     if framing == "fit":
@@ -556,9 +577,9 @@ def build_ffmpeg_cmd(src: Path, ass_path: Path, out: Path, start: float, end: fl
     if dur <= 0:
         raise ValueError("end must be after start")
     mode = resolve_framing(framing, info)
-    ass_opt = f"filename={_escape_filter_value(str(ass_path))}"
+    ass_opt = f"filename={_escape_filter_value(_filter_path(ass_path))}"
     if fonts_dir is not None:
-        ass_opt += f":fontsdir={_escape_filter_value(str(fonts_dir))}"
+        ass_opt += f":fontsdir={_escape_filter_value(_filter_path(fonts_dir))}"
     graph = (f"[0:v:0]fps={FPS},format=yuv420p[v0];"
              + framing_filters(mode, info, crop_x)
              + f";[vf]ass={ass_opt},format=yuv420p[vout]")
@@ -586,7 +607,7 @@ def run_ffmpeg(cmd: list[str], *, timeout: float | None = 1800) -> None:
     """Run ffmpeg; raise :class:`RenderError` with the stderr tail on failure (tests monkeypatch)."""
     log.debug("ffmpeg: %s", " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except FileNotFoundError as e:
         raise RenderError(f"ffmpeg not found: {cmd[0]}") from e
     except subprocess.TimeoutExpired as e:
@@ -599,13 +620,38 @@ def run_ffmpeg(cmd: list[str], *, timeout: float | None = 1800) -> None:
 # fonts, transcript, credit
 # ---------------------------------------------------------------------------
 
+def _families_from_files(dirs: Sequence[Path]) -> dict[str, Path]:
+    """{family (lower case): font file} guessed from file names (``Montserrat-ExtraBold.ttf`` ->
+    "montserrat extrabold" and "montserrat"; Windows 8.3 names via :data:`WINDOWS_FONT_FILES`)."""
+    out: dict[str, Path] = {}
+    for d in dirs:
+        try:
+            files = sorted(d.iterdir())
+        except OSError:
+            continue
+        for p in files:
+            if p.suffix.lower() not in (".ttf", ".otf"):
+                continue
+            known = WINDOWS_FONT_FILES.get(p.name.lower())
+            if known:
+                out.setdefault(known.lower(), p)
+            stem = re.sub(r"\[.*?\]", "", p.stem).strip()
+            out.setdefault(stem.replace("-", " ").replace("_", " ").lower(), p)
+            out.setdefault(stem.split("-", 1)[0].lower(), p)
+    return out
+
+
+def windows_font_files() -> dict[str, Path]:
+    return _families_from_files(WINDOWS_FONT_DIRS)
+
+
 @lru_cache(maxsize=1)
 def _installed_families() -> frozenset[str] | None:
     exe = shutil.which("fc-list")
     if not exe:
-        return None
+        return frozenset(windows_font_files()) if _is_windows() else None
     try:
-        out = subprocess.run([exe, ":", "family"], capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run([exe, ":", "family"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
     fams: set[str] = set()
@@ -644,6 +690,30 @@ def resolve_font(name: str | None) -> str:
         if cand and cand.lower() in available:
             return cand
     return name or "Sans"
+
+
+def windows_fonts_dir(font: str, settings: Settings) -> Path | None:
+    """Windows: a small ``<data dir>/fonts`` folder for ffmpeg's ``fontsdir`` holding the bundled
+    ``assets/fonts`` files plus the chosen system font (libass then finds it without fontconfig;
+    pointing it at C:\\Windows\\Fonts itself would load hundreds of fonts per render)."""
+    wanted: list[Path] = []
+    if ASSETS_FONTS_DIR.is_dir():
+        wanted += [p for p in ASSETS_FONTS_DIR.iterdir() if p.suffix.lower() in (".ttf", ".otf")]
+    src = windows_font_files().get((font or "").lower())
+    if src is not None:
+        wanted.append(src)
+    if not wanted:
+        return None
+    out = settings.data_dir / "fonts"
+    out.mkdir(parents=True, exist_ok=True)
+    for p in wanted:
+        dst = out / p.name
+        if not dst.exists():
+            try:
+                shutil.copyfile(p, dst)
+            except OSError as e:
+                log.warning("could not copy font %s: %s", p, e)
+    return out
 
 
 def _local_words_between(transcript: dict, start: float, end: float) -> list[dict]:
@@ -803,7 +873,8 @@ def render_clip(clip_id: int, strategy: Any | None = None, *, framing: str | Non
                          duration=duration)
     ass_path.write_text(ass_text, encoding="utf-8")
 
-    fonts_dir = ASSETS_FONTS_DIR if ASSETS_FONTS_DIR.is_dir() else None
+    fonts_dir = windows_fonts_dir(style["font"], settings) if _is_windows() else (
+        ASSETS_FONTS_DIR if ASSETS_FONTS_DIR.is_dir() else None)
     cmd = build_ffmpeg_cmd(src, ass_path, tmp, start, end, settings, info=info, framing=mode,
                            crop_x=crop_x, fonts_dir=fonts_dir)
     t0 = time.monotonic()

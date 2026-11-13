@@ -92,6 +92,7 @@ SECTIONS = [
     ("home", "Home", "/dashboard/"),
     ("studio", "Studio", "/dashboard/studio"),
     ("memory", "Memory", "/dashboard/memory"),
+    ("settings", "Settings", "/setup/"),
 ]
 
 #: The Studio section's own pages (the phase-1 analytics dashboard).
@@ -115,6 +116,7 @@ _FLASH = {
                               "changed yet. See the log for why."),
     "csrf": ("critical", "The form expired or came from another site. Reload the page and try again."),
     "loggedout": ("info", "Signed out."),
+    "setup_done": ("good", "All set. Everything can be changed later under Settings."),
     # home (command centre)
     "chat_sent": ("good", "Message sent."),
     "chat_empty": ("warning", "There was nothing to send."),
@@ -386,6 +388,8 @@ def _auth_method(request: Request) -> str | None:
     token = s.dashboard_token
     if not token:
         return "open" if (s.dashboard_allow_unauthenticated or _is_direct_local(request)) else None
+    if s.dashboard_trust_loopback and _is_direct_local(request):
+        return "open"  # Windows launcher: on the laptop itself; the token is for the phone
     auth = request.headers.get("authorization", "")
     presented = False
     if auth[:7].lower() == "bearer ":
@@ -409,9 +413,10 @@ def _is_https(request: Request) -> bool:
     return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
 
 
-def _set_session_cookie(resp: Response, request: Request) -> None:
-    resp.set_cookie(COOKIE_NAME, _session_value(get_settings().dashboard_token), max_age=COOKIE_MAX_AGE,
-                    httponly=True, samesite="lax", secure=_is_https(request), path="/dashboard")
+def _set_session_cookie(resp: Response, request: Request, token: str | None = None) -> None:
+    # path "/" so the same sign-in covers /setup (the settings pages) as well as /dashboard
+    resp.set_cookie(COOKIE_NAME, _session_value(token or get_settings().dashboard_token), max_age=COOKIE_MAX_AGE,
+                    httponly=True, samesite="lax", secure=_is_https(request), path="/")
 
 
 def _strip_token_url(request: Request) -> str:
@@ -420,8 +425,8 @@ def _strip_token_url(request: Request) -> str:
 
 
 def _safe_next(value: str | None, default: str = "/dashboard/") -> str:
-    """Only allow redirects to dashboard paths on this host (no open redirect)."""
-    if not value or not value.startswith("/dashboard") or value.startswith("//") or "\\" in value:
+    """Only allow redirects to dashboard / settings paths on this host (no open redirect)."""
+    if not value or not value.startswith(("/dashboard", "/setup")) or value.startswith("//") or "\\" in value:
         return default
     p = urlparse(value)
     if p.scheme or p.netloc:
@@ -534,7 +539,10 @@ def _security_headers(resp: Response) -> Response:
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
         "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "no-referrer"
+    # "same-origin", not "no-referrer": with no-referrer browsers send ``Origin: null`` on same-origin
+    # form POSTs (Fetch spec), which _origin_ok must refuse - every form failed in a real browser.
+    # Cross-site requests still get no referrer.
+    resp.headers["Referrer-Policy"] = "same-origin"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers.setdefault("Cache-Control", "no-store")
     return resp
@@ -566,7 +574,7 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
     except sqlite3.Error:  # pragma: no cover - unreadable DB still renders the error page
         demo = None
     flash = _FLASH.get(request.query_params.get("msg", ""))
-    if nav in ("home", "memory", "login"):
+    if nav in ("home", "memory", "login", "settings"):
         section = nav
     else:
         section = "studio"
@@ -1900,7 +1908,8 @@ async def logout(request: Request) -> Response:
     if not _csrf_ok(request, method, form):
         return _render(request, "error.html", {"title": "Forbidden", "message": _FLASH["csrf"][1]}, status_code=403)
     r = RedirectResponse("/dashboard/login?msg=loggedout", status_code=303)
-    r.delete_cookie(COOKIE_NAME, path="/dashboard")
+    r.delete_cookie(COOKIE_NAME, path="/")
+    r.delete_cookie(COOKIE_NAME, path="/dashboard")  # cookies set before the path moved to "/"
     return _security_headers(r)
 
 

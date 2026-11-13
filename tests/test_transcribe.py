@@ -441,3 +441,34 @@ class TestRealAudioExtraction:
         config.reset_settings()
         with pytest.raises(TranscribeError, match="ffmpeg not found"):
             transcribe.extract_audio(tmp_path / "v.mp4", tmp_path / "a.wav")
+
+
+def test_gpu_failure_falls_back_to_cpu(monkeypatch, tmp_path, clock):
+    import types as _types
+
+    inits = []
+
+    class StubModel:
+        def __init__(self, size, device, compute_type):
+            inits.append((device, compute_type))
+            self.device = device
+
+        def transcribe(self, path, **kw):
+            device = self.device
+
+            def gen():
+                if device != "cpu":   # cuBLAS is only loaded once decoding starts
+                    raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+                yield _types.SimpleNamespace(start=0.0, end=1.0, text="Hi", words=[])
+            return gen(), _types.SimpleNamespace(language="en", duration=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", _types.SimpleNamespace(WhisperModel=StubModel))
+    b = FasterWhisperBackend("tiny.en", device="cuda", compute_type="float16")
+    raw = b.transcribe(tmp_path / "a.wav")
+    assert raw["segments"][0]["text"] == "Hi"
+    assert inits == [("cuda", "float16"), ("cpu", "int8")] and b.device == "cpu"
+    assert any("using the CPU" in e.message for e in db.list_events(module="transcribe"))
+    cpu = FasterWhisperBackend("tiny.en", device="cpu")
+    monkeypatch.setattr(cpu, "_transcribe", lambda p: (_ for _ in ()).throw(RuntimeError("real bug")))
+    with pytest.raises(RuntimeError, match="real bug"):       # CPU errors are not swallowed
+        cpu.transcribe(tmp_path / "a.wav")

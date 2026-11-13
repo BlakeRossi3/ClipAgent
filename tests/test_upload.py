@@ -637,3 +637,18 @@ def test_unlicensed_or_rejected_source_is_never_uploaded(clock, live, fake_yt, r
     with pytest.raises(upload.UploadError, match="refused"):
         upload.upload_clip(cid)
     assert db.require_clip(cid).status == "failed" and fake_yt.insert_calls == []
+
+
+def test_save_credentials_skips_posix_modes_on_windows(monkeypatch, tmp_path):
+    import sys
+
+    class Creds:
+        def to_json(self):
+            return '{"refresh_token": "r"}'
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delattr(os, "fchmod", raising=False)        # as on Windows
+    chmods = []
+    monkeypatch.setattr(os, "chmod", lambda *a: chmods.append(a))
+    p = youtube_auth.save_credentials(Creds(), tmp_path / "tok" / "youtube_token.json")
+    assert json.loads(p.read_text(encoding="utf-8")) == {"refresh_token": "r"} and chmods == []

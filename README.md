@@ -49,7 +49,30 @@ one module per stage (`scout fetch transcribe pick edit upload analytics strateg
 * **Quiet hours** (22:00-08:00): only urgent calls ring (budget cap, YouTube login or
   copyright problems); everything else waits for the morning.
 
-## Install on a fresh Ubuntu VPS (22.04/24.04)
+## Install on Windows (recommended for you)
+
+No command prompt needed.
+
+1. **Download the installer.** Open
+   <https://github.com/BlakeRossi3/ClipAgent/blob/claude/clever-allen-zi43bi/windows/ClipAgent-Setup.bat>
+   and press the **Download raw file** button (the arrow icon at the top right of the file).
+2. **Double-click `ClipAgent-Setup.bat`** in your Downloads folder. Windows will say *"Windows
+   protected your PC"* the first time, because the file is not signed: click **More info** then
+   **Run anyway**. A window shows progress while it installs Python, Git and FFmpeg (if missing)
+   and ClipAgent itself. It takes 5-15 minutes the first time. Windows may ask once for permission.
+3. **Follow the browser.** When it is done your browser opens ClipAgent's setup page. Sterling
+   walks you through it in a few short forms: your name, the Anthropic key, your job and pay,
+   your phone (optional), YouTube (optional), importing your memory vault, and a final checklist.
+
+Afterwards, open ClipAgent with the **ClipAgent** shortcut on your Desktop or in the Start menu.
+Everything can be changed later under **Settings**, which also has *Check for updates*,
+*Restart* and *Stop* buttons. Your data lives in `%LOCALAPPDATA%\ClipAgent\data` (the memory
+vault is in `...\data\vault`; you can open it in Obsidian). Details, uninstalling and
+troubleshooting: [docs/WINDOWS.md](docs/WINDOWS.md).
+
+## Install on a Linux server (later / advanced)
+
+Ubuntu 22.04/24.04.
 
 A 4 vCPU / 8 GB box with 40+ GB disk is comfortable (whisper and ffmpeg are CPU-heavy).
 
@@ -64,6 +87,9 @@ cp config.env.example config.env
 .venv/bin/python main.py init
 .venv/bin/python main.py doctor
 ```
+
+Then either fill in `config.env` by hand (below) or start the app (`python main.py schedule`) and
+use the web setup wizard at `http://127.0.0.1:8000/setup/` (through an SSH tunnel on a server).
 
 **Caption font.** The shipped strategy asks for *Montserrat ExtraBold*. If it is not
 installed, captions fall back automatically (Montserrat, Anton, Inter Black, ... DejaVu Sans)
@@ -246,3 +272,12 @@ exercised against the real service. Watch these closely during the go-live steps
 * **Deployment**: the systemd unit, Caddy config and backup cron in `deploy/` were written,
   not run; `doctor --network` was not run from a VPS.
 * **Captions with Montserrat**: renders were checked with the Inter Black fallback only.
+
+**Windows (installer, launcher, app on Windows)** - written and statically checked on Linux, never
+run on Windows yet: `windows/*.ps1` / `.bat` (winget installs, PATH refresh, shortcuts, minimized
+window, Startup-folder shortcut), `msvcrt` file locks, Ctrl+C / window-close shutdown (SIGBREAK),
+Restart on Windows (spawns a new process), ffmpeg `C\:/...` path escaping and Windows font lookup
+with the Gyan FFmpeg build, the CUDA-to-CPU whisper fallback with real missing DLLs, `pip install`
+during *Check for updates* while the app runs, and Google accepting the
+`http://127.0.0.1:<port>/setup/youtube/callback` loopback redirect for a Desktop-app client.
+The web wizard itself was driven end to end in Chromium on Linux (screenshots in `docs/setup/`).

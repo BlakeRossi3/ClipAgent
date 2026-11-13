@@ -208,7 +208,7 @@ def probe_duration(path: Path) -> float | None:
     try:
         out = subprocess.run(
             [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=60, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=True,
         ).stdout
         value = json.loads(out).get("format", {}).get("duration")
         return float(value) if value not in (None, "N/A") else None

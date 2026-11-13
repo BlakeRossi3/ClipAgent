@@ -26,7 +26,6 @@ Only this module configures logging handlers.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import logging
 import os
@@ -76,20 +75,68 @@ def _lock_path(name: str) -> Path:
     return get_settings().data_dir / f"{name}.lock"
 
 
+_WIN_LOCK_OFFSET = 1 << 20
+
+
+def _try_lock(fh: IO[str]) -> bool:
+    """Non-blocking exclusive OS lock on an open file (released by the OS if the process dies).
+
+    POSIX: ``fcntl.flock``. Windows: ``msvcrt.locking`` on one byte far past the pid text (a
+    mandatory byte-range lock there would make the pid unreadable to the next process).
+    Platform modules are imported here, never at module level, so importing ``main`` works anywhere.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        try:
+            fh.seek(_WIN_LOCK_OFFSET)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(fh: IO[str]) -> None:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            fh.seek(_WIN_LOCK_OFFSET)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass  # closing the handle releases it anyway
+    fh.close()
+
+
+def _holder_pid(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()[:20] or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def acquire_lock(name: str) -> IO[str]:
-    """Take an exclusive, non-blocking ``flock`` on ``<data_dir>/<name>.lock``; keep the handle open.
+    """Take an exclusive, non-blocking lock on ``<data_dir>/<name>.lock``; keep the handle open.
 
     Raises :class:`Busy` (with the holder's pid when known). The lock dies with the process.
     """
     path = _lock_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        fh.seek(0)
-        holder = fh.read().strip() or "unknown"
+    if not _try_lock(fh):
         fh.close()
+        holder = _holder_pid(path)
         raise Busy(f"{name} is locked by another process (pid {holder}); lock file {path}") from None
     fh.seek(0)
     fh.truncate()
@@ -104,8 +151,7 @@ def stage_lock(name: str) -> Iterator[None]:
     try:
         yield
     finally:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        fh.close()
+        _unlock(fh)
 
 
 def lock_holder(name: str) -> str | None:
@@ -114,8 +160,7 @@ def lock_holder(name: str) -> str | None:
         fh = acquire_lock(name)
     except Busy as exc:
         return str(exc).split("(pid ", 1)[-1].split(")", 1)[0]
-    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    fh.close()
+    _unlock(fh)
     return None
 
 
@@ -687,27 +732,34 @@ NETWORK_HOSTS = ("www.youtube.com", "images-api.nasa.gov", "huggingface.co", "ap
                  "oauth2.googleapis.com", "www.googleapis.com", "youtubeanalytics.googleapis.com", "api.twilio.com")
 
 
+def _ffmpeg_fix() -> str:
+    if sys.platform == "win32":
+        return "re-run ClipAgent-Setup.bat (installs the full Gyan.FFmpeg build with winget)"
+    return "sudo apt install ffmpeg (or set FFMPEG_BIN)"
+
+
 def _ffmpeg_checks(s: Settings) -> list[Check]:
     import edit
 
     ff = shutil.which(s.ffmpeg_bin) or (s.ffmpeg_bin if Path(s.ffmpeg_bin).is_file() else None)
     if not ff:
-        return [Check("ffmpeg", "fail", f"{s.ffmpeg_bin!r} not found", "sudo apt install ffmpeg (or set FFMPEG_BIN)")]
+        return [Check("ffmpeg", "fail", f"{s.ffmpeg_bin!r} not found", _ffmpeg_fix())]
     out = [Check("ffmpeg", "pass", ff)]
     probe = edit.ffprobe_bin(s)
     out.append(Check("ffprobe", "pass", shutil.which(probe) or probe) if shutil.which(probe) or Path(probe).is_file()
-               else Check("ffprobe", "fail", "not found", "sudo apt install ffmpeg"))
+               else Check("ffprobe", "fail", "not found", _ffmpeg_fix()))
 
     def listing(flag: str) -> str:
         try:
-            return subprocess.run([ff, "-hide_banner", flag], capture_output=True, text=True, timeout=30).stdout
+            return subprocess.run([ff, "-hide_banner", flag], capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=30).stdout
         except (OSError, subprocess.SubprocessError):
             return ""
 
     filters, encoders = listing("-filters"), listing("-encoders")
     out.append(Check("ffmpeg libass (captions)", "pass" if " ass " in filters else "fail",
                      "ass filter available" if " ass " in filters else "ffmpeg built without libass",
-                     "install a full ffmpeg build (Ubuntu's ffmpeg package has libass)"))
+                     "install a full ffmpeg build (Ubuntu's ffmpeg package and Gyan.FFmpeg have libass)"))
     out.append(Check("ffmpeg libx264 + aac", "pass" if "libx264" in encoders and " aac " in encoders else "fail",
                      "encoders available" if "libx264" in encoders else "libx264 encoder missing",
                      "install a full ffmpeg build (Ubuntu's ffmpeg package has libx264)"))
@@ -718,7 +770,7 @@ def _font_check(strat: strategy_mod.Strategy | None) -> Check:
     import edit
 
     wanted = (strat or {}).get("caption_style", {}).get("font") or edit.DEFAULT_CAPTION_STYLE["font"]
-    if shutil.which("fc-list") is None:
+    if shutil.which("fc-list") is None and sys.platform != "win32":  # Windows: edit scans the Fonts folders
         return Check("caption font", "warn", f"fontconfig not installed; cannot verify {wanted!r}",
                      "sudo apt install fontconfig fonts-dejavu-core")
     got = edit.resolve_font(wanted)
@@ -728,7 +780,7 @@ def _font_check(strat: strategy_mod.Strategy | None) -> Check:
         return Check("caption font", "warn", f"{wanted!r} not installed; captions use {got!r}",
                      f"put {wanted.replace(' ', '-')}.ttf in assets/fonts/ (or install the font family)")
     return Check("caption font", "fail", f"neither {wanted!r} nor any fallback font is installed",
-                 "sudo apt install fonts-dejavu-core (or add a TTF to assets/fonts/)")
+                 "add a TTF to assets/fonts/" + ("" if sys.platform == "win32" else " (or sudo apt install fonts-dejavu-core)"))
 
 
 def _youtube_checks(s: Settings) -> list[Check]:
@@ -990,8 +1042,53 @@ def serve(host: str, port: int) -> None:
                 proxy_headers=True, forwarded_allow_ips="127.0.0.1")
 
 
+# In-process control for the web Settings page (Restart / Stop / after an update). Only set
+# while ``schedule`` runs; ``serve`` has no scheduler to restart.
+_control: dict[str, Any] = {"server": None, "restart": False}
+
+
+def control_available() -> bool:
+    return _control["server"] is not None
+
+
+def request_shutdown(*, restart: bool = False) -> bool:
+    """Ask the running ``schedule`` process to stop gracefully (and start again when ``restart``)."""
+    srv = _control["server"]
+    if srv is None:
+        return False
+    _control["restart"] = restart
+    srv.should_exit = True
+    return True
+
+
+def _install_stop_signals() -> list[int]:
+    """Make SIGTERM and, on Windows, SIGBREAK (Ctrl+Break, console window closed) behave like Ctrl+C.
+
+    uvicorn handles SIGINT/SIGTERM (and SIGBREAK) itself, then re-raises the signal once it has
+    shut down; the default handler for SIGTERM/SIGBREAK would kill the process abruptly, so they are
+    mapped to KeyboardInterrupt, which :func:`schedule` turns into a clean exit.
+    """
+    done = []
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, signal.default_int_handler)
+            done.append(int(sig))
+    return done
+
+
+def _relaunch() -> None:
+    """Start this same command again (after Restart / an update). Never returns on POSIX."""
+    argv = [sys.executable, *sys.argv]
+    if sys.platform == "win32":
+        # os.execv on Windows does not quote arguments with spaces; start a fresh process instead.
+        subprocess.Popen(argv, close_fds=True)
+        return
+    os.execv(sys.executable, argv)
+
+
 def schedule(host: str, port: int) -> int:
-    """Scheduler + web server in one process until SIGTERM/SIGINT."""
+    """Scheduler + web server in one process until Ctrl+C / SIGTERM / window close / Stop button."""
     import uvicorn
 
     import server
@@ -1008,17 +1105,27 @@ def schedule(host: str, port: int) -> int:
     srv = uvicorn.Server(uvicorn.Config(server.create_app(), host=host, port=port, proxy_headers=True,
                                         forwarded_allow_ips="127.0.0.1",
                                         log_level=get_settings().log_level.lower()))
-    # uvicorn handles SIGTERM/SIGINT itself, then re-raises the signal once it has shut down;
-    # mapping SIGTERM to KeyboardInterrupt turns that into a clean exit instead of an abrupt kill.
-    signal.signal(signal.SIGTERM, signal.default_int_handler)
+    _install_stop_signals()
+    _control.update(server=srv, restart=False)
+    if __name__ == "__main__":  # `python main.py`: the web pages `import main`, a second module copy
+        import main as importable
+
+        importable._control = _control
     try:
         srv.run()
     except KeyboardInterrupt:
         pass
     finally:
-        sched.shutdown(wait=False)
-        db.log_event(MODULE, "scheduler stopped", data={"pid": os.getpid()})
-        lock.close()
+        _control["server"] = None
+        try:
+            sched.shutdown(wait=False)
+            db.log_event(MODULE, "scheduler stopped", data={"pid": os.getpid(), "restart": _control["restart"]})
+        except KeyboardInterrupt:  # a second Ctrl+C while stopping: just finish quietly
+            pass
+        _unlock(lock)
+    if _control["restart"]:
+        print("restarting ...", flush=True)
+        _relaunch()
     return 0
 
 
@@ -1187,4 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:  # Ctrl+C in a CLI command: no traceback
+        sys.exit(130)

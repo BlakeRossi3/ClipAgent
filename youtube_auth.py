@@ -137,12 +137,18 @@ def has_token(settings: Settings | None = None) -> bool:
 
 
 def save_credentials(creds: Any, path: Path | None = None) -> Path:
-    """Atomically write the authorised-user JSON with 0600 permissions."""
+    """Atomically write the authorised-user JSON with 0600 permissions.
+
+    Windows has no POSIX modes (``os.fchmod`` does not exist there): the chmod is skipped and the
+    token relies on living in the user's own profile (``%LOCALAPPDATA%\\ClipAgent\\data``).
+    """
     path = Path(path or token_path())
     path.parent.mkdir(parents=True, exist_ok=True)
+    posix = sys.platform != "win32"
     fd, tmp = tempfile.mkstemp(prefix=".youtube_token.", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
+        if posix:
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(creds.to_json())
         os.replace(tmp, path)
@@ -152,7 +158,8 @@ def save_credentials(creds: Any, path: Path | None = None) -> Path:
         except FileNotFoundError:
             pass
         raise
-    os.chmod(path, 0o600)
+    if posix:
+        os.chmod(path, 0o600)
     return path
 
 

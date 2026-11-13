@@ -3,7 +3,9 @@
 Values come from (highest priority first):
 
 1. the process environment,
-2. the ``config.env`` file (path overridable with ``CLIPAGENT_CONFIG_FILE``),
+2. the ``config.env`` file (:func:`config_file_path`: ``CLIPAGENT_CONFIG_FILE``, else
+   ``$CLIPAGENT_DATA_DIR/config.env`` when that env var is set - the Windows launcher and the
+   setup wizard keep it there, outside the git checkout - else ``<repo>/config.env``),
 3. the defaults below.
 
 ``config.env`` is parsed with python-dotenv but is *not* copied into
@@ -37,6 +39,11 @@ class Settings:
     transcripts_dir: Path
     renders_dir: Path
     strategy_path: Path
+    # The config.env this process reads (and the setup wizard writes; see config_store.py).
+    config_file: Path = Path("config.env")
+    # False until the web setup wizard has been finished (SETUP_COMPLETE); unset = complete when
+    # the config file exists (a hand-written config.env from before the wizard).
+    setup_complete: bool = True
 
     # --- Anthropic ---------------------------------------------------------
     anthropic_api_key: str = ""
@@ -83,6 +90,9 @@ class Settings:
     # Without DASHBOARD_TOKEN the dashboard only answers direct loopback requests (SSH tunnel).
     # true = serve it to anyone without a password (only on a trusted private network).
     dashboard_allow_unauthenticated: bool = False
+    # true = requests made directly on this machine (127.0.0.1, no proxy headers) skip the token.
+    # The Windows launcher sets it: the token is then only needed from the phone.
+    dashboard_trust_loopback: bool = False
     # Local "HH:MM" window in which only urgent calls ring; equal start/end disables it.
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "08:00"
@@ -156,10 +166,27 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return {k: v for k, v in dotenv_values(path).items() if v is not None}
 
 
+def config_file_path(environ: Mapping[str, str] | None = None) -> Path:
+    """Where ``config.env`` lives: ``CLIPAGENT_CONFIG_FILE``; else, when ``CLIPAGENT_DATA_DIR`` is set
+    (Windows launcher), ``<data dir>/config.env`` unless only the legacy ``<repo>/config.env``
+    exists; else ``<repo>/config.env``. Only real env vars are consulted (not the file itself)."""
+    env = os.environ if environ is None else environ
+    repo_cfg = REPO_ROOT / "config.env"
+    explicit = env.get("CLIPAGENT_CONFIG_FILE")
+    if explicit and explicit.strip():
+        return _path(explicit, repo_cfg, REPO_ROOT)
+    data_env = env.get("CLIPAGENT_DATA_DIR")
+    if data_env and data_env.strip():
+        data_cfg = _path(data_env, REPO_ROOT / "data", REPO_ROOT) / "config.env"
+        if data_cfg.is_file() or not repo_cfg.is_file():
+            return data_cfg
+    return repo_cfg
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Build :class:`Settings` from ``environ`` (default ``os.environ``) + ``config.env``."""
     env_in = dict(os.environ if environ is None else environ)
-    config_file = _path(env_in.get("CLIPAGENT_CONFIG_FILE"), REPO_ROOT / "config.env", REPO_ROOT)
+    config_file = config_file_path(env_in)
     env: dict[str, str] = {**_read_env_file(config_file), **env_in}
 
     def s(key: str, default: str) -> str:
@@ -179,6 +206,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         transcripts_dir=media_dir / "transcripts",
         renders_dir=media_dir / "renders",
         strategy_path=_path(env.get("CLIPAGENT_STRATEGY_PATH"), REPO_ROOT / "strategy.json", REPO_ROOT),
+        config_file=config_file,
+        setup_complete=_bool(env.get("SETUP_COMPLETE"), config_file.is_file()),
         anthropic_api_key=s("ANTHROPIC_API_KEY", ""),
         anthropic_base_url=s("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         haiku_model=s("HAIKU_MODEL", "claude-haiku-5-5"),
@@ -211,6 +240,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         public_base_url=s("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
         dashboard_token=s("DASHBOARD_TOKEN", ""),
         dashboard_allow_unauthenticated=_bool(env.get("DASHBOARD_ALLOW_UNAUTHENTICATED"), False),
+        dashboard_trust_loopback=_bool(env.get("DASHBOARD_TRUST_LOOPBACK"), False),
         quiet_hours_start=_hhmm(s("QUIET_HOURS_START", "22:00")),
         quiet_hours_end=_hhmm(s("QUIET_HOURS_END", "08:00")),
         urgent_call_dedup_hours=float(s("URGENT_CALL_DEDUP_HOURS", "6")),

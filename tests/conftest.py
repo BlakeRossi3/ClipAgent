@@ -33,12 +33,12 @@ import strategy as strategy_mod
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _SCRUB_PREFIXES = ("ANTHROPIC_", "TWILIO_", "YOUTUBE_", "CLIPAGENT_", "OWNER_", "SCOUT_", "QUIET_HOURS_",
-                   "ASSISTANT_", "SUBAGENT_")
+                   "ASSISTANT_", "SUBAGENT_", "SETUP_")
 _SCRUB_KEYS = ("FAKE_LLM", "DRY_RUN", "DAILY_LLM_BUDGET_USD", "MAX_DAILY_LLM_BUDGET_USD", "MAX_UPLOADS_PER_DAY",
                "LLM_PRICES_JSON", "HAIKU_MODEL", "SONNET_MODEL", "TIMEZONE", "PUBLIC_BASE_URL", "DASHBOARD_TOKEN", "DASHBOARD_ALLOW_UNAUTHENTICATED",
                "LLM_SERVER_FALLBACKS", "HAIKU_EFFORT", "SONNET_EFFORT", "URGENT_CALL_DEDUP_HOURS",
                "SOURCE_MEDIA_RETENTION_DAYS", "RENDER_RETENTION_DAYS", "LOG_LEVEL", "FFMPEG_BIN",
-               "VAULT_DIR", "FAKE_ASSISTANT")
+               "VAULT_DIR", "FAKE_ASSISTANT", "DASHBOARD_TRUST_LOOPBACK", "WHISPER_DEVICE")
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +55,7 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FAKE_LLM", "true")
     monkeypatch.setenv("DRY_RUN", "true")
     monkeypatch.setenv("TIMEZONE", "America/New_York")
+    monkeypatch.setenv("SETUP_COMPLETE", "true")  # the web setup wizard's redirect is tested in test_setup_web
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))  # never the owner's real vault
     config.reset_settings()
     llm.reset()

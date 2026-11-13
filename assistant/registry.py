@@ -136,7 +136,7 @@ def load_skills(skills_dir: Path | None = None, *, strict: bool = True) -> dict[
         name, desc = _common(meta, d.name, where, errors)
         if not body:
             errors.append(f"{where}: empty instructions")
-        resources = tuple(sorted(str(p.relative_to(d)) for p in d.rglob("*")
+        resources = tuple(sorted(p.relative_to(d).as_posix() for p in d.rglob("*")
                                  if p.is_file() and p.name != "SKILL.md" and "__pycache__" not in p.parts))
         out[name] = SkillSpec(name, desc, body, f, resources)
     if errors and strict:

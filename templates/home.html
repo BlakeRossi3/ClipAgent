@@ -15,7 +15,7 @@
     <h1 id="salute" data-live-text="salute">{{ h.hello.salute }}</h1>
     <p class="hero-line" data-live-text="line">{{ h.hello.line }}</p>
     <p class="hero-chips">
-      <span class="chip">{{ h.today_date.strftime("%A %-d %B") }}</span>
+      <span class="chip">{{ h.today_date.strftime("%A") }} {{ h.today_date.day }} {{ h.today_date.strftime("%B") }}</span>
       {% if dry_run %}<span class="chip">Dry run</span>{% endif %}
       {% if a.enabled and a.fake %}<span class="chip">Practice mode</span>{% endif %}
       {% if not a.enabled %}<span class="chip">Assistant off</span>{% endif %}
