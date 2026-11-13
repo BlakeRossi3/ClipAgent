@@ -352,3 +352,130 @@ def test_web_status_mute_and_settings_page(tmp_path, monkeypatch):
 def test_no_heavy_imports():
     for mod in ("sounddevice", "openwakeword", "kokoro_onnx", "webrtcvad", "pystray", "pynput"):
         assert mod not in sys.modules
+
+
+# --------------------------------------------------------------------------- in-browser voice (Jarvis view)
+
+class _FakeSTT:
+    def __init__(self, text):
+        self.text, self.calls = text, 0
+
+    def transcribe(self, samples):
+        self.calls += 1
+        return self.text
+
+
+class _FakeTTS:
+    name = "fake"
+
+    def synthesize(self, text):
+        return np.zeros(2400, dtype=np.float32), 24000
+
+
+@pytest.fixture
+def talk(tmp_path, monkeypatch):
+    import home
+    from assistant import settings as asettings
+    from voice import web
+
+    import config
+
+    monkeypatch.setenv("CLIPAGENT_CONFIG_FILE", str(tmp_path / "cfg" / "config.env"))
+    monkeypatch.setenv("SETUP_COMPLETE", "true")
+    monkeypatch.setenv("ASSISTANT_ENABLED", "true")
+    monkeypatch.setenv("FAKE_ASSISTANT", "true")
+    config_store.reload()
+    config.reset_settings()
+    asettings.reset_assistant_settings()
+    monkeypatch.setattr(home, "_hits", {})
+    stt = _FakeSTT("what is on today")
+    web.set_engines(stt=stt, tts=_FakeTTS())
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1:8000")
+    yield c, stt, web
+    web.set_engines()
+
+
+def _wav(seconds: float = 1.0, rate: int = 16000) -> bytes:
+    return web_encode(np.full(int(seconds * rate), 0.1, dtype=np.float32), rate)
+
+
+def web_encode(samples, rate):
+    from voice import web
+
+    return web.encode_wav(samples, rate)
+
+
+def _csrf_of(c) -> str:
+    return re.search(r'name="csrf" value="([0-9a-f]+)"', c.get("/dashboard/").text).group(1)
+
+
+def _talk(c, csrf, data, **headers):
+    return c.post("/voice/api/talk", data={"csrf": csrf} if csrf else {}, files={"audio": ("speech.wav", data, "audio/wav")},
+                  headers={"Accept": "application/json", **headers})
+
+
+def test_browser_talk_transcribes_runs_turn_and_returns_audio(talk):
+    import time as _time
+
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    r = _talk(c, csrf, _wav())
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["ok"] and j["heard"] == "what is on today" and j["job"]
+    for _ in range(200):
+        job = c.get(f"/dashboard/chat/job/{j['job']}").json()
+        if job["done"]:
+            break
+        _time.sleep(0.02)
+    assert job["ok"] and job["reply"] and job["audio"].startswith("/voice/api/audio/")
+    audio_r = c.get(job["audio"])
+    assert audio_r.status_code == 200 and audio_r.headers["content-type"] == "audio/wav"
+    assert audio_r.content[:4] == b"RIFF"
+    assert c.get("/voice/api/audio/" + "0" * 32).status_code == 404
+    assert c.get("/voice/api/audio/..%2Fx").status_code == 404
+    msgs = store.list_messages(10, channel="voice")
+    assert {m.direction for m in msgs} == {"in", "out"} and any(m.body == "what is on today" for m in msgs)
+    # local command: no assistant turn
+    stt.text = "stop listening"
+    assert _talk(c, csrf, _wav()).json()["command"] == "mute"
+    # noise and too-short clips
+    stt.text = "Thank you."
+    assert _talk(c, csrf, _wav()).json()["error"] == "no_speech"
+    assert _talk(c, csrf, _wav(0.1)).json()["error"] == "too_short"
+
+
+def test_browser_talk_guards_csrf_size_and_bad_audio(talk, monkeypatch):
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    assert _talk(c, None, _wav()).status_code == 403
+    assert _talk(c, "0" * 64, _wav()).status_code == 403
+    assert _talk(c, csrf, _wav(), Origin="https://evil.example").status_code == 403
+    assert c.get("/voice/api/talk").status_code == 405
+    assert _talk(c, csrf, _wav(web.TALK_MAX_SEC + 5)).status_code == 413
+    monkeypatch.setattr(web, "TALK_MAX_BYTES", 1000)
+    assert _talk(c, csrf, _wav()).status_code == 413
+    monkeypatch.setattr(web, "TALK_MAX_BYTES", 4 * 1024 * 1024)
+    web.set_engines(stt=stt, tts=None, decoder=lambda b: (_ for _ in ()).throw(web.AudioDecodeError("x")))
+    assert _talk(c, csrf, b"not audio").status_code == 400
+    assert stt.calls == 0
+    monkeypatch.setenv("DASHBOARD_TOKEN", "tok")
+    import config
+
+    config.reset_settings()
+    assert _talk(c, csrf, _wav()).status_code == 401
+
+
+def test_jarvis_home_renders_with_and_without_voice_process(talk):
+    c, _stt, _web = talk
+    store.add_message("in", "voice", '<script>alert("x")</script>')
+    html = c.get("/dashboard/").text
+    assert "data-jarvis" in html and "data-jv-core" in html and "jarvis.js" in html and 'id="history"' in html
+    assert "<script>alert" not in html and "&lt;script&gt;" in html and "chan-voice" in html
+    assert c.get("/voice/api/status").json()["state"] == "offline"
+    control.Control().publish("speaking", heard="hi", said="Good evening, sir.")
+    st = c.get("/voice/api/status").json()
+    assert st["state"] == "speaking" and st["said"] == "Good evening, sir."
+    assert c.get("/dashboard/").status_code == 200
+    csp = c.get("/dashboard/").headers["content-security-policy"]
+    assert "script-src 'self'" in csp

@@ -115,6 +115,7 @@ class Diag:
     barge_ins: int = 0
     commands: int = 0
     last_heard: str = ""
+    last_said: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -229,7 +230,8 @@ class VoiceAgent:
     def _publish(self, **extra: Any) -> None:
         try:
             self.control.publish(self.state, device=self.device_name, voice=getattr(self.tts, "name", ""),
-                                 wake=self.s.wake_mode, heard=self.diag.last_heard[:120], wakes=self.diag.wakes,
+                                 wake=self.s.wake_mode, heard=self.diag.last_heard[:120], said=self.diag.last_said[:400],
+                                 wakes=self.diag.wakes,
                                  barge_ins=self.diag.barge_ins, **extra)
         except Exception as exc:  # a locked DB must never stop the loop
             log.warning("status not published: %s", exc)
@@ -458,6 +460,7 @@ class VoiceAgent:
             if turn.cancelled:
                 return
             if reply:
+                self.diag.last_said = reply
                 self._say(reply, "reply", after=FOLLOWUP)
             else:
                 self._back_to_waiting()
@@ -532,6 +535,13 @@ class VoiceAgent:
 def assistant_brain(text: str) -> str:
     """Hand the transcript to the assistant (``run_turn(channel="voice")``, which records both
     messages) and return what to say. A long answer is also saved in full for the dashboard."""
+    return brain_reply(text)["spoken"]
+
+
+def brain_reply(text: str) -> dict[str, Any]:
+    """:func:`assistant_brain` with the details: ``{"reply", "spoken", "status", "cost_usd"}``
+    (``reply`` = the full text for captions; ``spoken`` = what is said aloud). Also used by the
+    in-browser voice (voice/web.py)."""
     from assistant import persona, runtime, store
     from assistant.settings import get_assistant_settings
 
@@ -540,13 +550,13 @@ def assistant_brain(text: str) -> str:
         reply = f"I'm switched off at the moment, {a.owner_honorific}. You can turn me on in Settings."
         in_id = store.add_message("in", "voice", text)
         store.add_message("out", "voice", reply, kind="reply", reply_to=in_id)
-        return reply
+        return {"reply": reply, "spoken": reply, "status": "off", "cost_usd": 0.0}
     res = runtime.run_turn(text, channel="voice")
     spoken, long = speech.prepare_reply(res.raw_text or res.text, honorific=a.owner_honorific)
     if long and res.status == "ok":
         store.add_message("out", "dashboard", persona.polish(res.raw_text or res.text, "dashboard"),
                           kind="voice_detail", agent="main", reply_to=res.message_in_id)
-    return spoken or res.text
+    return {"reply": res.text, "spoken": spoken or res.text, "status": res.status, "cost_usd": res.cost_usd}
 
 
 def store_history(heard: str, reply: str) -> None:

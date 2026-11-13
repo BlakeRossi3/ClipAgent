@@ -3,108 +3,142 @@
 {% block title %}Home{% endblock %}
 {% block content %}
 {% set a = h.a %}
-<div class="home" data-refresh="{{ h.refresh }}">
-<section class="hero mood-{{ h.hello.mood }}" id="hero" aria-labelledby="salute">
-  <div class="avatar" aria-hidden="true">
-    <span class="avatar-glow"></span>
-    {{ h.avatar.idle | safe }}{{ h.avatar.alert | safe }}
-    <span class="bubble">!</span>
-  </div>
-  <div class="hero-text">
-    <p class="hero-name">{{ a.name }} <span>· at your service</span></p>
-    <h1 id="salute" data-live-text="salute">{{ h.hello.salute }}</h1>
-    <p class="hero-line" data-live-text="line">{{ h.hello.line }}</p>
-    <p class="hero-chips">
-      <span class="chip">{{ h.today_date.strftime("%A") }} {{ h.today_date.day }} {{ h.today_date.strftime("%B") }}</span>
-      {% if dry_run %}<span class="chip">Dry run</span>{% endif %}
-      {% if a.enabled and a.fake %}<span class="chip">Practice mode</span>{% endif %}
-      {% if not a.enabled %}<span class="chip">Assistant off</span>{% endif %}
-      {# --- voice pill (voice/web.py, static/voice.js) --- #}<span class="chip" data-voice-pill hidden data-csrf="{{ csrf }}"><span data-voice-label>Voice</span> <button type="button" class="hbtn" data-voice-mute>Mute</button></span><script src="/dashboard/static/voice.js" defer></script>
+<div class="home jv-home" data-refresh="{{ h.refresh }}">
+{# --- Jarvis view: the voice-first stage (static/jarvis.js). Layout and feel adapted from
+     adewaskar/jarvis src/ui/Hud.tsx + index.css (MIT License, Copyright (c) 2026 Aditya Dewaskar);
+     the core is original canvas art. --- #}
+<section class="jv mood-{{ h.hello.mood }}" id="hero" aria-label="Talk to {{ a.name }}" data-jarvis data-state="idle"
+         data-csrf="{{ csrf }}" data-name="{{ a.name }}" data-honorific="{{ a.honorific }}" data-can-talk="{{ 1 if a.can_chat else 0 }}">
+  <span class="jv-corner jv-tl" aria-hidden="true"></span><span class="jv-corner jv-tr" aria-hidden="true"></span>
+  <span class="jv-corner jv-bl" aria-hidden="true"></span><span class="jv-corner jv-br" aria-hidden="true"></span>
+  <header class="jv-hud">
+    <p class="jv-id"><span class="jv-emblem" aria-hidden="true">{{ h.avatar.idle | safe }}</span><b>{{ a.name }}</b><span class="jv-sys" data-jv-sys>{{ "online" if a.can_chat else "offline" }}</span></p>
+    <p class="jv-meta">
+      <span>{{ h.today_date.strftime("%a") }} {{ h.today_date.day }} {{ h.today_date.strftime("%b") }}</span>
+      {% if dry_run %}<span>Dry run</span>{% endif %}
+      {% if a.enabled and a.fake %}<span>Practice</span>{% endif %}
+      {% if not a.enabled %}<span class="jv-warn">Assistant off</span>{% endif %}
     </p>
+  </header>
+
+  <div class="jv-core-wrap">
+    <canvas class="jv-core" data-jv-core width="600" height="600" aria-hidden="true"></canvas>
+    <button type="button" class="jv-ptt" data-jv-ptt aria-describedby="jv-hint" {% if not a.can_chat %}disabled{% endif %}>
+      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="sr-only">Hold to talk to {{ a.name }}</span>
+    </button>
   </div>
+
+  <div class="jv-statusbar">
+    <p class="jv-status" role="status" data-jv-status>{% if a.can_chat %}Standing by, {{ a.honorific }}{% else %}{{ a.reason }}{% endif %}</p>
+    <a class="jv-needs" href="#needs" data-needs-count {% if not h.needs.count %}hidden{% endif %}><b>{{ h.needs.count }}</b> need{{ "s" if h.needs.count == 1 else "" }} you</a>
+  </div>
+  <div class="jv-captions" aria-live="polite">
+    <p class="jv-cap-you" data-jv-you></p>
+    <p class="jv-cap-them" data-jv-them>{{ h.hello.salute }}</p>
+  </div>
+  <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Hold the ring to talk · or hold <kbd>Space</kbd>{% else %}Voice opens once I am switched on.{% endif %}</p>
+
+  <div class="jv-controls">
+    <label class="jv-toggle"><input type="checkbox" data-jv-always {% if not a.can_chat %}disabled{% endif %}><span>Always listen in this tab</span></label>
+    <span class="jv-cluster">
+      <button type="button" class="jv-btn" data-jv-mute data-csrf="{{ csrf }}" title="Mute the microphone (this tab and the laptop's voice loop)">Mute</button>
+      <button type="button" class="jv-btn" data-jv-history aria-controls="history" aria-expanded="false">History</button>
+      {% if a.enabled %}
+      <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn{{ '' if a.stopped else ' jv-btn-stop' }}">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
+      <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn" title="Revert {{ a.name }}'s last change to its own code">Undo</button></form>
+      {% endif %}
+    </span>
+  </div>
+  <a class="jv-more" href="#briefing">Briefing <span aria-hidden="true">&darr;</span></a>
 </section>
 
-{% if h.fresh or h.steps_left >= 3 %}
-<section class="card setup" aria-labelledby="setup-title">
-  <h2 class="sec-title" id="setup-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Getting settled<span class="sec-extra">{{ h.steps | length - h.steps_left }} of {{ h.steps | length }}</span></h2>
-  <ol class="steps">
-    {% for st in h.steps %}
-    <li class="{{ 'done' if st.done else '' }}"><span class="step-box" aria-hidden="true">{{ "✓" if st.done else loop.index }}</span>
-      <div><strong>{{ st.title }}</strong>{% if st.done %}<span class="sr-only"> (done)</span>{% endif %}<p>{{ st.body }}</p></div></li>
+{# --- History drawer: the unified conversation (every channel), typing still works here --- #}
+<aside class="card talk jv-drawer" id="history" aria-labelledby="talk-title" data-jv-drawer>
+  <h2 class="sec-title" id="talk-title"><span class="sec-glyph">{{ glyph("chat") | safe }}</span>History<span class="sec-extra"><kbd>/</kbd> to type</span>
+    <button type="button" class="hbtn hbtn-sm jv-close" data-jv-close aria-label="Close history">Close</button></h2>
+  <ol class="chat-log" data-chat-log aria-live="polite">
+    {% for m in h.history %}
+    <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
+      <p class="msg-body">{{ m.body }}</p>
+      {% if m.meta and m.meta.get("attachments") %}<p class="msg-images">{% for f in m.meta.get("attachments") or [] %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
+      <p class="msg-meta"><span class="chip chan-{{ m.channel }}">{{ m.channel }}</span> · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
+    </li>
+    {% else %}
+    <li class="msg msg-them msg-hint" data-empty><p class="msg-body">{% if a.can_chat %}Ask me anything, {{ a.honorific }} — or tell me something worth remembering.{% else %}{{ a.reason }}{% endif %}</p></li>
     {% endfor %}
   </ol>
-</section>
-{% endif %}
+  <form class="chat-form" method="post" action="/dashboard/chat" enctype="multipart/form-data" data-chat data-name="{{ a.name }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="sr-only" for="chat-input">Message to {{ a.name }}</label>
+    <textarea id="chat-input" name="message" rows="1" maxlength="{{ chat_max }}" placeholder="{{ 'Message ' ~ a.name ~ '…' if a.can_chat else 'Unavailable just now' }}" {% if not a.can_chat %}disabled{% endif %}></textarea>
+    <label class="hbtn chat-attach" title="Attach images (or paste one)"><span aria-hidden="true">+</span><span class="sr-only">Attach images</span><input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden data-chat-file {% if not a.can_chat %}disabled{% endif %}></label>
+    <button type="submit" class="hbtn hbtn-accent" {% if not a.can_chat %}disabled{% endif %}>Send</button>
+  </form>
+  <div class="chat-previews" data-chat-previews></div>
+  <p class="chat-note">{% if not a.can_chat %}{% if h.history %}{{ a.reason }}{% else %}Chat opens once I am switched on.{% endif %}{% elif a.fake %}Practice mode: replies are scripted and cost nothing.{% else %}{{ a.remaining | usd }} left of today's {{ a.budget | usd }} allowance.{% endif %}</p>
+  {% if a.usage %}<p class="chat-note chat-usage">Claude plan: {{ a.usage.line }}</p>{% endif %}
+</aside>
+<div class="jv-scrim" data-jv-scrim hidden></div>
 
-<div class="home-grid">
-  <div class="col col-main">
-    <div data-live="needs">{{ p.needs(h) }}</div>
+{# --- Briefing: everything else, below the fold --- #}
+<div class="jv-briefing" id="briefing">
+  <header class="brief-head">
+    <p class="hero-name">Briefing</p>
+    <h1 data-live-text="salute">{{ h.hello.salute }}</h1>
+    <p class="hero-line" data-live-text="line">{{ h.hello.line }}</p>
+  </header>
 
-    <section aria-labelledby="life-title" class="block">
-      <h2 class="sec-title" id="life-title"><span class="sec-glyph">{{ glyph("spark") | safe }}</span>Your week</h2>
-      <div data-live="tiles">{{ p.tiles(h) }}</div>
-    </section>
+  {% if h.fresh or h.steps_left >= 3 %}
+  <section class="card setup" aria-labelledby="setup-title">
+    <h2 class="sec-title" id="setup-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Getting settled<span class="sec-extra">{{ h.steps | length - h.steps_left }} of {{ h.steps | length }}</span></h2>
+    <ol class="steps">
+      {% for st in h.steps %}
+      <li class="{{ 'done' if st.done else '' }}"><span class="step-box" aria-hidden="true">{{ "✓" if st.done else loop.index }}</span>
+        <div><strong>{{ st.title }}</strong>{% if st.done %}<span class="sr-only"> (done)</span>{% endif %}<p>{{ st.body }}</p></div></li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
 
-    <section class="card talk" id="talk" aria-labelledby="talk-title">
-      <h2 class="sec-title" id="talk-title"><span class="sec-glyph">{{ glyph("chat") | safe }}</span>Talk to {{ a.name }}<span class="sec-extra"><kbd>/</kbd> to type</span></h2>
-      <ol class="chat-log" data-chat-log aria-live="polite">
-        {% for m in h.history %}
-        <li class="msg msg-{{ 'me' if m.direction == 'in' else 'them' }}">
-          <p class="msg-body">{{ m.body }}</p>
-          {% if m.meta and m.meta.get("attachments") %}<p class="msg-images">{% for f in m.meta.get("attachments") or [] %}<a href="/dashboard/uploads/{{ f }}" target="_blank" rel="noopener"><img src="/dashboard/uploads/{{ f }}" alt="Attached image" loading="lazy"></a>{% endfor %}</p>{% endif %}
-          <p class="msg-meta"><span class="chip chan-{{ m.channel }}">{{ m.channel }}</span> · {{ m.ts | ago }}{% if m.direction == 'out' and m.cost_usd %} · {{ m.cost_usd | usd }}{% endif %}</p>
-        </li>
-        {% else %}
-        <li class="msg msg-them msg-hint" data-empty><p class="msg-body">{% if a.can_chat %}Ask me anything, {{ a.honorific }} — or tell me something worth remembering.{% else %}{{ a.reason }}{% endif %}</p></li>
-        {% endfor %}
-      </ol>
-      <form class="chat-form" method="post" action="/dashboard/chat" enctype="multipart/form-data" data-chat data-name="{{ a.name }}">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <label class="sr-only" for="chat-input">Message to {{ a.name }}</label>
-        <textarea id="chat-input" name="message" rows="1" maxlength="{{ chat_max }}" placeholder="{{ 'Message ' ~ a.name ~ '…' if a.can_chat else 'Unavailable just now' }}" {% if not a.can_chat %}disabled{% endif %}></textarea>
-        <label class="hbtn chat-attach" title="Attach images (or paste one)"><span aria-hidden="true">+</span><span class="sr-only">Attach images</span><input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden data-chat-file {% if not a.can_chat %}disabled{% endif %}></label>
-        <button type="submit" class="hbtn hbtn-accent" {% if not a.can_chat %}disabled{% endif %}>Send</button>
-      </form>
-      <div class="chat-previews" data-chat-previews></div>
-      <p class="chat-note">{% if not a.can_chat %}{% if h.history %}{{ a.reason }}{% else %}Chat opens once I am switched on.{% endif %}{% elif a.fake %}Practice mode: replies are scripted and cost nothing.{% else %}{{ a.remaining | usd }} left of today's {{ a.budget | usd }} allowance.{% endif %}</p>
-      {# --- Sterling's controls (self-edit undo, stop switch, plan usage) --- #}
-      {% if a.usage %}<p class="chat-note chat-usage">Claude plan: {{ a.usage.line }}</p>{% endif %}
-      {% if a.enabled %}<div class="chat-controls">
-        <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
-        <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="hbtn" title="Revert {{ a.name }}'s last change to its own code">Undo last change</button></form>
-      </div>{% endif %}
-    </section>
-  </div>
+  <div class="home-grid">
+    <div class="col col-main">
+      <div data-live="needs">{{ p.needs(h) }}</div>
+      <section aria-labelledby="life-title" class="block">
+        <h2 class="sec-title" id="life-title"><span class="sec-glyph">{{ glyph("spark") | safe }}</span>Your week</h2>
+        <div data-live="tiles">{{ p.tiles(h) }}</div>
+      </section>
+      <section class="card" aria-labelledby="feed-title">
+        <h2 class="sec-title" id="feed-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Lately</h2>
+        <div data-live="feed">{{ p.feed(h) }}</div>
+      </section>
+    </div>
 
-  <div class="col col-side">
-    <section class="card" aria-labelledby="team-title">
-      <h2 class="sec-title" id="team-title"><span class="sec-glyph">{{ glyph("team") | safe }}</span>The staff<span class="sec-extra">{{ h.roster | length }} on duty</span></h2>
-      <div data-live="roster">{{ p.roster(h) }}</div>
-    </section>
+    <div class="col col-side">
+      <section class="card" aria-labelledby="team-title">
+        <h2 class="sec-title" id="team-title"><span class="sec-glyph">{{ glyph("team") | safe }}</span>The staff<span class="sec-extra">{{ h.roster | length }} on duty</span></h2>
+        <div data-live="roster">{{ p.roster(h) }}</div>
+      </section>
 
-    <section class="card memory-card" aria-labelledby="mem-title">
-      <h2 class="sec-title" id="mem-title"><span class="sec-glyph">{{ glyph("book") | safe }}</span>What I know<span class="sec-extra">{{ h.memory.count }} notes</span></h2>
-      <form class="mem-search" method="get" action="/dashboard/memory" role="search">
-        <label class="sr-only" for="mem-q">Search memory</label>
-        <input id="mem-q" name="q" placeholder="Search my memory…" maxlength="200">
-      </form>
-      {% if h.memory.recent %}
-      <ul class="mem-recent">{% for r in h.memory.recent[:4] %}
-        <li><a href="/dashboard/memory?note={{ r.path | urlencode }}">{{ r.title }}</a><span>{{ r.line | truncate(90) }}</span></li>{% endfor %}</ul>
-      {% else %}<p class="voice">My notebook is still blank. Tell me about yourself and it fills up.</p>{% endif %}
-      {% if h.memory.lessons %}
-      <h3 class="mini-head">Lessons learned</h3>
-      <ul class="lessons">{% for l in h.memory.lessons[:3] %}<li><span class="chip chip-{{ l.status }}">{{ l.status }}</span> {{ l.lesson | truncate(120) }}</li>{% endfor %}</ul>
-      {% endif %}
-      <a class="tile-link" href="/dashboard/memory">Browse the vault →</a>
-    </section>
-
-    <section class="card" aria-labelledby="feed-title">
-      <h2 class="sec-title" id="feed-title"><span class="sec-glyph">{{ glyph("scroll") | safe }}</span>Lately</h2>
-      <div data-live="feed">{{ p.feed(h) }}</div>
-    </section>
+      <section class="card memory-card" aria-labelledby="mem-title">
+        <h2 class="sec-title" id="mem-title"><span class="sec-glyph">{{ glyph("book") | safe }}</span>What I know<span class="sec-extra">{{ h.memory.count }} notes</span></h2>
+        <form class="mem-search" method="get" action="/dashboard/memory" role="search">
+          <label class="sr-only" for="mem-q">Search memory</label>
+          <input id="mem-q" name="q" placeholder="Search my memory…" maxlength="200">
+        </form>
+        {% if h.memory.recent %}
+        <ul class="mem-recent">{% for r in h.memory.recent[:4] %}
+          <li><a href="/dashboard/memory?note={{ r.path | urlencode }}">{{ r.title }}</a><span>{{ r.line | truncate(90) }}</span></li>{% endfor %}</ul>
+        {% else %}<p class="voice">My notebook is still blank. Tell me about yourself and it fills up.</p>{% endif %}
+        {% if h.memory.lessons %}
+        <h3 class="mini-head">Lessons learned</h3>
+        <ul class="lessons">{% for l in h.memory.lessons[:3] %}<li><span class="chip chip-{{ l.status }}">{{ l.status }}</span> {{ l.lesson | truncate(120) }}</li>{% endfor %}</ul>
+        {% endif %}
+        <a class="tile-link" href="/dashboard/memory">Browse the vault →</a>
+      </section>
+    </div>
   </div>
 </div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/dashboard/static/home.js" defer></script>{% endblock %}
+{% block scripts %}<script src="/dashboard/static/jarvis.js" defer></script><script src="/dashboard/static/home.js" defer></script>{% endblock %}

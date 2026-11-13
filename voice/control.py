@@ -65,4 +65,4 @@ def status() -> dict[str, Any]:
         state = "muted"
     return {"state": state, "online": alive, "muted": muted, "device": raw.get("device"),
             "voice": raw.get("voice"), "wake": raw.get("wake"), "error": raw.get("error"),
-            "heard": raw.get("heard"), "ts": raw.get("ts")}
+            "heard": raw.get("heard"), "said": raw.get("said"), "ts": raw.get("ts")}

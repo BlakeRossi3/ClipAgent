@@ -167,7 +167,9 @@
           open.forEach(function (id) { var d = document.getElementById(id); if (d) d.open = true; });
         });
         var hero = document.getElementById('hero');
-        if (hero) hero.className = 'hero mood-' + j.mood;
+        if (hero) hero.className = hero.className.replace(/\bmood-\S+/g, '').trim() + ' mood-' + j.mood;
+        var nb = document.querySelector('[data-needs-count]');
+        if (nb) { nb.hidden = !j.needs; nb.querySelector('b').textContent = j.needs; nb.lastChild.textContent = j.needs === 1 ? ' needs you' : ' need you'; }
         ['salute', 'line'].forEach(function (k) {
           var el = document.querySelector('[data-live-text="' + k + '"]');
           if (el && j[k]) el.textContent = j[k];

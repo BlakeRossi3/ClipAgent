@@ -1042,10 +1042,10 @@ _chat_lock = threading.Lock()
 CHAT_JOB_KEEP = 50
 
 
-def _start_job(message: str, attachments: list[str]) -> str:
+def start_background(fn: Callable[[], dict[str, Any]], *, what: str = "chat turn") -> str:
+    """Run ``fn`` in a thread; its dict (plus ``done``/``ok``) is served by ``GET /chat/job/{id}``.
+    Shared by the typed chat and the in-browser voice (voice/web.py)."""
     import uuid
-
-    from assistant import runtime
 
     jid = uuid.uuid4().hex
     with _chat_lock:
@@ -1055,16 +1055,25 @@ def _start_job(message: str, attachments: list[str]) -> str:
 
     def work() -> None:
         try:
-            res = runtime.run_turn(message, channel="dashboard", attachments=attachments or None)
-            out = {"done": True, "ok": True, "reply": res.text, "status": res.status, "cost_usd": res.cost_usd}
+            out = {"done": True, "ok": True, **fn()}
         except Exception as exc:
-            db.log_event("dashboard", "chat turn failed", level="error", data={"error": repr(exc)[:300]})
+            db.log_event("dashboard", f"{what} failed", level="error", data={"error": repr(exc)[:300]})
             out = {"done": True, "ok": False, "msg": "That did not go through. Try again in a moment."}
         with _chat_lock:
             _chat_jobs[jid] = out
 
     threading.Thread(target=work, name=f"chat-{jid[:6]}", daemon=True).start()
     return jid
+
+
+def _start_job(message: str, attachments: list[str]) -> str:
+    from assistant import runtime
+
+    def turn() -> dict[str, Any]:
+        res = runtime.run_turn(message, channel="dashboard", attachments=attachments or None)
+        return {"reply": res.text, "status": res.status, "cost_usd": res.cost_usd}
+
+    return start_background(turn)
 
 
 def chat_job(request: Request, job_id: str) -> Response:
