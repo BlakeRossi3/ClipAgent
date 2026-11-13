@@ -64,6 +64,13 @@ class Settings:
     youtube_token_path: Path = Path("data/youtube_token.json")
     youtube_default_privacy: str = "private"
     youtube_category_id: str = "28"  # Science & Technology
+    youtube_daily_quota: int = 10_000  # Data API units per Pacific day (raise after a Google quota increase)
+    youtube_api_key: str = ""          # optional API key, only for scout's Data API CC search backend
+    youtube_monetary_analytics: bool = False  # collect revenue when the token has the monetary scope
+
+    # --- scout -----------------------------------------------------------------
+    scout_cc_backend: str = "ytdlp"    # ytdlp (0 quota) | data_api (100 units per search)
+    scout_cc_api_max_searches_per_day: int = 2
 
     # --- Twilio / owner ------------------------------------------------------
     twilio_account_sid: str = ""
@@ -73,6 +80,12 @@ class Settings:
     owner_name: str = "Blake"
     public_base_url: str = "http://localhost:8000"
     dashboard_token: str = ""
+    # Local "HH:MM" window in which only urgent calls ring; equal start/end disables it.
+    quiet_hours_start: str = "22:00"
+    quiet_hours_end: str = "08:00"
+    urgent_call_dedup_hours: float = 6.0   # at most one call per urgent kind in this window
+    twilio_voice: str = "Polly.Joanna-Neural"
+    twilio_language: str = "en-US"
 
     # --- misc ----------------------------------------------------------------
     timezone: str = "America/New_York"
@@ -81,6 +94,11 @@ class Settings:
     whisper_compute_type: str = "int8"
     ffmpeg_bin: str = "ffmpeg"
     log_level: str = "INFO"
+    # Disk hygiene (main.py cleanup job): delete downloaded source media this many days after the
+    # source finished, and renders this many days after their live upload. DB rows, licence
+    # evidence (info.json) and transcripts are always kept.
+    source_media_retention_days: int = 3
+    render_retention_days: int = 14
 
     def replace(self, **changes: Any) -> "Settings":
         """Return a copy with ``changes`` applied (handy in tests)."""
@@ -117,6 +135,14 @@ def _path(raw: str | None, default: Path, base: Path) -> Path:
         return default
     p = Path(raw).expanduser()
     return p if p.is_absolute() else (base / p)
+
+
+def _hhmm(raw: str) -> str:
+    """Validate a local ``HH:MM`` time (raises ``ValueError`` on a typo, at startup not at 22:00)."""
+    h, _, m = raw.partition(":")
+    if not (h.isdigit() and m.isdigit() and 0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+        raise ValueError(f"not an HH:MM time: {raw!r}")
+    return f"{int(h):02d}:{int(m):02d}"
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -169,6 +195,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         youtube_token_path=_path(env.get("YOUTUBE_TOKEN_PATH"), data_dir / "youtube_token.json", REPO_ROOT),
         youtube_default_privacy=s("YOUTUBE_DEFAULT_PRIVACY", "private"),
         youtube_category_id=s("YOUTUBE_CATEGORY_ID", "28"),
+        youtube_daily_quota=int(s("YOUTUBE_DAILY_QUOTA", "10000")),
+        youtube_api_key=s("YOUTUBE_API_KEY", ""),
+        youtube_monetary_analytics=_bool(env.get("YOUTUBE_MONETARY_ANALYTICS"), False),
+        scout_cc_backend=s("SCOUT_CC_BACKEND", "ytdlp").lower(),
+        scout_cc_api_max_searches_per_day=max(0, int(s("SCOUT_CC_API_MAX_SEARCHES_PER_DAY", "2"))),
         twilio_account_sid=s("TWILIO_ACCOUNT_SID", ""),
         twilio_auth_token=s("TWILIO_AUTH_TOKEN", ""),
         twilio_from_number=s("TWILIO_FROM_NUMBER", ""),
@@ -176,12 +207,19 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         owner_name=s("OWNER_NAME", "Blake"),
         public_base_url=s("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
         dashboard_token=s("DASHBOARD_TOKEN", ""),
+        quiet_hours_start=_hhmm(s("QUIET_HOURS_START", "22:00")),
+        quiet_hours_end=_hhmm(s("QUIET_HOURS_END", "08:00")),
+        urgent_call_dedup_hours=float(s("URGENT_CALL_DEDUP_HOURS", "6")),
+        twilio_voice=s("TWILIO_VOICE", "Polly.Joanna-Neural"),
+        twilio_language=s("TWILIO_LANGUAGE", "en-US"),
         timezone=s("TIMEZONE", "America/New_York"),
         whisper_model=s("WHISPER_MODEL", "small.en"),
         whisper_device=s("WHISPER_DEVICE", "auto"),
         whisper_compute_type=s("WHISPER_COMPUTE_TYPE", "int8"),
         ffmpeg_bin=s("FFMPEG_BIN", "ffmpeg"),
         log_level=s("LOG_LEVEL", "INFO").upper(),
+        source_media_retention_days=max(0, int(s("SOURCE_MEDIA_RETENTION_DAYS", "3"))),
+        render_retention_days=max(0, int(s("RENDER_RETENTION_DAYS", "14"))),
     )
 
 

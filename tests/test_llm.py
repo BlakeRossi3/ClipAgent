@@ -74,6 +74,37 @@ def test_refusal_raises(fake_llm):
     assert len(db.list_llm_usage()) == 1
 
 
+def test_refusal_and_output_errors_carry_cost(fake_llm):
+    fake_llm.queue(llm.FakeReply(text="", stop_reason="refusal"))
+    with pytest.raises(llm.LLMRefusal) as ei:
+        llm.complete("sonnet", system="s", user="u", purpose="p")
+    assert ei.value.cost_usd == pytest.approx(db.list_llm_usage()[0].cost_usd) and ei.value.attempts == 1
+    fake_llm.queue("nope", "still nope")
+    with pytest.raises(llm.LLMOutputError) as ei:
+        llm.complete("haiku", system="s", user="u", purpose="p", json_schema=SCORE_SCHEMA)
+    rows = db.list_llm_usage()
+    assert ei.value.attempts == 2 and not ei.value.truncated
+    assert ei.value.cost_usd == pytest.approx(rows[0].cost_usd + rows[1].cost_usd)
+
+
+def test_truncation_retries_once_with_more_room(fake_llm):
+    fake_llm.queue(llm.FakeReply(text='{"score": 7, "rea', stop_reason="max_tokens"),
+                   {"score": 7, "reason": "r", "tags": [], "kind": "awe"})
+    res = llm.complete("haiku", system="s", user="u", purpose="p", json_schema=SCORE_SCHEMA, max_tokens=1000)
+    assert res.data["score"] == 7 and res.attempts == 2
+    assert [c.max_tokens for c in fake_llm.calls] == [1000, 2000]
+
+
+def test_truncation_without_budget_for_bigger_retry_fails_fast(fake_llm):
+    # $0.994 of the $1 cap already spent: a 400-token Sonnet call ($0.004) fits, an 800-token retry does not
+    budget.record_usage("claude-sonnet-5-5", "earlier", input_tokens=0, output_tokens=99_400)
+    fake_llm.queue(llm.FakeReply(text='{"score"', stop_reason="max_tokens"))
+    with pytest.raises(llm.LLMOutputError, match="truncated") as ei:
+        llm.complete("sonnet", system="s", user="u", purpose="p", json_schema=SCORE_SCHEMA, max_tokens=400)
+    assert ei.value.truncated and ei.value.attempts == 1 and ei.value.cost_usd > 0
+    assert len(fake_llm.calls) == 1
+
+
 def test_budget_blocks_before_call(fake_llm):
     budget.record_usage("claude-sonnet-5-5", "earlier", input_tokens=0, output_tokens=99_990)  # $0.9999
     with pytest.raises(budget.BudgetExceeded):

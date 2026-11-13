@@ -51,7 +51,7 @@
 
 <section aria-labelledby="kpi-h">
   <h2 id="kpi-h" class="visually-hidden">Key numbers</h2>
-  <div class="kpis">
+  <div class="kpis kpis-main">
     {% for k in d.kpis %}
     <div class="tile{% if loop.first %} tile-hero{% endif %}">
       <p class="tile-label">{{ k.label }}{% if k.hint %} <span class="hint" title="{{ k.hint }}">ⓘ<span class="visually-hidden">{{ k.hint }}</span></span>{% endif %}</p>
@@ -63,7 +63,7 @@
       {% elif w.key != "all" %}
         <p class="tile-delta is-flat"><span class="muted">no prior data</span></p>
       {% endif %}
-      {% if k.spark %}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d="{{ k.spark }}"/></svg>{% endif %}
+      {% if k.spark %}<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"><path d="{{ k.spark }}"/></svg><p class="spark-note">daily, {{ w.label | lower if w.key == "all" else "last " ~ w.label }}</p>{% endif %}
     </div>
     {% endfor %}
   </div>

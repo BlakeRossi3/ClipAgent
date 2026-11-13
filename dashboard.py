@@ -156,8 +156,10 @@ def fmt_usd(v: Any) -> str:
         return f"{sign}${a:,.0f}"
     if a >= 0.995:
         return f"{sign}${a:,.2f}"
-    if a >= 0.01:
+    if a >= 0.1:
         return f"{sign}${a:.2f}"
+    if a >= 0.01:
+        return f"{sign}${a:.3f}"
     if a >= 0.0001:
         return f"{sign}${a:.4f}".rstrip("0")
     return f"{sign}<$0.0001"
@@ -265,6 +267,8 @@ def _delta(cur: float | None, prev: float | None, *, kind: str = "rel") -> dict[
         return None
     if kind == "pts":
         d = cur - prev
+        if abs(d) < 0.05:
+            return {"value": d, "text": "±0 pts", "dir": 0}
         return {"value": d, "text": f"{d:+.1f} pts", "dir": (d > 0) - (d < 0)}
     if prev == 0:
         return None if cur == 0 else {"value": None, "text": "new", "dir": 1 if cur > 0 else -1}
@@ -694,17 +698,60 @@ def overview_anchor(conn: sqlite3.Connection) -> tuple[date, date | None]:
     return today, as_of
 
 
-def window_metrics(conn: sqlite3.Connection, start: date, end: date) -> dict[str, Any]:
-    has_rev = _has_column(conn, "stats", "estimated_revenue_usd")
-    rev_sql = ", COALESCE(SUM(estimated_revenue_usd), 0) AS revenue" if has_rev else ""
-    r = conn.execute(
-        f"""SELECT COALESCE(SUM(views),0) AS views, COALESCE(SUM(watch_minutes),0) AS watch_minutes,
-                  COALESCE(SUM(subscribers_gained),0) AS sg, COALESCE(SUM(subscribers_lost),0) AS sl,
+def revenue_column(conn: sqlite3.Connection) -> str | None:
+    """Name of the per-day revenue column in ``stats`` (USD), if the schema has one."""
+    for col in ("estimated_revenue", "estimated_revenue_usd"):
+        if _has_column(conn, "stats", col):
+            return col
+    return None
+
+
+def has_revenue_data(conn: sqlite3.Connection) -> bool:
+    """Revenue tiles only appear once YouTube has actually reported revenue (monetary scope granted)."""
+    col = revenue_column(conn)
+    return bool(col) and conn.execute(f"SELECT 1 FROM stats WHERE {col} IS NOT NULL LIMIT 1").fetchone() is not None
+
+
+def video_retention(conn: sqlite3.Connection, video_id: str, stats: Sequence[Any] = ()) -> Any:
+    """Retention curve: the ``retention`` table (db.get_retention) when present, else the latest per-day copy."""
+    getter = getattr(db, "get_retention", None)
+    if getter is not None:
+        try:
+            r = getter(video_id, conn=conn)
+            if r is not None and getattr(r, "curve", None):
+                return r.curve
+        except sqlite3.Error:
+            pass
+    return next((s.retention for s in reversed(stats) if getattr(s, "retention", None)), None)
+
+
+def stats_by_day(conn: sqlite3.Connection, start: date, end: date) -> dict[str, dict[str, float]]:
+    """Per local day sums from ``stats`` (one indexed range scan shared by tiles and charts)."""
+    col = revenue_column(conn)
+    rev = f", SUM({col}) AS revenue, COUNT({col}) AS revenue_n" if col else ""
+    rows = conn.execute(
+        f"""SELECT day, SUM(views) AS views, SUM(watch_minutes) AS watch_minutes,
+                  SUM(subscribers_gained) AS sg, SUM(subscribers_lost) AS sl,
                   SUM(CASE WHEN avg_view_pct IS NOT NULL THEN avg_view_pct * views END) AS pct_w,
                   SUM(CASE WHEN avg_view_pct IS NOT NULL THEN views END) AS pct_v,
-                  COALESCE(SUM(likes),0) AS likes, COALESCE(SUM(shares),0) AS shares,
-                  COUNT(DISTINCT youtube_video_id) AS videos {rev_sql}
-           FROM stats WHERE day >= ? AND day <= ?""", (start.isoformat(), end.isoformat())).fetchone()
+                  SUM(likes) AS likes, SUM(shares) AS shares {rev}
+           FROM stats WHERE day >= ? AND day <= ? GROUP BY day""", (start.isoformat(), end.isoformat())).fetchall()
+    return {r["day"]: {k: (r[k] or 0) for k in r.keys() if k != "day"} for r in rows}
+
+
+def window_metrics(conn: sqlite3.Connection, start: date, end: date,
+                   daily: Mapping[str, Mapping[str, float]] | None = None) -> dict[str, Any]:
+    if daily is None:
+        daily = stats_by_day(conn, start, end)
+    s_day, e_day = start.isoformat(), end.isoformat()
+    tot: dict[str, float] = defaultdict(float)
+    for day, row in daily.items():
+        if s_day <= day <= e_day:
+            for k, v in row.items():
+                tot[k] += v
+    has_rev = revenue_column(conn) is not None and has_revenue_data(conn)
+    r = {k: tot.get(k, 0) for k in ("views", "watch_minutes", "sg", "sl", "pct_w", "pct_v", "likes", "shares",
+                                     "revenue")}
     s, e = _day_bounds(start, end)
     pub = conn.execute(
         "SELECT COUNT(*) AS n FROM uploads WHERE status IN ('uploaded','removed') AND dry_run = 0 "
@@ -723,7 +770,7 @@ def window_metrics(conn: sqlite3.Connection, start: date, end: date) -> dict[str
         "cost_per_1k": (spend / views * 1000) if views else None,
         "cost_per_sub": (spend / net) if net > 0 else None,
         "likes": int(r["likes"]),
-        "videos_with_views": int(r["videos"]),
+        "like_rate": (int(r["likes"]) / views * 100) if views else None,
         "revenue": None,
         "rpm": None,
     }
@@ -763,14 +810,6 @@ def strategy_caps_by_day(conn: sqlite3.Connection, days: Sequence[date]) -> tupl
     if days and days[-1] == db.local_today():  # today: the live values win
         caps[-1], ups[-1] = cur_cap, cur_up
     return caps, ups
-
-
-def daily_stats(conn: sqlite3.Connection, start: date, end: date) -> dict[str, dict[str, float]]:
-    rows = conn.execute(
-        """SELECT day, SUM(views) AS views, SUM(watch_minutes) AS wm,
-                  SUM(subscribers_gained) - SUM(subscribers_lost) AS net
-           FROM stats WHERE day >= ? AND day <= ? GROUP BY day""", (start.isoformat(), end.isoformat())).fetchall()
-    return {r["day"]: {"views": r["views"] or 0, "wm": r["wm"] or 0, "net": r["net"] or 0} for r in rows}
 
 
 def daily_channel(conn: sqlite3.Connection, start: date, end: date) -> dict[str, int | None]:
@@ -937,7 +976,13 @@ def clip_rows(conn: sqlite3.Connection, filters: Mapping[str, Any] | None = None
         where += (" AND " if where else " WHERE ") + f"c.id IN ({','.join('?' * len(ids))})"
         params += ids
     order = CLIP_SORTS.get(sort, "views")
-    sql = _CLIP_SQL.format(stats_where="") + where + \
+    stats_where = ""
+    if clip_ids is not None or filters.get("published_from"):
+        # only aggregate stats for the clips this query can return (cheap detail / top-N lookups)
+        stats_where = (" WHERE youtube_video_id IN (SELECT u.youtube_video_id FROM uploads u JOIN clips c "
+                       "ON c.id = u.clip_id JOIN sources s ON s.id = c.source_id" + where + ")")
+        params = params * 2
+    sql = _CLIP_SQL.format(stats_where=stats_where) + where + \
         f" ORDER BY {order} {'DESC' if desc else 'ASC'} NULLS LAST, c.id DESC"
     if limit is not None:
         sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
@@ -982,7 +1027,7 @@ def distinct_values(conn: sqlite3.Connection) -> dict[str, list[str]]:
     }
 
 
-def published_clip_facts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def published_clip_facts(conn: sqlite3.Connection, experiment_id: str | None = None) -> list[dict[str, Any]]:
     """One row per real (non-dry-run) published clip with views in its first MATURE_DAYS days.
 
     The first-N-days window uses an approximate local offset in SQL (DST can shift it by an hour).
@@ -1003,8 +1048,8 @@ def published_clip_facts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             JOIN clips c ON c.id = u.clip_id
             JOIN sources s ON s.id = c.source_id
             LEFT JOIN stats st ON st.youtube_video_id = u.youtube_video_id
-            WHERE u.status IN ('uploaded','removed') AND u.dry_run = 0
-            GROUP BY u.id ORDER BY pub""", (_sql_local_offset(),)).fetchall()
+            WHERE u.status IN ('uploaded','removed') AND u.dry_run = 0 {"AND c.experiment_id = ?" if experiment_id else ""}
+            GROUP BY u.id ORDER BY pub""", (_sql_local_offset(), *([experiment_id] if experiment_id else []))).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -1258,7 +1303,8 @@ def clip_costs(conn: sqlite3.Connection, clip_id: int, source_id: int) -> dict[s
 # ===========================================================================
 
 def _fmt_for(kind: str):
-    return {"usd": fmt_usd, "pct": fmt_pct, "int": fmt_int, "compact": fmt_compact}.get(kind, fmt_int)
+    return {"usd": fmt_usd, "pct": fmt_pct, "int": fmt_int, "compact": fmt_compact,
+            "dec1": lambda v: "—" if _num(v) is None else f"{float(v):.1f}"}.get(kind, fmt_int)
 
 
 def time_chart(chart_id: str, days: Sequence[date], series: list[dict[str, Any]], *, kind: str = "line",
@@ -1297,7 +1343,7 @@ def bar_rows(rows: list[dict[str, Any]], *, value_key: str, fmt: str, ref: float
 def sparkline(values: Sequence[float | None]) -> str | None:
     """SVG path data in a 100x24 box for a tiny trend line (None when <2 points)."""
     pts = [v for v in values if v is not None]
-    if len(pts) < 2:
+    if len(pts) < 2 or not any(pts):
         return None
     lo, hi = min(pts), max(pts)
     span = (hi - lo) or 1
@@ -1372,14 +1418,14 @@ def experiment_results(facts: list[dict[str, Any]], exp: Mapping[str, Any], as_o
         effect = ({"text": f"{res[0]:+.1f} pts", "ci": f"{res[1]:+.1f} to {res[2]:+.1f} pts", "lo": res[1],
                    "hi": res[2], "unit": "difference in average view % (variant − control)"} if res else None)
         metric_label = "Average view %"
-    need = 10
+    need = 20
     if c["n"] < need or v["n"] < need:
         verdict, tone = (f"Too early to call: {c['n']} control and {v['n']} variant clips have {MATURE_DAYS} days "
                          f"of data; need at least {need} each."), "neutral"
     elif effect and effect["lo"] > 0:
-        verdict, tone = "Variant is ahead, and the 95% interval excludes no difference.", "good"
+        verdict, tone = "Variant is ahead: the whole 95% interval is above zero effect.", "good"
     elif effect and effect["hi"] < 0:
-        verdict, tone = "Control is ahead, and the 95% interval excludes no difference.", "serious"
+        verdict, tone = "Control is ahead: the whole 95% interval is below zero effect.", "serious"
     else:
         verdict, tone = "No clear difference: the 95% interval includes zero effect.", "neutral"
     for arm in arms.values():
@@ -1391,12 +1437,13 @@ def experiment_results(facts: list[dict[str, Any]], exp: Mapping[str, Any], as_o
 def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any]:
     end, as_of = overview_anchor(conn)
     w = resolve_window(conn, period, end)
-    cur = window_metrics(conn, w.start, w.end)
-    prev = window_metrics(conn, w.prev_start, w.prev_end) if w.prev_start and w.prev_end else None
+    daily = stats_by_day(conn, w.prev_start or w.start, w.end)
+    cur = window_metrics(conn, w.start, w.end, daily)
+    prev = window_metrics(conn, w.prev_start, w.prev_end, daily) if w.prev_start and w.prev_end else None
 
     def k(key, label, fmt, *, good_up=True, delta_kind="rel", hint=""):
         v = cur[key]
-        p = prev[key] if prev else None
+        p = prev.get(key) if prev else None
         return {"key": key, "label": label, "value": v, "previous": p, "fmt": fmt, "good_up": good_up,
                 "delta": _delta(v, p, kind=delta_kind) if prev else None, "hint": hint}
 
@@ -1406,19 +1453,25 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
         k("subs_net", "Subscribers (net)", "signed"),
         k("published", "Shorts published", "int"),
         k("avg_view_pct", "Avg view %", "pct", delta_kind="pts", hint="views-weighted average percentage viewed"),
+        k("like_rate", "Like rate", "pct", delta_kind="pts", hint="likes per 100 views"),
         k("spend", "LLM spend", "usd", good_up=False),
         k("cost_per_1k", "Cost / 1K views", "usd", good_up=False),
         k("cost_per_sub", "Cost / subscriber", "usd", good_up=False, hint="LLM spend ÷ net subscribers"),
     ]
     if cur["revenue"] is not None:
-        kpis.insert(1, k("revenue", "Revenue", "usd"))
-        kpis.insert(2, k("rpm", "RPM", "usd", hint="revenue per 1,000 views"))
+        cur["profit"] = cur["revenue"] - cur["spend"]
+        if prev is not None and prev["revenue"] is not None:
+            prev["profit"] = prev["revenue"] - prev["spend"]
+        kpis.insert(1, k("revenue", "Revenue", "usd", hint="YouTube estimated revenue"))
+        kpis.insert(2, k("profit", "Revenue − LLM cost", "usd"))
+        kpis.insert(3, k("rpm", "RPM", "usd", hint="revenue per 1,000 views"))
 
     # --- daily series ------------------------------------------------------
     chart_days = _days(w.start, w.end)
-    st = daily_stats(conn, w.start, w.end)
-    views_series = [st.get(d.isoformat(), {}).get("views", 0) if as_of and d <= as_of else None for d in chart_days]
-    net_series = [st.get(d.isoformat(), {}).get("net", 0) if as_of and d <= as_of else None for d in chart_days]
+    def _net(row: Mapping[str, float]) -> float:
+        return row.get("sg", 0) - row.get("sl", 0)
+    views_series = [daily.get(d.isoformat(), {}).get("views", 0) if as_of and d <= as_of else None for d in chart_days]
+    net_series = [_net(daily.get(d.isoformat(), {})) if as_of and d <= as_of else None for d in chart_days]
     ch = daily_channel(conn, w.start, w.end)
     subs_cum: list[float | None] = [ch.get(d.isoformat()) for d in chart_days]
     if not any(v is not None for v in subs_cum) and any(v for v in net_series if v):
@@ -1463,7 +1516,7 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
         e = dict(strat["experiment"])
         today = db.local_today().isoformat()
         e["status"] = "running" if e["start"] <= today <= e["end"] else ("finished" if e["end"] < today else "scheduled")
-        facts = published_clip_facts(conn)
+        facts = published_clip_facts(conn, e["id"])
         e["results"] = experiment_results(facts, e, as_of or db.local_today())
         exp = e
     top = clip_rows(conn, {"published_from": _day_bounds(w.start, w.end)[0], "published_to": _day_bounds(w.start, w.end)[1]},
@@ -1511,14 +1564,14 @@ INSIGHT_DIMENSIONS = [
     ("score", "Haiku score"), ("channel", "Publisher"),
 ]
 INSIGHT_METRICS = {"views_7d": ("Median 7-day views", "compact"), "pct": ("Avg view %", "pct"),
-                   "subs_per_1k": ("Subscribers per 1K views", "int")}
+                   "subs_per_1k": ("Subscribers per 1K views", "dec1")}
 
 
 def _dim_value(f: Mapping[str, Any], dim: str) -> str:
     if dim == "topic":
         return f["topic"] or "(none)"
     if dim == "source_type":
-        return f["source_type"] or "(none)"
+        return (f["source_type"] or "(none)").replace("_", " ")
     if dim == "length":
         return length_bucket(f["length"])
     if dim == "slot":
@@ -1590,7 +1643,7 @@ def insights_data(conn: sqlite3.Connection, period: str | None, metric: str) -> 
                         [f["pct"] for f in pts if f["pct"] is not None])
     scatter = {"id": "chart-score-views", "type": "scatter", "height": 260, "fmt": "compact",
                "xLabel": "Haiku score", "yLabel": f"{MATURE_DAYS}-day views (log scale)", "logY": True,
-               "xDomain": [min([1.0, *[f["haiku_score"] for f in pts]]) if pts else 1, 10],
+               "xDomain": [max(1.0, min(f["haiku_score"] for f in pts)) if pts else 1.0, 10],
                "points": [{"x": f["haiku_score"], "y": f["views_7d"], "label": f["title"] or f"Clip {f['id']}",
                            "href": f"/dashboard/clips/{f['id']}", "id": f["id"]} for f in pts],
                "has_data": len(pts) >= 3,
@@ -1765,7 +1818,7 @@ def clip_detail(conn: sqlite3.Connection, clip_id: int) -> dict[str, Any] | None
     live = next((u for u in uploads if u.status in ("uploaded", "removed")), uploads[0] if uploads else None)
     stats = db.get_stats(live.youtube_video_id, conn=conn) if live and live.youtube_video_id else []
     row = (clip_rows(conn, clip_ids=[clip_id], limit=1) or [None])[0]
-    retention = next((s.retention for s in reversed(stats) if s.retention), None)
+    retention = video_retention(conn, live.youtube_video_id, stats) if live and live.youtube_video_id else None
     days = [date.fromisoformat(s.day) for s in stats]
     cum, run = [], 0
     for s in stats:
@@ -1801,7 +1854,7 @@ def clip_detail(conn: sqlite3.Connection, clip_id: int) -> dict[str, Any] | None
     siblings = [x for x in db.list_clips(source_id=clip.source_id, conn=conn) if x.id != clip_id]
     return {"clip": clip, "source": source, "uploads": uploads, "live": live, "stats": stats, "row": row,
             "charts": charts, "experiment": exp, "strategy_version": sv, "costs": clip_costs(conn, clip_id, clip.source_id),
-            "events": events, "siblings": siblings,
+            "events": events, "siblings": siblings, "hook_form": hook_form(clip.hook_text), "retention": retention,
             "totals": {"views": sum(s.views for s in stats), "likes": sum(s.likes for s in stats),
                        "comments": sum(s.comments for s in stats), "shares": sum(s.shares for s in stats),
                        "subs": sum(s.subscribers_gained - s.subscribers_lost for s in stats),
@@ -1937,7 +1990,8 @@ def costs_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any]:
     breakdown = spend_breakdown(conn, s_iso, e_iso)
     purpose_rows = sorted(({"name": p["purpose"] + " · " + p["model"], **p} for p in breakdown["by_purpose"]),
                           key=lambda r: -(r["cost"] or 0))
-    over_cap_days = sum(1 for d, cap in zip(days, caps) if sum(by_day.get(d, {}).values()) >= cap - 1e-9 and cap > 0)
+    cap_hits = budget_cap_hits(conn, s_iso, e_iso)
+    over_cap_days = len({db.local_date_of(h["ts"]) for h in cap_hits})
     quota = [int(up.get(d, {}).get("quota", 0)) for d in days]
     return {
         "window": w, "breakdown": breakdown,
@@ -1950,7 +2004,7 @@ def costs_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any]:
                                   kind="bars", fmt="int", refs=[{"name": "Daily cap", "values": up_caps}], height=160),
         },
         "purpose_bars": bar_rows(purpose_rows, value_key="cost", fmt="usd"),
-        "cap_hits": budget_cap_hits(conn, s_iso, e_iso), "days_at_cap": over_cap_days,
+        "cap_hits": cap_hits, "days_at_cap": over_cap_days,
         "quota": {"max_day": max(quota) if quota else 0, "total": sum(quota), "daily_limit": YOUTUBE_DAILY_QUOTA,
                   "dry_uploads": int(sum(up.get(d, {}).get("dry", 0) for d in days))},
         "today": today_status(),
@@ -2102,7 +2156,7 @@ def api_clip(request: Request, clip_id: int) -> Response:
                   "daily": [{"day": s.day, "views": s.views, "watch_minutes": s.watch_minutes,
                              "avg_view_pct": s.avg_view_pct, "likes": s.likes,
                              "subscribers_net": s.subscribers_gained - s.subscribers_lost} for s in d["stats"]],
-                  "retention": next((s.retention for s in reversed(d["stats"]) if s.retention), None),
+                  "retention": d["retention"],
                   "totals": d["totals"], "cost_usd": d["costs"]["total"]})
 
 

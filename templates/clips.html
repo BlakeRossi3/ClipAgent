@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Clips{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Clips</h1>
+    <p class="lede">Every clip the agent has picked, with lifetime YouTube numbers and what it cost to produce. Click a title for the full audit trail.</p>
+  </div>
+</div>
+
+<form class="filters filters-form" method="get" action="/dashboard/clips" role="search">
+  <label class="field"><span>Search</span><input type="search" name="q" value="{{ filters.q or '' }}" placeholder="Title or publisher"></label>
+  <label class="field"><span>Status</span>
+    <select name="status"><option value="">All</option>
+      {% for s in statuses %}<option value="{{ s }}"{% if filters.status == s %} selected{% endif %}>{{ s | capitalize }}</option>{% endfor %}
+    </select></label>
+  <label class="field"><span>Topic</span>
+    <select name="topic"><option value="">All</option>
+      {% for t in opts.topics %}<option value="{{ t }}"{% if filters.topic == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select></label>
+  <label class="field"><span>Source type</span>
+    <select name="type"><option value="">All</option>
+      {% for t in opts.types %}<option value="{{ t }}"{% if filters.type == t %} selected{% endif %}>{{ t | replace("_", " ") }}</option>{% endfor %}
+    </select></label>
+  {% if opts.experiments %}
+  <label class="field"><span>Experiment</span>
+    <select name="experiment"><option value="">All</option>
+      {% for t in opts.experiments %}<option value="{{ t }}"{% if filters.experiment == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select></label>
+  {% endif %}
+  <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="dir" value="{{ 'desc' if desc else 'asc' }}">
+  <div class="field field-actions"><button class="btn" type="submit">Apply</button>{% if filters.values() | select | list %}<a href="/dashboard/clips">Reset</a>{% endif %}</div>
+</form>
+
+{% if not any_clips %}
+  {% call m.empty("No clips yet", "Clips appear here after the agent transcribes a source and Sonnet picks the best moments. Run python main.py run-once to start.") %}{% endcall %}
+{% elif not rows %}
+  {% call m.empty("No clips match these filters") %}<p><a href="/dashboard/clips">Clear filters</a></p>{% endcall %}
+{% else %}
+<p class="result-count">{{ total | int }} clip{{ "s" if total != 1 else "" }} · sorted by {{ sort }} · numbers are lifetime totals to date</p>
+<div class="table-wrap">
+<table class="data leaderboard">
+  <thead><tr>
+    {{ m.sort_th("Title", "title", sort, desc) }}
+    {{ m.sort_th("Published", "published", sort, desc) }}
+    {{ m.sort_th("Topic", "topic", sort, desc) }}
+    {{ m.sort_th("Type", "type", sort, desc) }}
+    {{ m.sort_th("Length", "length", sort, desc, True) }}
+    {{ m.sort_th("Score", "score", sort, desc, True, "Haiku score 1-10") }}
+    {{ m.sort_th("Views", "views", sort, desc, True) }}
+    {{ m.sort_th("Avg %", "pct", sort, desc, True, "Average percentage viewed (views-weighted)") }}
+    {{ m.sort_th("Avg dur.", "avd", sort, desc, True, "Average view duration") }}
+    {{ m.sort_th("Likes", "likes", sort, desc, True) }}
+    {{ m.sort_th("Subs", "subs", sort, desc, True, "Net subscribers gained from this Short") }}
+    {{ m.sort_th("Cost", "cost", sort, desc, True, "LLM cost attributed to this clip (its own calls + an equal share of its source's scoring)") }}
+    {{ m.sort_th("Status", "status", sort, desc) }}
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <th scope="row" class="title-cell"><a href="/dashboard/clips/{{ r.id }}">{{ r.title or ("Clip " ~ r.id) }}</a>{% if r.experiment_variant %}<span class="tag">{{ r.experiment_variant }}</span>{% endif %}</th>
+    <td class="nowrap">{{ r.published_at | date if r.published_at else "—" }}</td>
+    <td class="clip-topic">{{ r.topic or "—" }}</td>
+    <td class="nowrap">{{ (r.source_type or "—") | replace("_", " ") }}</td>
+    <td class="num">{{ r.length | duration }}</td>
+    <td class="num">{{ "%.0f" | format(r.haiku_score) if r.haiku_score is not none else "—" }}</td>
+    <td class="num">{{ r.views | compact if r.youtube_video_id and not r.dry_run else "—" }}</td>
+    <td class="num">{{ r.pct | pct }}</td>
+    <td class="num">{{ r.avd | duration }}</td>
+    <td class="num">{{ r.likes | compact if r.youtube_video_id and not r.dry_run else "—" }}</td>
+    <td class="num">{{ ("+" if r.subs > 0 else "") ~ (r.subs | int) if r.youtube_video_id and not r.dry_run else "—" }}</td>
+    <td class="num">{{ r.cost | usd }}</td>
+    <td>{{ m.pill(r.display_status[0], r.display_status[1]) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{{ m.pager(page, pages) }}
+{% endif %}
+{% endblock %}

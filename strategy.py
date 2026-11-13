@@ -21,11 +21,13 @@ comments and ignored):
     ``source_types`` entry must be in the top-level ``source_types``.
 ``source_types`` list[str]
     Allowed source kinds; known ones are in :data:`KNOWN_SOURCE_TYPES`.
-    Adding one is *major*.
+    Adding or removing one is *major*.
 ``allowlist`` {source_type: {any_channel, channels[{name, handle, channel_id, note}], domains[]}}
-    Publishers whose footage is eligible, per source type.
+    Publishers whose footage is eligible, per source type. ``any_channel: true`` is only
+    allowed for :data:`ANY_CHANNEL_SOURCE_TYPES` (CC BY, where the per-video licence is the
+    gate); a government type must name its official publishers. Any edit is *major*.
 ``blocklist_channels`` list[str]
-    Channel names that are never eligible (rebroadcasters such as C-SPAN).
+    Channel names that are never eligible (rebroadcasters such as C-SPAN). Any edit is *major*.
 ``hook_style`` / ``title_style`` str
     Prose guidance passed to Sonnet.
 ``caption_style`` dict
@@ -37,6 +39,8 @@ comments and ignored):
 ``windows_to_escalate`` int >= 1
     How many top-scoring windows per source go to Sonnet.
 ``max_clips_per_source`` int >= 1
+``max_windows_per_source`` int >= 1 (optional, default :data:`DEFAULT_MAX_WINDOWS_PER_SOURCE`)
+    Cap on Haiku-scored transcript windows per source (long hearings are sampled evenly).
 ``uploads_per_day`` int >= 0
     Further capped by ``MAX_UPLOADS_PER_DAY`` (see :func:`upload_cap`); must be
     <= ``len(posting_times)``.
@@ -85,6 +89,11 @@ import db
 from config import get_settings
 
 KNOWN_SOURCE_TYPES = frozenset({"nasa", "congress", "cc_by_youtube", "dvids", "nara", "us_gov_other"})
+# Source types whose allowlist may set any_channel (the per-video CC BY licence check is the gate).
+ANY_CHANNEL_SOURCE_TYPES = frozenset({"cc_by_youtube"})
+GOV_SOURCE_TYPES = KNOWN_SOURCE_TYPES - ANY_CHANNEL_SOURCE_TYPES
+
+DEFAULT_MAX_WINDOWS_PER_SOURCE = 40
 
 CAPTION_STYLE_KEYS: dict[str, type | tuple[type, ...]] = {
     "font": str,
@@ -97,6 +106,12 @@ CAPTION_STYLE_KEYS: dict[str, type | tuple[type, ...]] = {
     "position": str,          # top | center | lower_third
     "uppercase": bool,
     "animation": str,         # word_pop | karaoke | none
+    "framing": str,           # auto | center_crop | blur_fill | fit (optional; default auto)
+}
+CAPTION_STYLE_CHOICES: dict[str, tuple[str, ...]] = {
+    "position": ("top", "center", "lower_third"),
+    "animation": ("word_pop", "karaoke", "none"),
+    "framing": ("auto", "center_crop", "blur_fill", "fit"),
 }
 
 REQUIRED_KEYS = (
@@ -105,7 +120,7 @@ REQUIRED_KEYS = (
     "min_haiku_score", "windows_to_escalate", "max_clips_per_source", "uploads_per_day",
     "posting_times", "timezone", "daily_llm_budget_usd", "experiment",
 )
-OPTIONAL_KEYS = ("default_hashtags", "notes")
+OPTIONAL_KEYS = ("default_hashtags", "notes", "max_windows_per_source")
 EXPERIMENT_KEYS = ("id", "hypothesis", "variable", "control", "variant", "start", "end", "success_metric")
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -153,6 +168,10 @@ class Strategy(dict):
     @property
     def experiment(self) -> dict[str, Any] | None:
         return self.get("experiment")
+
+    @property
+    def max_windows_per_source(self) -> int:
+        return int(self.get("max_windows_per_source", DEFAULT_MAX_WINDOWS_PER_SOURCE))
 
     def allowlist_for(self, source_type: str) -> dict[str, Any]:
         return self["allowlist"].get(source_type, {"any_channel": False, "channels": [], "domains": []})
@@ -255,6 +274,9 @@ def validate_strategy(data: Mapping[str, Any]) -> list[str]:
                 continue
             if not isinstance(entry.get("any_channel", False), bool):
                 errs.append(f"allowlist[{st}].any_channel must be a bool")
+            elif entry.get("any_channel") and st not in ANY_CHANNEL_SOURCE_TYPES:
+                errs.append(f"allowlist[{st}].any_channel=true is not allowed: a government source type "
+                            "must list its official publishers")
             chans = entry.get("channels", [])
             if not isinstance(chans, list):
                 errs.append(f"allowlist[{st}].channels must be a list")
@@ -282,6 +304,8 @@ def validate_strategy(data: Mapping[str, Any]) -> list[str]:
                 errs.append(f"caption_style has unknown key {k!r}")
             elif not isinstance(v, typ) or (typ is int and isinstance(v, bool)):
                 errs.append(f"caption_style.{k} must be {getattr(typ, '__name__', typ)}")
+            elif k in CAPTION_STYLE_CHOICES and v not in CAPTION_STYLE_CHOICES[k]:
+                errs.append(f"caption_style.{k} must be one of {list(CAPTION_STYLE_CHOICES[k])}")
 
     cl = data["clip_length_sec"]
     if not isinstance(cl, Mapping) or not all(_is_num(cl.get(k)) for k in ("min", "target", "max")):
@@ -294,6 +318,9 @@ def validate_strategy(data: Mapping[str, Any]) -> list[str]:
     for k in ("windows_to_escalate", "max_clips_per_source"):
         if not isinstance(data[k], int) or isinstance(data[k], bool) or data[k] < 1:
             errs.append(f"{k} must be an int >= 1")
+    mw = data.get("max_windows_per_source", DEFAULT_MAX_WINDOWS_PER_SOURCE)
+    if not isinstance(mw, int) or isinstance(mw, bool) or mw < 1:
+        errs.append("max_windows_per_source must be an int >= 1")
     upd = data["uploads_per_day"]
     if not isinstance(upd, int) or isinstance(upd, bool) or upd < 0:
         errs.append("uploads_per_day must be an int >= 0")
@@ -420,14 +447,53 @@ def record_initial_version(strategy: Strategy | None = None) -> None:
 # change detection & derived values
 # ---------------------------------------------------------------------------
 
+def _allowlist_entries(data: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    return {k: v for k, v in (data.get("allowlist") or {}).items() if not k.startswith("_")}
+
+
+def _publishers(entry: Mapping[str, Any]) -> set[tuple[str, str, str]]:
+    return {((c.get("name") or "").casefold(), (c.get("handle") or "").casefold(), c.get("channel_id") or "")
+            for c in entry.get("channels", [])}
+
+
+def _spoken(source_type: str) -> str:
+    return source_type.replace("_", " ")
+
+
+def _allowlist_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    oa, na = _allowlist_entries(old), _allowlist_entries(new)
+    changed: list[str] = []
+    for st in sorted(set(oa) | set(na)):
+        o, n = oa.get(st), na.get(st)
+        if o is None:
+            changed.append(f"new allowlist entry for {_spoken(st)}")
+            continue
+        if n is None:
+            changed.append(f"remove the allowlist entry for {_spoken(st)}")
+            continue
+        added, removed = _publishers(n) - _publishers(o), _publishers(o) - _publishers(n)
+        if added:
+            changed.append(f"allow {', '.join(a[0] or a[1] or a[2] for a in sorted(added))} for {_spoken(st)}")
+        if removed:
+            changed.append(f"stop using {', '.join(r[0] or r[1] or r[2] for r in sorted(removed))}")
+        if bool(o.get("any_channel")) != bool(n.get("any_channel")):
+            changed.append(f"set any channel to {bool(n.get('any_channel'))} for {_spoken(st)}")
+        if sorted(o.get("domains", [])) != sorted(n.get("domains", [])):
+            changed.append(f"change allowed websites for {_spoken(st)}")
+    return changed
+
+
 def diff_major_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[MajorChange]:
     """Changes from ``old`` to ``new`` that require phone approval.
 
     * ``new_niche``: ``niche`` text changed, or a topic area was added.
     * ``new_source_type``: a source type was added.
     * ``budget_increase``: ``daily_llm_budget_usd`` went up.
+    * ``strategy_change``: any edit to the publisher allowlist (channels, domains, any_channel,
+      entries) or the blocklist, or a source type removed - these decide what footage is
+      licence-eligible, so a human signs off on every one.
 
-    Removals, topic/search-term tweaks, styles, posting times and experiments are minor.
+    Topic/search-term tweaks, styles, posting times, clip lengths and experiments are minor.
     """
     out: list[MajorChange] = []
     if old.get("niche", "").strip() != new.get("niche", "").strip():
@@ -435,11 +501,11 @@ def diff_major_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[M
                                {"old": old.get("niche"), "new": new.get("niche")}))
     added_areas = [a for a in new.get("topic_areas", []) if a not in old.get("topic_areas", [])]
     if added_areas:
-        spoken = ", ".join(a.replace("_", " ") for a in added_areas)
+        spoken = ", ".join(_spoken(a) for a in added_areas)
         out.append(MajorChange("new_niche", f"Add new topic area: {spoken}", {"added_topic_areas": added_areas}))
     added_types = [t for t in new.get("source_types", []) if t not in old.get("source_types", [])]
     if added_types:
-        spoken = ", ".join(t.replace("_", " ") for t in added_types)
+        spoken = ", ".join(_spoken(t) for t in added_types)
         out.append(MajorChange("new_source_type", f"Start using a new source type: {spoken}",
                                {"added_source_types": added_types}))
     ob, nb = float(old.get("daily_llm_budget_usd", 0)), float(new.get("daily_llm_budget_usd", 0))
@@ -447,6 +513,23 @@ def diff_major_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[M
         out.append(MajorChange("budget_increase",
                                f"Raise the daily AI budget from {ob:.2f} to {nb:.2f} dollars",
                                {"old": ob, "new": nb}))
+    changed = _allowlist_changes(old, new)
+    if changed:
+        out.append(MajorChange("strategy_change", "Change the publisher allowlist: " + "; ".join(changed),
+                               {"allowlist_changes": changed}))
+    old_block = {b.casefold() for b in old.get("blocklist_channels", [])}
+    new_block = {b.casefold() for b in new.get("blocklist_channels", [])}
+    if new_block - old_block:
+        out.append(MajorChange("strategy_change", f"Block {len(new_block - old_block)} more channel(s)",
+                               {"blocklist_added": sorted(new_block - old_block)}))
+    if old_block - new_block:
+        out.append(MajorChange("strategy_change", f"Unblock {len(old_block - new_block)} channel(s)",
+                               {"blocklist_removed": sorted(old_block - new_block)}))
+    removed_types = [t for t in old.get("source_types", []) if t not in new.get("source_types", [])]
+    if removed_types:
+        out.append(MajorChange("strategy_change",
+                               "Stop using source type " + ", ".join(_spoken(t) for t in removed_types),
+                               {"removed_source_types": removed_types}))
     return out
 
 

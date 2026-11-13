@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Experiments &amp; strategy{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Experiments &amp; strategy</h1>
+    <p class="lede">Each weekly review runs one A/B experiment and may rewrite the strategy. Results compare control and variant clips that have at least {{ mature_days }} days of analytics.</p>
+  </div>
+</div>
+{% if strategy_error %}<p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span>{{ strategy_error }}</p>{% endif %}
+
+<section aria-labelledby="exp-h">
+  <h2 id="exp-h">Experiments</h2>
+  {% if not experiments %}
+    {% call m.empty("No experiments yet", "The weekly strategy review proposes exactly one experiment at a time.") %}{% endcall %}
+  {% endif %}
+  {% for e in experiments %}
+  {% set r = e.results %}
+  <article class="card experiment" id="exp-{{ e.id }}">
+    <div class="card-head">
+      <h3>{{ e.id }} {{ m.pill(e.status | capitalize, {"running": "info", "finished": "neutral", "scheduled": "neutral"}.get(e.status, "neutral")) }}</h3>
+      <p class="sub">{% if e.start %}{{ e.start | date }} – {{ e.end | date }} · {% endif %}variable: {{ (e.variable or "—") | replace("_", " ") }} · success metric: {{ r.metric_label }}</p>
+    </div>
+    {% if e.hypothesis %}<p class="exp-hyp">{{ e.hypothesis }}</p>{% endif %}
+    <div class="table-wrap"><table class="data arms-table">
+      <thead><tr><th scope="col">Arm</th><th scope="col">What it does</th><th scope="col" class="num">Clips (mature / all)</th><th scope="col" class="num">Avg view %</th><th scope="col" class="num">Median {{ mature_days }}-day views</th><th scope="col" class="num">Subs / 1K views</th></tr></thead>
+      <tbody>
+        {% for arm in ("control", "variant") %}
+        {% set a = r.arms[arm] %}
+        <tr>
+          <th scope="row"><span class="key key-bar slot-{{ loop.index }}" aria-hidden="true"></span>{{ arm | capitalize }}</th>
+          <td>{{ e[arm] or "—" }}</td>
+          <td class="num">{{ a.n }} / {{ a.n_all }}</td>
+          <td class="num">{{ a.pct | pct }}</td>
+          <td class="num">{{ a.views_7d_median | compact }}</td>
+          <td class="num">{{ "%.1f" | format(a.subs_per_1k) if a.subs_per_1k is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% if r.effect %}<p class="effect">Effect on {{ r.metric_label | lower }}: <strong>{{ r.effect.text }}</strong> <span class="muted">(95% interval {{ r.effect.ci }}; {{ r.effect.unit }})</span></p>{% endif %}
+    <p class="verdict verdict-{{ r.tone }}">{{ r.verdict }}</p>
+    {% if r.pending %}<p class="muted small">{{ r.pending }} more clip{{ "s" if r.pending != 1 else "" }} in this experiment are too new to count yet.</p>{% endif %}
+    <p class="small"><a href="/dashboard/clips?experiment={{ e.id | urlencode }}">See the clips →</a>{% if e.versions %} · in strategy version{{ "s" if e.versions | length > 1 else "" }} {{ e.versions | join(", ") }}{% endif %}</p>
+  </article>
+  {% endfor %}
+</section>
+
+<section aria-labelledby="hist-h">
+  <h2 id="hist-h">Strategy history</h2>
+  {% if not history %}
+    {% call m.empty("No strategy versions recorded", "main.py init records the shipped strategy as version 1; each weekly review adds a version.") %}{% endcall %}
+  {% else %}
+  <ol class="timeline">
+    {% for v in history %}
+    <li id="v{{ v.version }}" class="timeline-item">
+      <div class="timeline-marker" aria-hidden="true"></div>
+      <div class="card">
+        <div class="card-head">
+          <h3>Version {{ v.version }}{% if loop.first %} {{ m.pill("Current", "info") }}{% endif %}</h3>
+          <p class="sub">{{ v.created_at | dt }}</p>
+        </div>
+        <ul class="changes">{% for ch in v.changes %}<li>{{ ch }}</li>{% endfor %}</ul>
+        {% if v.decision %}
+        <p class="small">Approval: decision #{{ v.decision.id }} ({{ v.decision.kind | replace("_", " ") }}) — {{ m.pill(v.decision.status, {"approved": "good", "rejected": "critical"}.get(v.decision.status, "neutral")) }}{% if v.decision.resolved_via %} via {{ v.decision.resolved_via }}{% endif %}{% if v.decision.resolved_at %}, {{ v.decision.resolved_at | dt }}{% endif %}</p>
+        {% endif %}
+        {% if v.report %}
+        <details{% if loop.first %} open{% endif %}><summary>Weekly report</summary><div class="report prewrap">{{ v.report }}</div></details>
+        {% endif %}
+        <details><summary>Full strategy JSON</summary><pre class="json">{{ v.json | pretty_json }}</pre></details>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</section>
+{% endblock %}

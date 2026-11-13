@@ -70,3 +70,22 @@ def test_relative_paths_resolve_against_repo(monkeypatch):
     s = config.load_settings()
     assert s.data_dir == config.REPO_ROOT / "somewhere"
     assert isinstance(s.youtube_token_path, Path)
+
+
+def test_operational_settings(monkeypatch):
+    s = config.load_settings()
+    assert (s.quiet_hours_start, s.quiet_hours_end, s.urgent_call_dedup_hours) == ("22:00", "08:00", 6.0)
+    assert s.youtube_daily_quota == 10_000 and s.youtube_monetary_analytics is False
+    assert s.scout_cc_backend == "ytdlp" and s.scout_cc_api_max_searches_per_day == 2
+    monkeypatch.setenv("QUIET_HOURS_START", "7:05")
+    monkeypatch.setenv("YOUTUBE_DAILY_QUOTA", "50000")
+    monkeypatch.setenv("YOUTUBE_MONETARY_ANALYTICS", "true")
+    monkeypatch.setenv("SCOUT_CC_BACKEND", "Data_API")
+    monkeypatch.setenv("TWILIO_VOICE", "Polly.Matthew-Neural")
+    s = config.load_settings()
+    assert s.quiet_hours_start == "07:05" and s.youtube_daily_quota == 50_000
+    assert s.youtube_monetary_analytics and s.scout_cc_backend == "data_api"
+    assert s.twilio_voice == "Polly.Matthew-Neural"
+    monkeypatch.setenv("QUIET_HOURS_END", "25:00")
+    with pytest.raises(ValueError):
+        config.load_settings()

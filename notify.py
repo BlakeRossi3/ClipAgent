@@ -41,19 +41,15 @@ log = logging.getLogger(__name__)
 MODULE = "notify"
 
 # ---------------------------------------------------------------------------
-# Tunables (module-level defaults; a Settings attribute of the same lower-case
-# name, e.g. ``quiet_hours_start="22:00"``, overrides them if one is ever added)
+# Tunables. Quiet hours, the urgent-call de-dup window and the Twilio voice are
+# Settings (QUIET_HOURS_START/END, URGENT_CALL_DEDUP_HOURS, TWILIO_VOICE/LANGUAGE).
 # ---------------------------------------------------------------------------
 
-QUIET_HOURS_START = "22:00"         # local time (settings.timezone); equal start/end disables
-QUIET_HOURS_END = "08:00"
-# Problem kinds whose *calls* may ring during quiet hours (de-duplicated). Aliases cover the
-# kinds sibling modules queue directly (analytics: youtube_claim, upload: youtube_quota).
-URGENT_KINDS = frozenset({"upload_failed", "copyright_claim", "quota_exhausted", "budget_cap",
-                          "youtube_claim", "youtube_quota"})
-URGENT_CALL_DEDUP_HOURS = 6         # at most one call per urgent kind in this window
-TWILIO_VOICE = "Polly.Joanna-Neural"  # Twilio <Say> voice (Amazon Polly neural)
-TWILIO_LANGUAGE = "en-US"
+# Problem kinds whose *calls* ring even during quiet hours (de-duplicated). Producers:
+# budget.py budget_cap, youtube_auth.py youtube_auth, analytics.py youtube_claim (all queued as
+# calls). SMS kinds (youtube_quota, youtube_private_lock, job_error, weekly_report, ...) wait
+# for the morning.
+URGENT_KINDS = frozenset({"budget_cap", "youtube_auth", "youtube_claim"})
 GATHER_TIMEOUT_SEC = 8
 GATHER_MAX_ATTEMPTS = 3             # prompts per approval call before falling back to SMS
 RING_TIMEOUT_SEC = 25               # how long the phone rings before "no-answer"
@@ -78,11 +74,6 @@ def _get_client(settings: config.Settings) -> Any:
     from twilio.rest import Client  # heavy/optional import, only when actually sending
 
     return Client(settings.twilio_account_sid, settings.twilio_auth_token)
-
-
-def _opt(name: str, default: Any) -> Any:
-    value = getattr(config.get_settings(), name, None)
-    return default if value in (None, "") else value
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +118,8 @@ def _parse_hhmm(value: Any) -> dtime:
 
 def in_quiet_hours() -> bool:
     """True when local time (settings.timezone) is inside the quiet-hours window."""
-    start = _parse_hhmm(_opt("quiet_hours_start", QUIET_HOURS_START))
-    end = _parse_hhmm(_opt("quiet_hours_end", QUIET_HOURS_END))
+    s = config.get_settings()
+    start, end = _parse_hhmm(s.quiet_hours_start), _parse_hhmm(s.quiet_hours_end)
     if start == end:
         return False
     now = db.local_now().time().replace(tzinfo=None)
@@ -213,20 +204,8 @@ def _sms_text(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# DB helpers not in db.py (local SQL; see final report)
+# Delivery claims
 # ---------------------------------------------------------------------------
-
-def _get_notification(notification_id: int) -> db.Notification | None:
-    with db.transaction() as c:
-        row = c.execute("SELECT * FROM notifications WHERE id = ?", (notification_id,)).fetchone()
-    return None if row is None else db.Notification.from_row(row)
-
-
-def _get_notification_by_sid(sid: str) -> db.Notification | None:
-    with db.transaction() as c:
-        row = c.execute("SELECT * FROM notifications WHERE sid = ? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
-    return None if row is None else db.Notification.from_row(row)
-
 
 def _claim(notification_id: int, *, conn: Any = None) -> bool:
     """Atomic one-shot claim so a row is delivered at most once (send_queued may overlap)."""
@@ -304,7 +283,7 @@ def sms(text: str, *, kind: str = "sms", decision_id: int | None = None) -> int:
 
 
 def _status_of(nid: int) -> str:
-    row = _get_notification(nid)
+    row = db.get_notification(nid)
     return row.status if row else "failed"
 
 
@@ -335,7 +314,7 @@ def _recently_called(kind: str) -> bool:
     last = db.kv_get(f"notify:last_call:{kind}")
     if not last:
         return False
-    hours = float(_opt("urgent_call_dedup_hours", URGENT_CALL_DEDUP_HOURS))
+    hours = config.get_settings().urgent_call_dedup_hours
     return db.utcnow() - db.parse_iso(last) < timedelta(hours=hours)
 
 
@@ -354,7 +333,7 @@ def _dispatch(channel: str, kind: str, text: str, *, decision_id: int | None = N
     urgent_problem = channel == "call" and urgent and kind in URGENT_KINDS
     if urgent_problem and _recently_called(kind):
         db.log_event(MODULE, f"suppressed repeat call for {kind}; texting instead",
-                     data={"dedup_hours": URGENT_CALL_DEDUP_HOURS})
+                     data={"dedup_hours": config.get_settings().urgent_call_dedup_hours})
         channel, urgent_problem = "sms", False
     if in_quiet_hours() and not urgent_problem:
         return _queue(kind, text, channel, decision_id)
@@ -374,7 +353,7 @@ def notify(kind: str, text: str, *, urgent: bool = False) -> int:
 
     Inside quiet hours non-urgent messages are queued for :func:`send_queued`; urgent
     calls of :data:`URGENT_KINDS` still go out but at most once per kind per
-    :data:`URGENT_CALL_DEDUP_HOURS` (repeats become SMS). Returns the notification id.
+    ``settings.urgent_call_dedup_hours`` (repeats become SMS). Returns the notification id.
     """
     return _dispatch("call" if urgent else "sms", kind, text, urgent=urgent)
 
@@ -605,7 +584,8 @@ def _voice() -> Any:
 
 
 def _say(resp: Any, text: str) -> None:
-    resp.say(text, voice=_opt("twilio_voice", TWILIO_VOICE), language=_opt("twilio_language", TWILIO_LANGUAGE))
+    s = config.get_settings()
+    resp.say(text, voice=s.twilio_voice, language=s.twilio_language)
 
 
 def _public_url(request: Request) -> str:
@@ -670,7 +650,7 @@ async def voice_webhook(decision_id: int, request: Request) -> Response:
         _say(resp, f"Hi {s.owner_name}, this is your Shorts agent. I have an approval request. "
                    "I'll text you the details.")
         resp.hangup()
-        n = _get_notification_by_sid(p.get("CallSid", "")) if p.get("CallSid") else None
+        n = db.get_notification_by_sid(p.get("CallSid", "")) if p.get("CallSid") else None
         _fallback_sms(n.id if n else 0, "approval", "", decision_id, f"answered by {p.get('AnsweredBy')}")
         return _xml(resp)
     if p.get("To") and not _is_owner(p.get("To")):
@@ -734,7 +714,7 @@ async def gather_webhook(decision_id: int, request: Request, attempt: int = 1) -
     if attempt >= GATHER_MAX_ATTEMPTS:
         _say(resp, "I'll send you a text instead. Goodbye.")
         resp.hangup()
-        n = _get_notification_by_sid(call_sid) if call_sid else None
+        n = db.get_notification_by_sid(call_sid) if call_sid else None
         _fallback_sms(n.id if n else 0, "approval", "", decision_id,
                       "no answer on keypad" if not digits else "invalid keypad answers")
         return _xml(resp)
@@ -752,7 +732,7 @@ async def say_webhook(notification_id: int, request: Request) -> Response:
     """TwiML for an informational call: read the stored notification text."""
     p = await _twilio_params(request)
     resp = _voice()
-    n = _get_notification(notification_id)
+    n = db.get_notification(notification_id)
     s = config.get_settings()
     if n is None or n.channel != "call" or (p.get("To") and not _is_owner(p.get("To"))):
         _say(resp, "Sorry, there's no message here. Goodbye.")
@@ -772,9 +752,9 @@ async def status_webhook(request: Request, notification_id: int | None = None) -
     p = await _twilio_params(request)
     call_sid, status = p.get("CallSid", ""), (p.get("CallStatus") or "").lower()
     answered_by = p.get("AnsweredBy") or db.kv_get(f"notify:answered_by:{call_sid}") or ""
-    n = _get_notification(notification_id) if notification_id is not None else None
+    n = db.get_notification(notification_id) if notification_id is not None else None
     if n is None and call_sid:
-        n = _get_notification_by_sid(call_sid)
+        n = db.get_notification_by_sid(call_sid)
     decision = db.get_decision_by_call_sid(call_sid) if call_sid else None
     decision_id = n.decision_id if n is not None else (decision.id if decision else None)
     if n is None and decision is None:

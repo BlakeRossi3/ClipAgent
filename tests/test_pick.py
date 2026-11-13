@@ -6,6 +6,7 @@ import budget
 import db
 import llm
 import pick
+import strategy as strategy_mod
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -424,15 +425,19 @@ def test_escalation_picks_top_distinct_windows(fake_llm, clock, source_with_tran
     assert db.require_source(sid).status == "done"  # finalize returned nothing
 
 
-def test_window_cap_limits_haiku_calls(fake_llm, clock, source_with_transcript):
+def test_window_cap_limits_haiku_calls(fake_llm, clock, source_with_transcript, strategy):
     sid = source_with_transcript(filler(400))  # ~27 min -> ~50 windows
     fake_llm.by_purpose["pick.score_window"] = {"score": 1, "reason": "", "hook": ""}
     pick.pick_clips(sid, max_windows=7)
     assert fake_llm.purposes().count("pick.score_window") == 7
     sid2 = source_with_transcript(filler(400))
+    pick.pick_clips(sid2, strategy.updated(max_windows_per_source=5))
+    assert fake_llm.purposes().count("pick.score_window") == 12
+    # the legacy kv override only applies when the strategy has no max_windows_per_source
     db.kv_set("pick:max_windows", 4)
-    pick.pick_clips(sid2)
-    assert fake_llm.purposes().count("pick.score_window") == 11
+    sid3 = source_with_transcript(filler(400))
+    pick.pick_clips(sid3, strategy_mod.Strategy({k: v for k, v in strategy.items() if k != "max_windows_per_source"}))
+    assert fake_llm.purposes().count("pick.score_window") == 16
 
 
 def test_malformed_window_score_skipped(fake_llm, clock, source_with_transcript):

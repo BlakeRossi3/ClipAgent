@@ -418,6 +418,29 @@ class TestFetchSource:
         assert src.duration_sec == 312.5
         assert src.channel == "NASA"  # kept from scout when metadata has none
 
+    def test_direct_nasa_file_uses_stored_scout_description(self, make_source, fake_ytdlp, settings):
+        url = "https://images-assets.nasa.gov/video/KSC-2026-launch/KSC-2026-launch~orig.mp4"
+        sid = make_source(url=url, platform="nasa_images", description="Launch replay. Music: Killer Tracks",
+                          licence=None)
+        fake = fake_ytdlp(nasa_file_info())          # generic extractor: no description at all
+        with pytest.raises(LicenceRejected):
+            fetch.fetch_source(sid)
+        assert fake.downloads == 0
+        src = db.require_source(sid)
+        assert src.status == "rejected" and "music" in src.status_reason
+        sid2 = make_source(url=url + "?2", platform="nasa_images", description="Liftoff of Artemis II.",
+                           metadata={"secondary_creator": "NASA/Joel Kowsky (c) 2026 Some Studio"})
+        with pytest.raises(LicenceRejected):
+            fetch.fetch_source(sid2)
+        assert "copyright" in db.require_source(sid2).status_reason
+
+    def test_licence_info_is_pure_and_deduplicated(self, make_source):
+        src = db.require_source(make_source(description="Same text", metadata={"secondary_creator": "NASA"}))
+        info = {"description": "Same text"}
+        merged = fetch.licence_info(info, src)
+        assert merged["description"] == "Same text\n\nsecondary creator: NASA" and info == {"description": "Same text"}
+        assert fetch.licence_info({"description": "x NASA y Same text"}, src)["description"] == "x NASA y Same text"
+
     def test_direct_file_too_long_after_download_rejected(self, make_source, fake_ytdlp, monkeypatch, settings):
         sid = make_source(url="https://images-assets.nasa.gov/video/x/x~orig.mp4")
         fake_ytdlp(nasa_file_info())

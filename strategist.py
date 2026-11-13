@@ -15,9 +15,9 @@ Flow of :func:`weekly_review`:
    the user turn. Structured output ``{"report", "strategy", "experiment"}``.
 4. **Guardrails in plain code** (:func:`check_proposal`): merge onto the current
    strategy, clamp numeric fields, enforce exactly one well-formed experiment,
-   hard-refuse licence-unsafe allowlist edits, flag every allowlist / blocklist /
-   source-type change as major (``strategy.diff_major_changes`` does not cover
-   them), then ``strategy.validate_strategy``.
+   hard-refuse licence-unsafe allowlist edits (:func:`licence_problems`), then
+   ``strategy.validate_strategy``. ``strategy.diff_major_changes`` decides what is
+   major (niche, topic areas, source types, budget, any allowlist/blocklist edit).
 5. Invalid proposal -> keep the current strategy, log an ``error`` event, notify.
    No major changes -> ``strategy.save_strategy`` now. Major changes ->
    ``notify.request_approval`` and nothing is saved until :func:`apply_decision`
@@ -66,9 +66,9 @@ MIN_CLIP_SEC = 5
 MAX_EXPERIMENT_DAYS = 28
 MAX_WINDOWS_TO_ESCALATE = 10
 MAX_CLIPS_PER_SOURCE = 5
+MIN_WINDOWS_PER_SOURCE = 5
+MAX_WINDOWS_PER_SOURCE = 100
 
-# Source types whose allowlist may use any_channel (per-video licence check is the gate).
-ANY_CHANNEL_OK = frozenset({"cc_by_youtube"})
 # Publishers that must never be admitted whatever the model says (see licence policy).
 NEVER_ALLOW = ("c-span", "cspan", "forbes", "associated press", "reuters", "fox news", "cnn", "nbc",
                "abc news", "cbs news", "msnbc", "pbs newshour", "bloomberg", "guardian news")
@@ -78,7 +78,6 @@ EXPERIMENT_VARIABLES = ("hook_style", "title_style", "caption_style", "clip_leng
                         "topic_selection", "source_type")
 SUCCESS_METRICS = ("avg_view_pct", "avg_view_duration_sec", "views", "subscribers_gained",
                    "likes_per_1k_views")
-_ALLOWLIST_KEYS = ("allowlist", "blocklist_channels", "source_types")
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -173,27 +172,23 @@ def _slot(row: Mapping[str, Any], tz: ZoneInfo) -> str:
     return db.parse_iso(iso).astimezone(tz).strftime("%H:%M")
 
 
-def collect_clip_rows(since_day: date, strategy: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Per-clip performance rows for clips uploaded since ``since_day``, enriched for the digest."""
+def collect_clip_rows(since_day: date, strategy: Mapping[str, Any],
+                      until_day: date | None = None) -> list[dict[str, Any]]:
+    """Per-clip rows with the stats earned in ``[since_day, until_day]``, enriched for the digest.
+
+    Clips uploaded before the period are included when they earned views in it.
+    """
     tz = ZoneInfo(strategy.get("timezone") or get_settings().timezone)
-    topics: dict[int, str | None] = {}
     rows = []
-    for r in db.clip_performance(since_day):
-        sid = r["source_id"]
-        if sid not in topics:
-            src = db.get_source(sid)
-            topics[sid] = src.topic if src else None
-        durs = [s.avg_view_duration_sec for s in db.get_stats(r["youtube_video_id"])
-                if s.avg_view_duration_sec is not None] if r["youtube_video_id"] else []
+    for r in db.clip_performance(since_day, until_day):
         length = float(r["end_sec"] - r["start_sec"])
         rows.append({
             **r,
-            "topic": topics[sid] or "?",
+            "topic": r["topic"] or "?",
             "length_sec": length,
             "length_bucket": length_bucket(length),
             "hook_style": hook_style_of(r.get("hook_text")),
             "slot": _slot(r, tz),
-            "avg_view_duration_sec": _mean(durs),
             "subs_net": int(r["subscribers_gained"]) - int(r["subscribers_lost"]),
         })
     return rows
@@ -228,11 +223,6 @@ def experiment_summary(strategy: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     metric = exp.get("success_metric") or "avg_view_pct"
     rows = [r for r in db.clip_performance(None) if r.get("experiment_id") == exp["id"]]
-    for r in rows:
-        if metric == "avg_view_duration_sec":
-            durs = [s.avg_view_duration_sec for s in db.get_stats(r["youtube_video_id"])
-                    if s.avg_view_duration_sec is not None]
-            r["avg_view_duration_sec"] = _mean(durs)
     arms = {}
     for arm in ("control", "variant"):
         rs = [r for r in rows if r.get("experiment_variant") == arm]
@@ -272,7 +262,7 @@ def gather(days: int = 7, strategy: Strategy | None = None) -> dict[str, Any]:
     start_iso = db.local_day_bounds(since)[0]
     end_iso = db.local_day_bounds(today)[1]
     rows = collect_clip_rows(since, strat)
-    prev_rows = [r for r in db.clip_performance(since - timedelta(days=days)) if r["uploaded_at"] < start_iso]
+    prev_rows = db.clip_performance(since - timedelta(days=days), since - timedelta(days=1))
     period_views = sum(s.views for s in db.stats_between(since, today))
     spend = db.llm_spend_between(start_iso, end_iso)
     uploads = [u for u in db.list_uploads(include_dry_run=True) if u.created_at >= start_iso]
@@ -287,6 +277,7 @@ def gather(days: int = 7, strategy: Strategy | None = None) -> dict[str, Any]:
         "channel": channel, "experiment": experiment_summary(strat),
         "pipeline": db.count_sources_by_status(),
         "tracked_clips": sum(1 for r in rows if r["days_tracked"] > 0),
+        "uploaded_in_period": sum(1 for r in rows if r["uploaded_at"] >= start_iso),
     }
 
 
@@ -301,8 +292,9 @@ def build_digest(data: Mapping[str, Any] | None = None, *, days: int = 7,
     # overview + trend
     views = sum(r["views"] for r in rows)
     prev = d["prev_rows"]
-    head.append(f"OVERVIEW clips_uploaded={len(rows)} clips_with_stats={d['tracked_clips']} "
-                f"lifetime_views_of_these={views} views_in_period_all_videos={d['period_views']} "
+    head.append(f"OVERVIEW clips_active={len(rows)} uploaded_in_period={d.get('uploaded_in_period', len(rows))} "
+                f"clips_with_stats={d['tracked_clips']} "
+                f"period_views_of_these={views} views_in_period_all_videos={d['period_views']} "
                 f"subs_gained={sum(r['subscribers_gained'] for r in rows)} "
                 f"copyright_claims={sum(1 for r in rows if r['copyright_claim'])}")
     if prev:
@@ -511,7 +503,8 @@ STRATEGY_VIEW_SCHEMA: dict[str, Any] = {
                 "outline_color": _STR, "outline_px": {"type": "integer"}, "max_words_per_line": {"type": "integer"},
                 "position": {"type": "string", "enum": ["top", "center", "lower_third"]},
                 "uppercase": {"type": "boolean"},
-                "animation": {"type": "string", "enum": ["word_pop", "karaoke", "none"]}},
+                "animation": {"type": "string", "enum": ["word_pop", "karaoke", "none"]},
+                "framing": {"type": "string", "enum": list(strategy_mod.CAPTION_STYLE_CHOICES["framing"])}},
             "required": ["font", "font_size", "primary_color", "highlight_color", "outline_color", "outline_px",
                          "max_words_per_line", "position", "uppercase", "animation"]},
         "clip_length_sec": {"type": "object",
@@ -521,6 +514,7 @@ STRATEGY_VIEW_SCHEMA: dict[str, Any] = {
         "min_haiku_score": {"type": "number"},
         "windows_to_escalate": {"type": "integer"},
         "max_clips_per_source": {"type": "integer"},
+        "max_windows_per_source": {"type": "integer"},
         "uploads_per_day": {"type": "integer"},
         "posting_times": _STR_LIST,
         "timezone": _STR,
@@ -576,28 +570,18 @@ class ProposalCheck:
     major: list[MajorChange]
 
 
-def _publisher_names(entry: Mapping[str, Any]) -> set[tuple[str, str, str]]:
-    return {((c.get("name") or "").casefold(), (c.get("handle") or "").casefold(), c.get("channel_id") or "")
-            for c in entry.get("channels", [])}
+def licence_problems(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    """Licence-unsafe allowlist / blocklist edits that are refused outright, approval or not.
 
-
-def licence_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[list[MajorChange], list[str]]:
-    """Allowlist / blocklist / source-type changes.
-
-    Returns ``(major_changes, hard_problems)``. Every change is major (``strategy.diff_major_changes``
-    ignores allowlist and blocklist edits and source-type removals). Hard problems are licence-unsafe
-    edits that are refused outright, approval or not.
+    (``any_channel`` on a government source type is rejected by ``strategy.validate_strategy``;
+    every *other* allowlist / blocklist / source-type edit is a major change found by
+    ``strategy.diff_major_changes`` and goes to the owner.)
     """
-    major: list[MajorChange] = []
     hard: list[str] = []
-    oa = {k: v for k, v in old.get("allowlist", {}).items() if not k.startswith("_")}
     na = {k: v for k, v in new.get("allowlist", {}).items() if not k.startswith("_")}
     old_block = {b.casefold() for b in old.get("blocklist_channels", [])}
     new_block = {b.casefold() for b in new.get("blocklist_channels", [])}
-
     for st, entry in na.items():
-        if entry.get("any_channel") and st not in ANY_CHANNEL_OK:
-            hard.append(f"allowlist[{st}].any_channel=true would admit any publisher for a government source type")
         if st == "cc_by_youtube":
             doms = [d.lower() for d in entry.get("domains", [])]
             if any(d not in YOUTUBE_DOMAINS for d in doms):
@@ -610,43 +594,10 @@ def licence_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> tuple[lis
             dl = dom.lower()
             if st != "cc_by_youtube" and any(dl == y or dl.endswith("." + y) for y in YOUTUBE_DOMAINS):
                 hard.append(f"allowlist[{st}] adds YouTube domain {dom!r} (would admit any uploader)")
-
     removed_block = sorted(old_block - new_block)
     if removed_block:
         hard.append(f"blocklist entries removed: {removed_block}")
-
-    changed: list[str] = []
-    for st in sorted(set(oa) | set(na)):
-        o, n = oa.get(st), na.get(st)
-        if o is None:
-            changed.append(f"new allowlist entry for {st.replace('_', ' ')}")
-            continue
-        if n is None:
-            changed.append(f"remove the allowlist entry for {st.replace('_', ' ')}")
-            continue
-        added = _publisher_names(n) - _publisher_names(o)
-        removed = _publisher_names(o) - _publisher_names(n)
-        if added:
-            changed.append(f"allow {', '.join(a[0] or a[1] or a[2] for a in sorted(added))} for {st.replace('_', ' ')}")
-        if removed:
-            changed.append(f"stop using {', '.join(r[0] or r[1] or r[2] for r in sorted(removed))}")
-        if bool(o.get("any_channel")) != bool(n.get("any_channel")):
-            changed.append(f"set any channel to {bool(n.get('any_channel'))} for {st.replace('_', ' ')}")
-        if sorted(o.get("domains", [])) != sorted(n.get("domains", [])):
-            changed.append(f"change allowed websites for {st.replace('_', ' ')}")
-    if changed:
-        major.append(MajorChange("strategy_change", "Change the publisher allowlist: " + "; ".join(changed),
-                                 {"allowlist_changes": changed}))
-    added_block = sorted(new_block - old_block)
-    if added_block:
-        major.append(MajorChange("strategy_change", f"Block {len(added_block)} more channel(s)",
-                                 {"blocklist_added": added_block}))
-    removed_types = [t for t in old.get("source_types", []) if t not in new.get("source_types", [])]
-    if removed_types:
-        major.append(MajorChange("strategy_change",
-                                 "Stop using source type " + ", ".join(t.replace("_", " ") for t in removed_types),
-                                 {"removed_source_types": removed_types}))
-    return major, hard
+    return hard
 
 
 def _check_experiment(exp: Any, current: Mapping[str, Any], today: date, problems: list[str],
@@ -728,7 +679,8 @@ def _clamp(new: dict[str, Any], current: Mapping[str, Any], notes: list[str], pr
         new["clip_length_sec"] = fixed
     # scores / counts
     for key, lo, hi in (("min_haiku_score", 1, 10), ("windows_to_escalate", 1, MAX_WINDOWS_TO_ESCALATE),
-                        ("max_clips_per_source", 1, MAX_CLIPS_PER_SOURCE)):
+                        ("max_clips_per_source", 1, MAX_CLIPS_PER_SOURCE),
+                        ("max_windows_per_source", MIN_WINDOWS_PER_SOURCE, MAX_WINDOWS_PER_SOURCE)):
         v = new.get(key)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             c = min(max(v, lo), hi)
@@ -760,13 +712,11 @@ def check_proposal(current: Strategy, view: Mapping[str, Any], experiment: Any) 
     new["updated_at"] = current["updated_at"]
     _clamp(new, current, notes, problems)
     new["experiment"] = _check_experiment(experiment, current, db.local_today(), problems, notes)
-    lic_major, hard = licence_changes(current, new)
-    problems += hard
+    problems += licence_problems(current, new)
     problems += strategy_mod.validate_strategy(new)
     if problems:
         return ProposalCheck(None, problems, notes, [])
-    major = strategy_mod.diff_major_changes(current, new) + lic_major
-    return ProposalCheck(new, [], notes, major)
+    return ProposalCheck(new, [], notes, strategy_mod.diff_major_changes(current, new))
 
 
 def _same(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -880,13 +830,6 @@ def weekly_review(days: int = 7) -> StrategyReview:
     return StrategyReview(model_report, dict(saved), [], None, saved.version, status="applied", notes=chk.notes)
 
 
-def _applied_version_for(decision_id: int) -> int | None:
-    for v in db.list_strategy_versions(limit=500):
-        if v.decision_id == decision_id:
-            return v.version
-    return None
-
-
 def apply_decision(decision_id: int) -> bool:
     """Apply an approved ``apply_strategy`` decision. Returns True only if this call saved a version.
 
@@ -907,7 +850,7 @@ def apply_decision(decision_id: int) -> bool:
         db.log_event(MODULE, f"apply_decision: decision {decision_id} is {d.status}, not applying",
                      level="warning" if d.status == "pending" else "info")
         return False
-    if _applied_version_for(decision_id) is not None:
+    if db.strategy_version_for_decision(decision_id) is not None:
         db.log_event(MODULE, f"apply_decision: decision {decision_id} already applied")
         return False
     lock = f"strategist:applying:{decision_id}"
@@ -950,8 +893,7 @@ def apply_decision(decision_id: int) -> bool:
                 else:
                     target.pop(k, None)
         # re-validate (licence hard rules + schema) against the live strategy
-        _, hard = licence_changes(current, target)
-        errs = hard + strategy_mod.validate_strategy({**target, "version": current.version,
+        errs = licence_problems(current, target) + strategy_mod.validate_strategy({**target, "version": current.version,
                                                      "updated_at": current["updated_at"]})
         if errs:
             db.log_event(MODULE, f"apply_decision: decision {decision_id} failed re-validation", level="error",

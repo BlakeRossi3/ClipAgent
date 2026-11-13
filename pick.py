@@ -6,7 +6,7 @@ Pipeline for one ``transcribed`` source (:func:`pick_clips`):
    split into sentence-sized *units*; ~60 s windows (stride ~30 s) are built
    from whole units, so windows start on a unit boundary and prefer to end on a
    sentence-final word. Windows never span a silence longer than ``max_gap``.
-   At most ``max_windows`` are scored per source, chosen by an even,
+   At most ``max_windows_per_source`` (strategy) are scored per source, chosen by an even,
    coverage-preserving sample (:func:`sample_windows`) so a 3-hour hearing
    cannot eat the daily budget.
 2. **Stage 1 - Haiku** ``pick.score_window``: one cheap call per window. The
@@ -54,7 +54,7 @@ import budget
 import db
 import llm
 from config import get_settings
-from strategy import Strategy, active_experiment, assign_variant, load_strategy
+from strategy import DEFAULT_MAX_WINDOWS_PER_SOURCE, Strategy, active_experiment, assign_variant, load_strategy
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,9 @@ MODULE = "pick"
 # Bump when the scoring prompt/rubric changes so persisted stage-1 scores are not reused.
 SCORE_PROMPT_VERSION = 1
 
-DEFAULT_MAX_WINDOWS = 40          # per source; override with kv "pick:max_windows" or the argument
+# Per-source window cap: argument > strategy ``max_windows_per_source`` > kv "pick:max_windows"
+# (legacy operator override, used only when the strategy omits the key) > this default.
+DEFAULT_MAX_WINDOWS = DEFAULT_MAX_WINDOWS_PER_SOURCE
 MAX_WINDOWS_KV = "pick:max_windows"
 SCORES_KV_PREFIX = "pick:scores:"
 
@@ -484,7 +486,7 @@ def _arms(strategy: Strategy, n: int) -> list[tuple[str | None, str | None]]:
     exp = active_experiment(strategy)
     if not exp:
         return [(None, None)] * n
-    base = sum(1 for c in db.list_clips() if c.experiment_id == exp["id"])
+    base = db.count_clips(experiment_id=exp["id"])
     return [assign_variant(strategy, base + i) for i in range(n)]
 
 
@@ -753,9 +755,11 @@ def _load_transcript(source: db.Source) -> dict:
     return data
 
 
-def _max_windows(arg: int | None) -> int:
+def _max_windows(arg: int | None, strategy: Strategy) -> int:
     if arg is not None:
         return max(1, int(arg))
+    if "max_windows_per_source" in strategy:
+        return strategy.max_windows_per_source
     v = db.kv_get(MAX_WINDOWS_KV)
     try:
         return max(1, int(v)) if v is not None else DEFAULT_MAX_WINDOWS
@@ -782,7 +786,7 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
     clip_length = ClipLength(float(cl["min"]), float(cl["target"]), float(cl["max"]))
     length = max(60.0, clip_length.max)
     all_windows = make_windows(transcript, length, length / 2, min_sec=clip_length.min)
-    cap = _max_windows(max_windows)
+    cap = _max_windows(max_windows, strategy)
     windows = sample_windows(all_windows, cap)
 
     system = score_system_prompt(strategy)
@@ -815,6 +819,7 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
             # Deterministic-ish failure for this window: remember it so we don't pay again.
             scores[w.key] = {"score": None, "error": type(exc).__name__, "at": db.now_iso()}
             stats["score_errors"] += 1
+            spend(exc.cost_usd)
             db.kv_set(_scores_key(source_id), state)
             continue
         except llm.LLMError as exc:
@@ -855,6 +860,7 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
                                             "cost_usd_total": state.get("cost_usd", 0.0)})
         raise
     except llm.LLMError as exc:  # refusal, invalid output, API failure
+        spend(exc.cost_usd)
         db.kv_set(_scores_key(source_id), state)
         raise _fail(source_id, f"finalize failed: {type(exc).__name__}: {exc}", stats) from exc
     spend(res.cost_usd)

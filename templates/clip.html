@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{{ clip.title or ("Clip " ~ clip.id) }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/dashboard/clips">Clips</a> / #{{ clip.id }}</p>
+<div class="page-head">
+  <div>
+    <h1 class="clip-title">{{ clip.title or ("Clip " ~ clip.id) }}</h1>
+    <p class="lede">
+      {% if row %}{{ m.pill(row.display_status[0], row.display_status[1]) }}{% endif %}
+      {% if live and live.youtube_video_id and not live.dry_run %}
+        <a href="https://www.youtube.com/shorts/{{ live.youtube_video_id }}" rel="noopener noreferrer" target="_blank">Open on YouTube ↗</a>
+      {% endif %}
+      {% if live and live.copyright_claim %}{{ m.pill("Copyright claim on this video", "critical") }}{% endif %}
+    </p>
+  </div>
+</div>
+
+{% if live and live.copyright_claim %}
+<p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span>YouTube reported a copyright claim or block on this video. Check the licence evidence below and the source before publishing more from this publisher.</p>
+{% endif %}
+
+<div class="kpis kpis-compact">
+  <div class="tile"><p class="tile-label">Views</p><p class="tile-value">{{ totals.views | compact }}</p></div>
+  <div class="tile"><p class="tile-label">Avg view %</p><p class="tile-value">{{ row.pct | pct if row else "—" }}</p></div>
+  <div class="tile"><p class="tile-label">Avg view duration</p><p class="tile-value">{{ row.avd | duration if row else "—" }}</p></div>
+  <div class="tile"><p class="tile-label">Likes</p><p class="tile-value">{{ totals.likes | compact }}</p></div>
+  <div class="tile"><p class="tile-label">Subscribers (net)</p><p class="tile-value">{{ ("+" if totals.subs > 0 else "") ~ (totals.subs | int) }}</p></div>
+  <div class="tile"><p class="tile-label">Cost to produce</p><p class="tile-value">{{ costs.total | usd }}</p></div>
+</div>
+
+<section class="grid-2" aria-label="Performance">
+  {% if charts.views is defined %}
+    {{ m.chart(charts.views, "Daily views", "Per local day since publishing") }}
+    {{ m.chart(charts.cum, "Cumulative views") }}
+  {% else %}
+    <div class="card"><div class="card-head"><h3>Daily views</h3></div><div class="chart-empty">{% if live and live.dry_run %}Dry-run upload: there is no real video, so there are no analytics.{% elif live %}No analytics collected for this video yet (YouTube reports with a ~2-day lag).{% else %}Not uploaded yet.{% endif %}</div></div>
+  {% endif %}
+</section>
+
+<section class="grid-2" aria-label="Retention and rationale">
+  {% if charts.retention is defined %}
+    {{ m.chart(charts.retention, "Audience retention", "Share of viewers still watching at each point (above 100% = rewatches)") }}
+  {% else %}
+    <div class="card"><div class="card-head"><h3>Audience retention</h3></div><div class="chart-empty">No retention curve available yet.</div></div>
+  {% endif %}
+  <div class="card">
+    <div class="card-head"><h3>Why this clip</h3></div>
+    <dl class="kv">
+      <dt>Haiku score</dt><dd>{{ "%.1f" | format(clip.haiku_score) if clip.haiku_score is not none else "—" }} / 10</dd>
+      <dt>Haiku reason</dt><dd class="muted">Not stored by the pipeline (only the score is recorded).</dd>
+      <dt>Sonnet rationale</dt><dd>{{ clip.sonnet_rationale or "—" }}</dd>
+      <dt>Hook</dt><dd>{{ clip.hook_text or "—" }} <span class="muted">({{ hook_form }})</span></dd>
+      <dt>Strategy</dt><dd>{% if clip.strategy_version %}<a href="/dashboard/strategy#v{{ clip.strategy_version }}">version {{ clip.strategy_version }}</a>{% else %}—{% endif %}</dd>
+      <dt>Experiment</dt><dd>{% if clip.experiment_id %}<a href="/dashboard/strategy#exp-{{ clip.experiment_id }}">{{ clip.experiment_id }}</a> · <strong>{{ clip.experiment_variant }}</strong>{% if experiment %}<br><span class="muted">{{ experiment[clip.experiment_variant] if clip.experiment_variant in ("control", "variant") and experiment[clip.experiment_variant] is defined else "" }}</span>{% endif %}{% else %}Not part of an experiment{% endif %}</dd>
+    </dl>
+  </div>
+</section>
+
+<section class="grid-2" aria-label="Details">
+  <div class="card">
+    <div class="card-head"><h3>Licence &amp; source (audit)</h3></div>
+    <dl class="kv">
+      <dt>Licence</dt><dd>{{ m.pill(clip.licence | replace("_", " "), "good" if clip.licence in ("us_gov_public_domain", "cc_by") else "warning") }}</dd>
+      <dt>Credit line</dt><dd>{{ clip.credit_text or "—" }}</dd>
+      <dt>Source URL</dt><dd class="break"><a href="{{ clip.source_url }}" rel="noopener noreferrer" target="_blank">{{ clip.source_url }}</a></dd>
+      {% if source %}
+      <dt>Source</dt><dd><a href="/dashboard/sources/{{ source.id }}">{{ source.title or source.url }}</a></dd>
+      <dt>Publisher</dt><dd>{{ source.channel or "—" }}{% if source.channel_id %} <span class="muted">({{ source.channel_id }})</span>{% endif %}</dd>
+      <dt>Type</dt><dd>{{ source.source_type | replace("_", " ") }} · {{ source.topic or "no topic" }}</dd>
+      <dt>Evidence</dt><dd>{% if source.licence_evidence %}<details><summary>{{ source.licence_evidence.matched_rule if source.licence_evidence is mapping and source.licence_evidence.matched_rule is defined and source.licence_evidence.matched_rule else "Show raw metadata" }}</summary><pre class="json">{{ source.licence_evidence | pretty_json }}</pre></details>{% else %}<span class="text-critical">No licence evidence recorded</span>{% endif %}</dd>
+      {% endif %}
+    </dl>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Uploads</h3></div>
+    {% if uploads %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th scope="col">Status</th><th scope="col">Video</th><th scope="col">Publish at</th><th scope="col">Uploaded</th></tr></thead>
+      <tbody>
+      {% for u in uploads %}
+      <tr>
+        <td>{{ m.pill(u.status ~ (" (dry run)" if u.dry_run else ""), {"uploaded": "good", "failed": "critical", "removed": "serious"}.get(u.status, "neutral")) }}{% if u.error %}<div class="error-text">{{ u.error }}</div>{% endif %}</td>
+        <td class="break">{{ u.youtube_video_id or "—" }}</td>
+        <td class="nowrap">{{ u.publish_at | dt }}</td>
+        <td class="nowrap">{{ u.uploaded_at | dt }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<div class="chart-empty">Not uploaded yet.</div>{% endif %}
+    <h4>LLM cost</h4>
+    {% if costs.rows %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th scope="col">Call</th><th scope="col" class="num">Calls</th><th scope="col" class="num">Share</th><th scope="col" class="num">Cost</th></tr></thead>
+      <tbody>{% for r in costs.rows %}<tr><td>{{ r.purpose }} <span class="muted">{{ r.model }}</span></td><td class="num">{{ r.calls | int }}</td><td class="num">{{ "%.0f" | format(r.share * 100) }}%</td><td class="num">{{ r.attributed | usd }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    <p class="muted small">Source-level scoring is split equally across the {{ costs.clips_from_source }} clip{{ "s" if costs.clips_from_source != 1 else "" }} from this source.</p>
+    {% else %}<p class="muted">No LLM usage recorded for this clip.</p>{% endif %}
+  </div>
+</section>
+
+<section aria-label="Metadata">
+  <div class="card">
+    <div class="card-head"><h3>Metadata</h3></div>
+    <dl class="kv">
+      <dt>Segment</dt><dd>{{ clip.start_sec | duration }} – {{ clip.end_sec | duration }} of the source ({{ (clip.end_sec - clip.start_sec) | duration }})</dd>
+      <dt>Description</dt><dd class="prewrap">{{ clip.description or "—" }}</dd>
+      <dt>Hashtags</dt><dd>{{ clip.hashtags | join(" ") if clip.hashtags else "—" }}</dd>
+      <dt>Created</dt><dd>{{ clip.created_at | dt }}</dd>
+      <dt>Status</dt><dd>{{ clip.status }}{% if clip.status_reason %} — {{ clip.status_reason }}{% endif %}</dd>
+      <dt>Render</dt><dd class="break">{{ clip.render_path or "—" }}</dd>
+    </dl>
+  </div>
+</section>
+
+{% if siblings %}
+<section class="card">
+  <div class="card-head"><h3>Other clips from this source</h3></div>
+  <ul class="plain-list">{% for s in siblings %}<li><a href="/dashboard/clips/{{ s.id }}">{{ s.title or ("Clip " ~ s.id) }}</a> <span class="muted">{{ s.status }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if events %}
+<section class="card">
+  <div class="card-head"><h3>Log entries mentioning this clip</h3></div>
+  <ul class="events-mini">
+    {% for e in events %}<li>{{ m.status_dot({"error": "critical", "warning": "warning"}.get(e.level, "neutral")) }}<span class="ev-module">{{ e.module }}</span><span class="ev-msg">{{ e.message }}</span><time datetime="{{ e.ts }}">{{ e.ts | dt }}</time></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

@@ -25,9 +25,18 @@ Behaviour:
   stable text (instructions, strategy) in ``system`` and per-call text in
   ``user``. Never put timestamps or ids in ``system``.
 * **Structured output**: with ``json_schema`` the request uses
-  ``output_config.format`` (JSON schema); unsupported constraints are stripped
+  ``output_config.format`` (JSON schema); unsupported constraints
+  (``minimum``/``maximum``/``maxLength``/``maxItems``/``pattern``...) are stripped
   from the wire schema and re-checked client-side. Parse/validation failures are
-  retried ``json_retries`` times, then :class:`LLMOutputError`.
+  retried ``json_retries`` times (each retry is a *paid* call - so callers should
+  leave length limits out of schemas and trim in code), then :class:`LLMOutputError`.
+* **Truncation**: when ``stop_reason == "max_tokens"`` cuts structured output
+  short, repeating the identical request would be truncated again, so the one
+  retry doubles ``max_tokens`` (capped at :data:`MAX_TRUNCATION_RETRY_TOKENS`) -
+  and only if that worst case fits today's remaining budget; otherwise
+  :class:`LLMOutputError` is raised at once.
+* **Cost on failure**: :class:`LLMOutputError` and :class:`LLMRefusal` carry
+  ``cost_usd`` (already recorded in ``llm_usage``) and ``attempts``.
 * **Retries**: the SDK retries 408/409/429/5xx/connection errors
   (``LLM_MAX_RETRIES``); anything left surfaces as :class:`LLMError`.
 * **Refusals**: ``stop_reason == "refusal"`` raises :class:`LLMRefusal`. Sonnet
@@ -60,10 +69,21 @@ log = logging.getLogger(__name__)
 Tier = Literal["haiku", "sonnet"]
 TIERS: tuple[str, ...] = ("haiku", "sonnet")
 SONNET_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Upper bound for the enlarged retry after a max_tokens truncation.
+MAX_TRUNCATION_RETRY_TOKENS = 16_384
 
 
 class LLMError(RuntimeError):
-    """The call could not be completed (API error, missing key, ...)."""
+    """The call could not be completed (API error, missing key, ...).
+
+    ``cost_usd`` is what the failed call already cost (recorded in ``llm_usage``);
+    ``attempts`` is how many requests were made.
+    """
+
+    def __init__(self, message: str, *, cost_usd: float = 0.0, attempts: int = 0):
+        super().__init__(message)
+        self.cost_usd = cost_usd
+        self.attempts = attempts
 
 
 class LLMRefusal(LLMError):
@@ -71,11 +91,13 @@ class LLMRefusal(LLMError):
 
 
 class LLMOutputError(LLMError):
-    """Structured output was missing, unparsable or failed schema validation."""
+    """Structured output was missing, unparsable, truncated or failed schema validation."""
 
-    def __init__(self, message: str, *, text: str = ""):
-        super().__init__(message)
+    def __init__(self, message: str, *, text: str = "", cost_usd: float = 0.0, attempts: int = 0,
+                 truncated: bool = False):
+        super().__init__(message, cost_usd=cost_usd, attempts=attempts)
         self.text = text
+        self.truncated = truncated
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,10 +414,10 @@ def complete(
     total_cost = 0.0
     attempts = 1 + (max(0, json_retries) if json_schema is not None else 0)
     schema_text = json.dumps(json_schema) if json_schema else ""
+    prompt_tokens = approx_tokens(*parts, user, schema_text)
     for attempt in range(1, attempts + 1):
         req = _with_attempt(req, attempt)
-        estimate = budget.estimate_cost(model, approx_tokens(*parts, user, schema_text), max_tokens)
-        budget.check_budget(estimate)
+        budget.check_budget(budget.estimate_cost(model, prompt_tokens, req.max_tokens))
 
         raw = _call_fake(req) if is_fake() else _call_api(req)
         cost = budget.record_usage(
@@ -407,8 +429,9 @@ def complete(
 
         if raw.stop_reason == "refusal":
             db.log_event("llm", f"{purpose}: model refused", level="warning",
-                         data={"model": raw.model, "request_id": raw.request_id})
-            raise LLMRefusal(f"{raw.model} refused the request for {purpose}")
+                         data={"model": raw.model, "request_id": raw.request_id, "cost_usd": total_cost})
+            raise LLMRefusal(f"{raw.model} refused the request for {purpose}", cost_usd=total_cost,
+                             attempts=attempt)
 
         if json_schema is None:
             return LLMResult(raw.text, None, raw.usage, total_cost, raw.model, tier, raw.stop_reason,
@@ -422,10 +445,23 @@ def complete(
         if not problems:
             return LLMResult(raw.text, data, raw.usage, total_cost, raw.model, tier, raw.stop_reason,
                              raw.fake, raw.request_id, attempt)
+        truncated = raw.stop_reason == "max_tokens"
         db.log_event("llm", f"{purpose}: structured output rejected (attempt {attempt}/{attempts})",
-                     level="warning", data={"problems": problems[:5], "stop_reason": raw.stop_reason})
+                     level="warning", data={"problems": problems[:5], "stop_reason": raw.stop_reason,
+                                            "max_tokens": req.max_tokens, "cost_usd": total_cost})
         if attempt == attempts:
-            raise LLMOutputError(f"{purpose}: invalid structured output: {problems[:3]}", text=raw.text)
+            raise LLMOutputError(f"{purpose}: invalid structured output: {problems[:3]}", text=raw.text,
+                                 cost_usd=total_cost, attempts=attempt, truncated=truncated)
+        if truncated:
+            # The same request would be cut off again: retry once with more room, if affordable.
+            bigger = min(MAX_TRUNCATION_RETRY_TOKENS, req.max_tokens * 2)
+            worst = budget.estimate_cost(model, prompt_tokens, bigger)
+            if bigger <= req.max_tokens or worst > budget.remaining_today():
+                raise LLMOutputError(
+                    f"{purpose}: output truncated at max_tokens={req.max_tokens}; a larger retry "
+                    f"({bigger} tokens, up to ${worst:.4f}) does not fit the remaining budget",
+                    text=raw.text, cost_usd=total_cost, attempts=attempt, truncated=True)
+            req = replace(req, max_tokens=bigger)
     raise AssertionError("unreachable")  # pragma: no cover
 
 

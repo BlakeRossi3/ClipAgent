@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Pipeline &amp; sources{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Pipeline &amp; sources</h1>
+    <p class="lede">Where footage drops out between discovery and upload, and the licence decision behind every source.</p>
+  </div>
+  <a class="btn" href="/dashboard/licences.csv" download>Download licence audit (CSV)</a>
+</div>
+{{ m.period_picker(periods, w.key, "Sources discovered " ~ (w.start | date) ~ " – " ~ (w.end | date)) }}
+
+<section class="grid-2" aria-label="Funnel">
+  <div class="card">
+    <div class="card-head"><h3>Funnel</h3><p class="sub">Sources discovered in this period and the clips they produced</p></div>
+    {% if funnel.stages[0].n %}
+    <div class="funnel">
+      {% for st in funnel.stages %}
+      {% if loop.index0 == 4 %}<p class="funnel-divider">Clips</p>{% elif loop.first %}<p class="funnel-divider">Sources</p>{% endif %}
+      <div class="hbar">
+        <div class="hbar-label">{{ st.label }}</div>
+        <div class="hbar-track"><span class="hbar-fill" style="width: {{ '%.2f' | format(st.pct_of_first if st.n else 0) }}%"></span></div>
+        <div class="hbar-value">{{ st.n | int }} <span class="muted">{{ "%.0f" | format(st.pct_of_first) }}%</span></div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="muted small">Still in progress: {{ funnel.backlog }} source{{ "s" if funnel.backlog != 1 else "" }} · nothing worth clipping: {{ funnel.nothing_worth_clipping }} · rejected: {{ funnel.sources.get("rejected", 0) }} · failed: {{ funnel.sources.get("failed", 0) }}</p>
+    {% else %}
+    <div class="chart-empty">No sources discovered in this period.</div>
+    {% endif %}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Why things drop out</h3><p class="sub">Rejection and failure reasons, most common first</p></div>
+    {% set any_reasons = reasons.sources or reasons.clips or reasons.uploads %}
+    {% if any_reasons %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th scope="col">Stage</th><th scope="col">Reason</th><th scope="col" class="num">Count</th></tr></thead>
+      <tbody>
+        {% for r in reasons.sources %}<tr><td>{{ m.pill("Source " ~ r.status, "critical" if r.status == "failed" else "warning") }}</td><td class="break">{{ r.reason }}</td><td class="num">{{ r.n }}</td></tr>{% endfor %}
+        {% for r in reasons.clips %}<tr><td>{{ m.pill("Clip " ~ r.status, "critical" if r.status == "failed" else "neutral") }}</td><td class="break">{{ r.reason }}</td><td class="num">{{ r.n }}</td></tr>{% endfor %}
+        {% for r in reasons.uploads %}<tr><td>{{ m.pill("Upload failed", "critical") }}</td><td class="break">{{ r.reason }}</td><td class="num">{{ r.n }}</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<div class="chart-empty">Nothing rejected or failed in this period.</div>{% endif %}
+  </div>
+</section>
+
+<section aria-labelledby="src-h">
+  <h2 id="src-h">Sources</h2>
+  <form class="filters filters-form" method="get" action="/dashboard/sources" role="search">
+    <label class="field"><span>Search</span><input type="search" name="q" value="{{ filters.q }}" placeholder="Title, publisher or URL"></label>
+    <label class="field"><span>Status</span><select name="status"><option value="">All</option>{% for s in statuses %}<option value="{{ s }}"{% if filters.status == s %} selected{% endif %}>{{ s | capitalize }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Type</span><select name="type"><option value="">All</option>{% for t in types %}<option value="{{ t }}"{% if filters.type == t %} selected{% endif %}>{{ t | replace("_", " ") }}</option>{% endfor %}</select></label>
+    <input type="hidden" name="period" value="{{ w.key }}">
+    <div class="field field-actions"><button class="btn" type="submit">Apply</button></div>
+  </form>
+  {% if not rows %}
+    {% call m.empty("No sources" ~ (" match these filters" if filters.values() | select | list else " yet"), "" if filters.values() | select | list else "The scout adds candidate videos from the strategy's topics and allowlisted publishers.") %}{% endcall %}
+  {% else %}
+  <p class="result-count">{{ total | int }} source{{ "s" if total != 1 else "" }} (all time) · {{ published }} published Short{{ "s" if published != 1 else "" }} in the licence audit</p>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th scope="col">Source</th><th scope="col">Publisher</th><th scope="col">Type</th><th scope="col">Licence decision</th><th scope="col">Status</th><th scope="col" class="num">Clips</th><th scope="col">Found</th></tr></thead>
+    <tbody>
+    {% for s in rows %}
+    <tr>
+      <th scope="row" class="title-cell"><a href="/dashboard/sources/{{ s.id }}">{{ s.title or s.url }}</a></th>
+      <td>{{ s.channel or "—" }}</td>
+      <td class="nowrap">{{ s.source_type | replace("_", " ") }}</td>
+      <td>{% if s.licence %}{{ m.pill(s.licence | replace("_", " "), "good") }}{% elif s.status == "rejected" %}{{ m.pill("rejected", "critical") }}{% else %}<span class="muted">not checked yet</span>{% endif %}
+          {% if s.evidence and s.evidence.matched_rule is defined and s.evidence.matched_rule %}<div class="muted small">{{ s.evidence.matched_rule }}</div>{% endif %}</td>
+      <td>{{ m.pill(s.status, {"done": "good", "picked": "good", "rejected": "warning", "failed": "critical"}.get(s.status, "neutral")) }}{% if s.status_reason %}<div class="muted small break">{{ s.status_reason }}</div>{% endif %}</td>
+      <td class="num">{{ s.clips }}{% if s.published %} <span class="muted">({{ s.published }} up)</span>{% endif %}</td>
+      <td class="nowrap">{{ s.discovered_at | date }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ m.pager(page, pages) }}
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="audit-h">
+  <div class="card-head"><h3 id="audit-h">Licence audit export</h3></div>
+  <p>The CSV lists every published Short with its YouTube id, the source URL, publisher, licence, the rule that cleared it and the on-screen credit line — your paper trail if a video is ever challenged. <a href="/dashboard/licences.csv" download>Download CSV</a>{% if dry_run %} · <a href="/dashboard/licences.csv?include_dry_run=1" download>include dry runs</a>{% endif %}</p>
+</section>
+{% endblock %}

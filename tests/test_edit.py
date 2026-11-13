@@ -425,3 +425,17 @@ def test_render_clip_real_ffmpeg(size, audio, framing, expect, settings, make_so
     assert abs(info.duration - 2.0) < edit.DURATION_TOLERANCE_SEC
     assert db.require_clip(cid).status == "rendered"
     assert db.list_events(module="edit", limit=1)[0].data["framing"] == expect
+
+
+def test_resolve_font_falls_back_and_reads_bundled_fonts(monkeypatch, tmp_path):
+    monkeypatch.setattr(edit, "_installed_families", lambda: frozenset({"dejavu sans", "inter black"}))
+    monkeypatch.setattr(edit, "ASSETS_FONTS_DIR", tmp_path)
+    assert edit.resolve_font("Montserrat ExtraBold") == "Inter Black"
+    (tmp_path / "Montserrat[wght].ttf").write_bytes(b"")
+    assert edit.resolve_font("Montserrat ExtraBold") == "Montserrat"
+    (tmp_path / "Montserrat-ExtraBold.ttf").write_bytes(b"")
+    assert edit.resolve_font("Montserrat ExtraBold") == "Montserrat ExtraBold"
+    monkeypatch.setattr(edit, "_installed_families", lambda: frozenset({"dejavu sans"}))
+    (tmp_path / "Montserrat-ExtraBold.ttf").unlink()
+    (tmp_path / "Montserrat[wght].ttf").unlink()
+    assert edit.resolve_font("Nope Font") == "DejaVu Sans"

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Decisions{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Decisions &amp; notifications</h1>
+    <p class="lede">Major changes wait for your approval. The first answer wins, whether it comes by phone, text or this page.</p>
+  </div>
+</div>
+
+<section aria-labelledby="pending-h">
+  <h2 id="pending-h">Waiting for you</h2>
+  {% if pending %}
+    {% for dec in pending %}{{ m.decision_card(dec, csrf) }}{% endfor %}
+  {% else %}
+    {% call m.empty("Nothing waiting", "When the weekly review proposes a new niche, a new source type or a bigger budget, it appears here and " ~ owner ~ " gets a call.") %}{% endcall %}
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="hist-h">
+  <div class="card-head"><h3 id="hist-h">History</h3></div>
+  {% if history %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th scope="col">#</th><th scope="col">Request</th><th scope="col">Outcome</th><th scope="col">Requested</th><th scope="col">Resolved</th></tr></thead>
+    <tbody>
+    {% for dec in history %}
+    <tr>
+      <td class="num">{{ dec.id }}</td>
+      <td><span class="muted small">{{ dec.kind | replace("_", " ") }}</span><br>{{ dec.summary }}{% if dec.payload %}<details><summary>Payload</summary><pre class="json">{{ dec.payload | pretty_json }}</pre></details>{% endif %}</td>
+      <td>{{ m.pill(dec.status, {"approved": "good", "rejected": "critical", "expired": "neutral"}.get(dec.status, "neutral")) }}{% if dec.resolved_via %}<div class="muted small">via {{ dec.resolved_via }}</div>{% endif %}{% if dec.resolution_note %}<div class="small">{{ dec.resolution_note }}</div>{% endif %}{% if dec.id in versions %}<div class="small"><a href="/dashboard/strategy#v{{ versions[dec.id] }}">→ strategy v{{ versions[dec.id] }}</a></div>{% endif %}</td>
+      <td class="nowrap">{{ dec.requested_at | dt }}</td>
+      <td class="nowrap">{{ dec.resolved_at | dt }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">No resolved decisions yet.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="notes-h">
+  <div class="card-head"><h3 id="notes-h">Calls &amp; texts</h3><p class="sub">Most recent 200</p></div>
+  <div class="filters">
+    <div class="segmented" role="group" aria-label="Notification status">
+      <a href="{{ link(nstatus=None) }}"{% if not nstatus %} aria-current="true"{% endif %}>All</a>
+      {% for s in nstatuses %}<a href="{{ link(nstatus=s) }}"{% if nstatus == s %} aria-current="true"{% endif %}>{{ s | replace("_", " ") }}</a>{% endfor %}
+    </div>
+  </div>
+  {% if notes %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Channel</th><th scope="col">Message</th><th scope="col">Status</th></tr></thead>
+    <tbody>
+    {% for n in notes %}
+    <tr>
+      <td class="nowrap">{{ n.ts | dt }}</td>
+      <td class="nowrap">{{ n.kind | replace("_", " ") }}</td>
+      <td>{{ n.channel }}</td>
+      <td class="msg-cell">{{ n.body }}{% if n.error %}<div class="error-text">{{ n.error }}</div>{% endif %}</td>
+      <td>{{ m.pill(n.status | replace("_", " "), {"sent": "good", "failed": "critical", "queued": "info"}.get(n.status, "neutral")) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">No notifications{% if nstatus %} with status {{ nstatus }}{% endif %}.</p>{% endif %}
+</section>
+{% endblock %}

@@ -520,9 +520,11 @@ def test_quota_day_is_pacific(clock):
     assert youtube_auth.quota_used() == 0
 
 
-def test_quota_limit_override(clock):
+def test_quota_limit_override(clock, settings):
     assert youtube_auth.daily_quota_limit() == 10_000
-    db.kv_set("youtube:quota_limit", 50_000)
+    config.set_settings(settings.replace(youtube_daily_quota=20_000))
+    assert youtube_auth.daily_quota_limit() == 20_000
+    db.kv_set("youtube:quota_limit", 50_000)       # legacy runtime override still wins
     assert youtube_auth.daily_quota_limit() == 50_000
 
 

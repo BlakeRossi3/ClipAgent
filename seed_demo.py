@@ -1,0 +1,866 @@
+"""Build a realistic, clearly labelled DEMO database for the dashboard.
+
+    python seed_demo.py --data-dir /tmp/clipagent-demo [--days 60] [--seed 7] [--replace] [--serve]
+
+Everything is written through the ``db`` / ``budget`` / ``strategy`` helpers, as the
+real pipeline would, with ``db.utcnow`` steered through the simulated days:
+sources of each type with licence evidence (plus rejected / failed ones), clips with
+Haiku scores and Sonnet rationales, uploads into the strategy's posting slots,
+daily analytics with heavy-tailed views and retention curves, channel growth, LLM
+usage (including a day that hits the budget cap), weekly strategy versions, one
+finished and one running experiment, decisions (approved / rejected / expired /
+pending), notifications and an event log with a few failures.
+
+Safety:
+
+* The data directory gets its own ``clipagent.db`` and ``strategy.json``; the
+  repository's ``strategy.json`` and your real data directory are never touched.
+* It REFUSES to write into a database that already contains non-demo data (or next
+  to a ``strategy.json`` it did not create). ``--replace`` only ever deletes a
+  previous *demo* database.
+* The kv flag ``dashboard.DEMO_KV_KEY`` is written first, so the dashboard shows a
+  "DEMO DATA" banner even if seeding is interrupted. YouTube ids start with "demo".
+
+To view it::
+
+    CLIPAGENT_DATA_DIR=/tmp/clipagent-demo CLIPAGENT_STRATEGY_PATH=/tmp/clipagent-demo/strategy.json \\
+        python main.py serve          # or: python seed_demo.py --data-dir /tmp/clipagent-demo --serve
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import random
+import string
+import sys
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+REPO_ROOT = Path(__file__).resolve().parent
+DATA_TABLES = ("sources", "clips", "uploads", "stats", "channel_stats", "decisions", "llm_usage",
+               "strategy_versions", "notifications", "events")
+DEMO_MARKER_FILE = ".clipagent-demo"
+
+
+class RefuseError(RuntimeError):
+    """The target already holds data that is not demo data."""
+
+
+# ---------------------------------------------------------------------------
+# target checks
+# ---------------------------------------------------------------------------
+
+def configure(data_dir: Path) -> None:
+    """Point config at ``data_dir`` (own DB + strategy file) and reset cached settings."""
+    import config
+
+    os.environ["CLIPAGENT_DATA_DIR"] = str(data_dir)
+    os.environ["CLIPAGENT_STRATEGY_PATH"] = str(data_dir / "strategy.json")
+    for k in ("CLIPAGENT_DB_PATH", "CLIPAGENT_MEDIA_DIR"):
+        os.environ.pop(k, None)
+    config.reset_settings()
+
+
+def target_state(db_path: Path) -> str:
+    """'empty' (no file / no rows), 'demo' (has the demo flag) or 'real' (anything else)."""
+    import sqlite3
+
+    from dashboard import DEMO_KV_KEY
+
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        return "empty"
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "kv" in tables and conn.execute("SELECT 1 FROM kv WHERE key = ?", (DEMO_KV_KEY,)).fetchone():
+                return "demo"
+            for t in DATA_TABLES:
+                if t in tables and conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone():
+                    return "real"
+            if "kv" in tables and conn.execute("SELECT 1 FROM kv WHERE key NOT LIKE 'dashboard:%' LIMIT 1").fetchone():
+                return "real"
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return "real"  # not a database we understand: never overwrite
+    return "empty"
+
+
+def prepare_target(data_dir: Path, *, replace: bool) -> None:
+    import config
+
+    db_path = config.get_settings().db_path
+    state = target_state(db_path)
+    strat = data_dir / "strategy.json"
+    marker = data_dir / DEMO_MARKER_FILE
+    if state == "real":
+        raise RefuseError(f"{db_path} already contains non-demo data; refusing to write demo data into it. "
+                          "Use an empty directory.")
+    if state == "demo":
+        if not replace:
+            raise RefuseError(f"{db_path} already holds a demo dataset; pass --replace to rebuild it.")
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(db_path) + suffix)
+            if p.exists():
+                p.unlink()
+        if strat.exists() and marker.exists():
+            strat.unlink()
+    if strat.exists() and not marker.exists():
+        raise RefuseError(f"{strat} exists and was not created by seed_demo.py; refusing to overwrite it.")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    marker.write_text("Demo data generated by seed_demo.py - not real results.\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# simulation content
+# ---------------------------------------------------------------------------
+
+TOPIC_MULT = {
+    "NASA Artemis": 1.6, "James Webb Space Telescope": 1.35, "Mars rover": 1.15,
+    "International Space Station spacewalk": 1.0, "rocket launch": 1.8, "astronaut answers questions": 1.3,
+    "climate earth science": 0.55, "physics explained": 0.8, "UAP hearing": 2.3,
+    "artificial intelligence hearing": 1.5, "NASA budget hearing": 0.45, "tech CEO testimony": 1.7,
+    "Moon to Mars architecture": 1.1,
+}
+SLOT_MULT = {"08:45": 0.85, "09:10": 0.9, "12:15": 1.05, "17:10": 1.2, "20:40": 1.0}
+
+CHANNELS = {
+    "nasa": [("NASA", "UCLA_DiR1FfKNvjuUpBHmylQ", "@NASA", 0.55), ("NASA Goddard", None, "@NASAGoddard", 0.15),
+             ("NASA Video", None, "@NASAVideo", 0.2), ("NASA Jet Propulsion Laboratory", None, "@NASAJPL", 0.1)],
+    "congress": [("House Committee on Science, Space, and Technology", None, None, 0.45),
+                 ("Senate Commerce, Science, and Transportation Committee", None, None, 0.3),
+                 ("House Committee on Oversight and Accountability", None, None, 0.25)],
+    "cc_by_youtube": [("Open Physics Lectures", "UCdemoOpenPhys0001", "@openphysicslectures", 0.4),
+                      ("Launch Pad Footage Archive", "UCdemoLaunchPad002", "@launchpadarchive", 0.35),
+                      ("Kepler Science Club", "UCdemoKeplerSci003", "@keplerscience", 0.25)],
+}
+
+SOURCE_TITLES = {
+    "NASA Artemis": ["Artemis II Crew News Conference", "Artemis Mission Update Briefing", "Orion Spacecraft Test Highlights"],
+    "James Webb Space Telescope": ["Webb Telescope New Images Briefing", "How Webb Sees the First Galaxies", "Webb Science Live"],
+    "Mars rover": ["Perseverance Rover Science Update", "Mars Sample Return Explained", "Curiosity Rover Climbs Mount Sharp"],
+    "International Space Station spacewalk": ["Spacewalk to Upgrade Station Power", "ISS Expedition Spacewalk Coverage"],
+    "rocket launch": ["Launch Coverage: Crew Rotation Mission", "Rocket Launch Replay and Analysis", "Static Fire Test Full Video"],
+    "astronaut answers questions": ["Astronauts Answer Student Questions", "Ask an Astronaut: Life in Orbit"],
+    "climate earth science": ["Earth Science Week: Sea Level Data", "Satellite Views of Hurricane Season"],
+    "physics explained": ["Lecture: Why the Sky Is Blue", "Quantum Tunnelling in Ten Minutes", "Orbital Mechanics Lecture 4"],
+    "UAP hearing": ["Hearing on Unidentified Anomalous Phenomena", "UAP Transparency Hearing"],
+    "artificial intelligence hearing": ["Oversight of Artificial Intelligence: Rules for AI", "AI and the Future of Work Hearing"],
+    "NASA budget hearing": ["Review of the NASA Budget Request", "NASA Authorization Hearing"],
+    "tech CEO testimony": ["Tech Executives Testify on Online Safety", "Big Tech CEOs Hearing"],
+    "Moon to Mars architecture": ["Moon to Mars Architecture Workshop", "Lunar Gateway Briefing"],
+}
+
+CLIP_TITLES = {
+    "NASA Artemis": ["Artemis II astronaut on what scares her most", "The moment Orion's heat shield was tested",
+                     "Why Artemis II won't land on the Moon"],
+    "James Webb Space Telescope": ["Webb found a galaxy that shouldn't exist", "This is how far back Webb can see",
+                                   "Webb's mirror explained in 40 seconds"],
+    "Mars rover": ["Perseverance just found this on Mars", "How a rover drives itself on Mars", "The rock that could prove life"],
+    "International Space Station spacewalk": ["Astronaut drops a tool during a spacewalk", "What a spacewalk really feels like"],
+    "rocket launch": ["Max Q explained in one launch", "Booster lands on the pad (full sound)", "Why rockets vent before launch"],
+    "astronaut answers questions": ["Astronaut answers: how do you sleep in space?", "Q&A: what does space smell like?",
+                                    "Kid asks astronaut the best question"],
+    "climate earth science": ["Sea level rise seen from orbit", "Hurricane eye from the space station"],
+    "physics explained": ["Why the sky is blue (simply)", "Quantum tunnelling in 45 seconds", "Orbits are just falling"],
+    "UAP hearing": ["Pilot describes the 'tic tac' object", "Senator presses on UAP crash retrieval claims",
+                    "What the Pentagon actually said about UAPs"],
+    "artificial intelligence hearing": ["Senator asks AI CEO to define 'safe'", "AI expert: 'we don't know how it works'",
+                                        "Should AI need a licence?"],
+    "NASA budget hearing": ["Why NASA's budget is 0.4% of spending", "Congressman questions Artemis costs"],
+    "tech CEO testimony": ["CEO caught off guard by one question", "Senator holds up a phone at hearing",
+                           "Tech CEO apologises to families"],
+    "Moon to Mars architecture": ["NASA's plan from the Moon to Mars", "Where Gateway fits in the Moon plan"],
+}
+
+HOOKS = {
+    "question": ["Would you fly on this?", "Why does this matter?", "Can you spot it?", "What happens next?",
+                 "How is this even possible?", "Did he just admit that?"],
+    "claim": ["This changes everything we knew.", "Nobody expected this answer.", "This is the hardest part.",
+              "He didn't hold back.", "Watch the last five seconds."],
+    "number": ["17,000 mph and still falling", "3 seconds that cost $4 billion", "1 question, 0 answers",
+               "13 billion years in one image"],
+}
+
+RATIONALES = [
+    "Self-contained exchange with a clear setup and payoff inside {n} seconds; strong opening line.",
+    "Visual moment carries without context; speaker names the mission early, good for the hook.",
+    "Sharp question and a direct answer; cut starts on the question so the hook lands in the first 3 s.",
+    "Explains one idea simply with a concrete number; ends on a quotable line.",
+    "High-energy moment with clear audio; minimal jargon, broad appeal.",
+]
+
+
+@dataclass
+class Perf:
+    total: float
+    pct: float
+    sub_rate: float
+    like_rate: float
+    retention: list[list[float]]
+
+
+@dataclass
+class Sim:
+    rng: random.Random
+    strategy: dict[str, Any]
+    start: date
+    days: int
+    real_now: datetime
+    tz: ZoneInfo
+    backlog: list[int] = field(default_factory=list)              # sources waiting for processing
+    ready: list[int] = field(default_factory=list)                # rendered clip ids (FIFO)
+    perf: dict[str, Perf] = field(default_factory=dict)           # video id -> performance model
+    published: dict[str, date] = field(default_factory=dict)      # video id -> local publish day
+    clip_meta: dict[int, dict[str, Any]] = field(default_factory=dict)
+    exp_counter: dict[str, int] = field(default_factory=dict)
+    failed_upload_once: bool = False
+    claimed: bool = False
+    seq: int = 0
+
+
+class Clock:
+    def __init__(self, now: datetime):
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def _rand_id(rng: random.Random, n: int) -> str:
+    return "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(n))
+
+
+def _weighted(rng: random.Random, items: list[tuple]) -> tuple:
+    r = rng.random() * sum(i[-1] for i in items)
+    for it in items:
+        r -= it[-1]
+        if r <= 0:
+            return it
+    return items[-1]
+
+
+# ---------------------------------------------------------------------------
+# the run
+# ---------------------------------------------------------------------------
+
+def seed(data_dir: Path, *, days: int = 60, seed_value: int = 7, replace: bool = False,
+         now: datetime | None = None) -> dict[str, Any]:
+    """Create the demo dataset. Returns counters. Raises :class:`RefuseError` when unsafe."""
+    data_dir = Path(data_dir).expanduser().resolve()
+    configure(data_dir)
+    prepare_target(data_dir, replace=replace)
+
+    import budget
+    import config
+    import db
+    import strategy as strategy_mod
+    from dashboard import DEMO_KV_KEY
+
+    real_now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+    settings = config.get_settings()
+    tz = ZoneInfo(settings.timezone)
+    today = real_now.astimezone(tz).date()
+    start = today - timedelta(days=days)
+    rng = random.Random(seed_value)
+
+    clock = Clock(datetime.combine(start, time(5, 50), tzinfo=tz).astimezone(UTC))
+    original_utcnow = db.utcnow
+    db.utcnow = clock  # type: ignore[assignment]
+    try:
+        db.init_db()
+        db.kv_set(DEMO_KV_KEY, {"generated_at": db.to_iso(real_now), "seed": seed_value, "days": days,
+                                "generator": "seed_demo.py",
+                                "note": "Fabricated demo data. Not real results."})
+        base = json.loads((REPO_ROOT / "strategy.json").read_text(encoding="utf-8"))
+        base = {k: v for k, v in base.items() if not k.startswith("_")}
+        base["allowlist"] = {k: v for k, v in base["allowlist"].items() if not k.startswith("_")}
+        base["version"] = 1
+        base["updated_at"] = db.now_iso()
+        base["experiment"] = {
+            "id": "exp-001-hook-question-vs-claim",
+            "hypothesis": "Hooks phrased as a question retain viewers better than hooks phrased as a bold claim.",
+            "variable": "hook_style",
+            "control": "Open with a bold claim taken from the clip.",
+            "variant": "Open with a question the clip answers.",
+            "start": start.isoformat(), "end": (start + timedelta(days=min(20, days))).isoformat(),
+            "success_metric": "avg_view_pct",
+        }
+        strat_path = settings.strategy_path
+        strat_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
+        strategy_mod.record_initial_version(strategy_mod.load_strategy())
+        db.log_event("main", "agent initialised (demo)", data={"strategy_version": 1})
+
+        sim = Sim(rng=rng, strategy=dict(strategy_mod.load_strategy()), start=start, days=days, real_now=real_now, tz=tz)
+        plan = _plan(sim)
+        for i in range(days + 1):
+            day = start + timedelta(days=i)
+            _simulate_day(sim, day, i, plan, clock, db, budget, strategy_mod)
+        _finish(sim, db, clock)
+        clock.now = real_now
+        conn = db.connect()
+        try:
+            counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in DATA_TABLES}
+        finally:
+            conn.close()
+    finally:
+        db.utcnow = original_utcnow  # type: ignore[assignment]
+    return counts
+
+
+def _finish(sim: Sim, db, clock: Clock) -> None:
+    """Leave the pipeline mid-flight: a fresh failure and a few unprocessed candidates."""
+    clock.now = sim.real_now - timedelta(hours=5)
+    sid = _scout_one(sim, db, sim.real_now.astimezone(sim.tz).date())
+    if sid:
+        db.set_source_status(sid, "failed", "yt-dlp: Unable to download webpage: HTTP Error 429: Too Many Requests")
+        db.log_event("fetch", f"source {sid} failed: HTTP Error 429 Too Many Requests", level="error",
+                     data={"source_id": sid})
+    clock.now = sim.real_now - timedelta(minutes=40)
+    new = [x for x in (_scout_one(sim, db, sim.real_now.astimezone(sim.tz).date()) for _ in range(3)) if x]
+    db.log_event("scout", f"scout found {len(new)} new candidates", data={"new": len(new)})
+
+
+def _plan(sim: Sim) -> dict[str, int]:
+    """Day indices for the scripted storyline (only those inside the range happen)."""
+    def sunday_on_or_after(i: int) -> int:
+        d = sim.start + timedelta(days=i)
+        return i + (6 - d.weekday()) % 7
+
+    return {
+        "expired_niche": 9,
+        "v2": sunday_on_or_after(21),
+        "rejected_change": sunday_on_or_after(28),
+        "v3": sunday_on_or_after(35),
+        "budget_request": sunday_on_or_after(42),
+        "cap_hit": sunday_on_or_after(42) - 3,
+        "claim": max(5, sim.days - 16),
+        "pending": sim.days - 1,
+    }
+
+
+def _at(sim: Sim, day: date, hh: int, mm: int, ss: int = 0) -> datetime:
+    return datetime.combine(day, time(hh, mm, ss), tzinfo=sim.tz).astimezone(UTC)
+
+
+def _simulate_day(sim, day, i, plan, clock, db, budget, strategy_mod) -> None:
+    rng = sim.rng
+
+    def run_at(hh: int, mm: int, ss: int = 0) -> bool:
+        t = _at(sim, day, hh, mm, ss)
+        if t > sim.real_now:
+            return False
+        clock.now = t
+        return True
+
+    # 05:55 decisions expire
+    if run_at(5, 55):
+        n = db.expire_decisions()
+        if n:
+            db.log_event("main", f"{n} decision(s) expired without an answer", level="warning")
+
+    # 06:10 scout
+    if run_at(6, 10):
+        n_new = rng.choice([3, 4, 4, 5, 5, 6])
+        if i == plan["cap_hit"]:
+            n_new = 70  # manual catch-up batch -> hits the LLM cap
+        ids = [_scout_one(sim, db, day) for _ in range(n_new)]
+        ids = [x for x in ids if x]
+        sim.backlog.extend(ids)
+        db.log_event("scout", f"scout found {len(ids)} new candidates", data={"new": len(ids)})
+
+    # 06:20 process backlog (fetch -> transcribe -> pick -> render)
+    if run_at(6, 20):
+        _process(sim, db, budget, strategy_mod, clock, day)
+
+    # 07:25 analytics (day - 2) + channel stats
+    if run_at(7, 25):
+        _analytics(sim, db, day, i, plan)
+
+    # 07:40 upload into today's slots
+    if run_at(7, 40):
+        _upload(sim, db, strategy_mod, clock, day)
+
+    # weekly review Sunday 18:05
+    if day.weekday() == 6 and run_at(18, 5):
+        _weekly(sim, db, budget, strategy_mod, clock, day, i, plan)
+
+    if i == plan["expired_niche"] and run_at(18, 10):
+        did = db.add_decision("new_niche", "Add a history topic area: archival NARA footage of famous speeches.",
+                              {"action": "apply_strategy", "added_topic_areas": ["history"]},
+                              expires_at=db.to_iso(clock.now + timedelta(hours=48)))
+        db.add_notification("approval", "Approval needed: add a history topic area. Press 1 to approve, 2 to reject.",
+                            "call", status="sent", sid="CAdemo" + _rand_id(rng, 26), decision_id=did)
+        db.add_notification("approval", f"No answer on the call. Reply YES {did} or NO {did}: add a history topic area.",
+                            "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26), decision_id=did)
+
+    if i == plan["pending"] and run_at(19, 30):
+        did = db.add_decision(
+            "new_source_type", "Start using a new source type: DVIDS military and defense footage.",
+            {"action": "apply_strategy", "added_source_types": ["dvids"],
+             "reason": "Launch and flight-test footage from DVIDS outperformed in competitor channels."},
+            expires_at=db.to_iso(clock.now + timedelta(hours=48)))
+        db.add_notification("approval", "Approval needed: start using DVIDS footage. Press 1 to approve, 2 to reject.",
+                            "call", status="sent", sid="CAdemo" + _rand_id(rng, 26), decision_id=did)
+        db.add_notification("approval", f"Missed you. Reply YES {did} or NO {did}: start using DVIDS footage.",
+                            "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26), decision_id=did)
+        db.log_event("notify", f"approval requested for decision {did}", data={"decision_id": did})
+
+    # 20:55 daily summary
+    if run_at(20, 55):
+        start, end = db.local_day_bounds(day)
+        spent = db.llm_spend_between(start, end)
+        ups = db.count_uploads_on(day)
+        st = db.stats_between(day - timedelta(days=2), day - timedelta(days=2))
+        views = sum(s.views for s in st)
+        status, err = ("sent", None) if rng.random() > 0.03 else ("failed", "Twilio error 30003: unreachable destination handset")
+        db.add_notification("daily_summary", f"Daily summary: {ups} Shorts uploaded, {views:,} views on "
+                            f"{(day - timedelta(days=2)).strftime('%b %d')}, AI spend {spent:.2f} dollars.",
+                            "sms", status=status, sid=("SMdemo" + _rand_id(rng, 26)) if status == "sent" else None,
+                            error=err)
+        db.log_event("notify", "daily summary sent" if status == "sent" else "daily summary SMS failed",
+                     level="info" if status == "sent" else "error", data={"error": err} if err else None)
+
+    # deliver any queued notifications (e.g. budget cap call) like notify.send_queued
+    if run_at(21, 0):
+        for n in db.list_notifications("queued"):
+            db.update_notification(n.id, status="sent", sid="CAdemo" + _rand_id(rng, 26))
+
+
+def _scout_one(sim: Sim, db, day: date) -> int | None:
+    rng = sim.rng
+    strat = sim.strategy
+    topic = rng.choice(strat["topics"])
+    stype = rng.choice(topic["source_types"])
+    name, cid, handle, _ = _weighted(rng, CHANNELS[stype])
+    platform = "youtube"
+    ext = "dm" + _rand_id(rng, 9)
+    url = f"https://www.youtube.com/watch?v={ext}"
+    if stype == "nasa" and rng.random() < 0.2:
+        platform, url = "nasa_images", f"https://images.nasa.gov/details/demo-{ext}"
+    if stype == "congress" and rng.random() < 0.3:
+        platform, url = "house_gov", f"https://science.house.gov/hearings/demo-{ext}"
+    # occasional ineligible publishers that get rejected at fetch time
+    bad = None
+    r = rng.random()
+    if stype == "congress" and r < 0.10:
+        name, cid, handle, bad = "C-SPAN", "UCb--64Gl51jIEVE-GLDAVTg", "@cspan", "channel 'C-SPAN' is blocklisted (C-SPAN broadcasts are copyrighted)"
+    elif stype == "congress" and r < 0.16:
+        name, cid, handle, bad = "Forbes Breaking News", "UCg40OxZ1GYh3u3jBntB6DLg", None, "channel 'Forbes Breaking News' is blocklisted (news re-upload, not a government work)"
+    elif stype == "cc_by_youtube" and r < 0.12:
+        bad = "licence is Creative Commons Attribution-NonCommercial; only CC BY is allowed"
+    elif stype == "nasa" and name == "NASA Jet Propulsion Laboratory" and r < 0.5:
+        bad = "description asserts copyright ('© 2026 California Institute of Technology. All rights reserved.')"
+    title = rng.choice(SOURCE_TITLES.get(topic["query"], ["Official briefing"]))
+    sim.seq += 1
+    sid = db.add_source(url, stype, platform=platform, external_id=ext, channel=name, channel_id=cid,
+                        title=f"{title} ({day.strftime('%b')} {day.day})", description=f"Official video. {title}.",
+                        duration_sec=float(rng.randint(9, 75) * 60), published_at=db.to_iso(db.utcnow() - timedelta(days=rng.randint(0, 6))),
+                        topic=topic["query"], metadata={"handle": handle, "demo": True, "bad": bad})
+    return sid
+
+
+def _evidence(src, licence_metadata: str | None, rule: str, desc: str) -> dict[str, Any]:
+    return {"extractor": "Youtube" if src.platform == "youtube" else src.platform, "channel": src.channel,
+            "channel_id": src.channel_id, "uploader": src.channel, "license": licence_metadata,
+            "webpage_url": src.url, "matched_rule": rule, "description_excerpt": desc[:200]}
+
+
+def _process(sim: Sim, db, budget, strategy_mod, clock: Clock, day: date) -> None:
+    rng = sim.rng
+    strat = sim.strategy
+    remaining: list[int] = []
+    stopped = False
+    for sid in list(sim.backlog):
+        if stopped:
+            remaining.append(sid)
+            continue
+        clock.now += timedelta(seconds=rng.randint(40, 200))
+        src = db.require_source(sid)
+        meta = src.metadata or {}
+        # --- fetch + licence --------------------------------------------------
+        if src.status == "candidate":
+            if meta.get("bad"):
+                ev = _evidence(src, "Creative Commons Attribution-NonCommercial" if "NonCommercial" in meta["bad"] else None,
+                               "rejected: " + meta["bad"].split(";")[0], src.description or "")
+                db.update_source(sid, licence_evidence=ev)
+                db.set_source_status(sid, "rejected", meta["bad"])
+                db.log_event("fetch", f"source {sid} rejected (licence): {meta['bad']}", level="warning",
+                             data={"source_id": sid})
+                continue
+            if rng.random() < 0.03:
+                db.set_source_status(sid, "failed", "yt-dlp: HTTP Error 403: Forbidden (after 3 retries)")
+                db.log_event("fetch", f"source {sid} failed: yt-dlp HTTP Error 403", level="error", data={"source_id": sid})
+                continue
+            if src.source_type == "cc_by_youtube":
+                lic, lm, rule = "cc_by", "Creative Commons Attribution license (reuse allowed)", "cc_by: license field is CC BY"
+            else:
+                lic, lm = "us_gov_public_domain", None
+                rule = (f"allowlisted channel {src.channel!r}" if src.platform == "youtube"
+                        else f"allowlisted domain {src.url.split('/')[2]}")
+            db.update_source(sid, licence=lic, licence_evidence=_evidence(src, lm, rule, src.description or ""),
+                             video_path=f"/demo/media/downloads/{sid}/video.mp4")
+            db.set_source_status(sid, "fetched")
+            db.log_event("fetch", f"fetched source {sid}: {src.title!r} ({lic})", data={"source_id": sid})
+            clock.now += timedelta(seconds=rng.randint(30, 120))
+            if rng.random() < 0.02:
+                db.set_source_status(sid, "failed", "no audio stream in downloaded media")
+                db.log_event("transcribe", f"source {sid} failed: no audio stream", level="error", data={"source_id": sid})
+                continue
+            db.update_source(sid, transcript_path=f"/demo/media/transcripts/{sid}.json")
+            db.set_source_status(sid, "transcribed")
+            db.log_event("transcribe", f"transcribed source {sid} ({int(src.duration_sec or 0) // 60} min)",
+                         data={"source_id": sid})
+            src = db.require_source(sid)
+        if src.status != "transcribed":
+            continue
+        # --- pick (Haiku windows + Sonnet finalize) -----------------------------
+        n_windows = max(6, min(28, int((src.duration_sec or 600) / 120)))
+        est = n_windows * 0.00025 + 0.035
+        try:
+            budget.check_budget(est)
+        except budget.BudgetExceeded:
+            db.log_event("pick", f"source {sid}: budget exhausted before scoring; will resume tomorrow", level="warning",
+                         data={"source_id": sid})
+            stopped = True
+            remaining.append(sid)
+            continue
+        haiku = "claude-haiku-5-5"
+        sonnet = "claude-sonnet-5-5"
+        with db.transaction() as c:
+            for w in range(n_windows):
+                clock.now += timedelta(seconds=rng.randint(1, 4))
+                inp, cr = rng.randint(520, 820), (0 if w == 0 else 1840)
+                cw = 1840 if w == 0 else 0
+                out = rng.randint(70, 190)
+                db.insert_llm_usage(model=haiku, purpose="pick.score_window", input_tokens=inp, output_tokens=out,
+                                    cache_read_tokens=cr, cache_write_tokens=cw,
+                                    cost_usd=budget.cost_usd(haiku, inp, out, cr, cw), tier="haiku", source_id=sid,
+                                    request_id="req_demo" + _rand_id(rng, 16), conn=c)
+        if rng.random() < 0.24:
+            db.set_source_status(sid, "done", "no window scored >= min_haiku_score")
+            db.log_event("pick", f"source {sid}: nothing worth clipping (best score 6)", data={"source_id": sid})
+            continue
+        clock.now += timedelta(seconds=rng.randint(15, 45))
+        inp, cr, out = rng.randint(4200, 6800), 2600, rng.randint(1300, 2700)
+        budget.record_usage(sonnet, "pick.finalize", input_tokens=inp, output_tokens=out, cache_read_tokens=cr,
+                            tier="sonnet", source_id=sid, request_id="req_demo" + _rand_id(rng, 16))
+        n_clips = 1 if rng.random() < 0.72 else 2
+        clip_ids = []
+        for _ in range(n_clips):
+            clip_ids.append(_make_clip(sim, db, strategy_mod, src, day))
+        db.set_source_status(sid, "picked")
+        db.log_event("pick", f"source {sid}: picked {len(clip_ids)} clip(s)", data={"source_id": sid, "clips": clip_ids})
+        # --- render ---------------------------------------------------------------
+        for cid in clip_ids:
+            clock.now += timedelta(seconds=rng.randint(40, 110))
+            if rng.random() < 0.025:
+                db.set_clip_status(cid, "failed", "ffmpeg exited with status 1: Invalid data found when processing input")
+                db.log_event("edit", f"render failed for clip {cid}", level="error", data={"clip_id": cid})
+                continue
+            if rng.random() < 0.02:
+                db.set_clip_status(cid, "skipped", "near-duplicate of an earlier clip from the same source")
+                db.log_event("edit", f"clip {cid} skipped: near-duplicate", data={"clip_id": cid})
+                continue
+            db.update_clip(cid, render_path=f"/demo/media/renders/{cid}.mp4")
+            db.set_clip_status(cid, "rendered")
+            meta_c = sim.clip_meta[cid]
+            db.log_event("edit", f"rendered clip {cid} ({meta_c['length']:.1f}s, crop)", data={"clip_id": cid})
+            sim.ready.append(cid)
+        db.set_source_status(sid, "done")
+    sim.backlog = remaining
+
+
+def _make_clip(sim: Sim, db, strategy_mod, src, day: date) -> int:
+    rng = sim.rng
+    strat = sim.strategy
+    cl = strat["clip_length_sec"]
+    length = max(cl["min"], min(cl["max"], rng.gauss(cl["target"], 8)))
+    start = round(rng.uniform(30, max(60, (src.duration_sec or 600) - 120)), 2)
+    exp = strategy_mod.active_experiment(strat, day)
+    exp_id = variant = None
+    if exp:
+        k = sim.exp_counter.get(exp["id"], 0)
+        sim.exp_counter[exp["id"]] = k + 1
+        exp_id, variant = exp["id"], ("control" if k % 2 == 0 else "variant")
+    if exp_id and exp_id.startswith("exp-001"):
+        form = "question" if variant == "variant" else "claim"
+    elif strat["version"] >= 2:
+        form = rng.choices(["question", "claim", "number"], [0.6, 0.2, 0.2])[0]
+    else:
+        form = rng.choices(["question", "claim", "number"], [0.25, 0.5, 0.25])[0]
+    hook = rng.choice(HOOKS[form])
+    score = float(rng.choices([7, 8, 9, 10], [0.32, 0.38, 0.22, 0.08])[0])
+    title = rng.choice(CLIP_TITLES.get(src.topic or "", ["A moment worth watching"]))
+    credit = (f"Video: {src.channel} (public domain)" if src.licence == "us_gov_public_domain"
+              else f"Video: {src.channel} (CC BY)")
+    cid = db.add_clip(src.id, start, start + round(length, 2), title=title,
+                      description=f"{title}. {credit}. Source: {src.url}",
+                      hashtags=["#Shorts", "#Space" if src.source_type == "nasa" else "#Science"], hook_text=hook,
+                      credit_text=credit, haiku_score=score,
+                      sonnet_rationale=rng.choice(RATIONALES).format(n=int(length)),
+                      strategy_version=strat["version"], experiment_id=exp_id, experiment_variant=variant)
+    sim.clip_meta[cid] = {"topic": src.topic, "type": src.source_type, "length": length, "form": form,
+                          "score": score, "exp": exp_id, "variant": variant}
+    return cid
+
+
+def _perf_model(sim: Sim, meta: dict[str, Any], slot: str, pub_day: date, i: int) -> Perf:
+    rng = sim.rng
+    m = TOPIC_MULT.get(meta["topic"], 1.0)
+    m *= 1.25 if meta["length"] < 30 else (1.0 if meta["length"] < 45 else 0.85)
+    m *= {"question": 1.15, "number": 1.05}.get(meta["form"], 1.0)
+    m *= 1 + 0.1 * (meta["score"] - 8)
+    m *= SLOT_MULT.get(slot, 1.0)
+    m *= 1.1 if pub_day.weekday() >= 5 else 1.0
+    m *= 0.55 + 0.9 * (i / max(1, sim.days))  # channel momentum
+    total = 1400 * m * math.exp(rng.gauss(0, 1.05))
+    pct = 74 + (42 - meta["length"]) * 0.7 + (5.5 if meta["form"] == "question" else 0) + rng.gauss(0, 6)
+    if meta["variant"] == "variant" and (meta["exp"] or "").startswith("exp-002"):
+        pct += 1.5
+    pct = max(38.0, min(118.0, pct))
+    s0 = max(0.25, (pct / 100 - 0.06) / 0.83)
+    ret = []
+    for k in range(21):
+        t = k / 20
+        r = s0 * (1 - 0.34 * t) + (1 - s0) * math.exp(-t / 0.07) * (1 if s0 < 1 else 0.3)
+        if t >= 0.95:
+            r += 0.04
+        ret.append([round(t, 2), round(max(0.05, min(1.35, r)), 3)])
+    return Perf(total=total, pct=pct, sub_rate=rng.uniform(0.0012, 0.0045) * (1.3 if meta["type"] == "congress" else 1.0),
+                like_rate=rng.uniform(0.022, 0.055), retention=ret)
+
+
+def _upload(sim: Sim, db, strategy_mod, clock: Clock, day: date) -> None:
+    rng = sim.rng
+    strat = sim.strategy
+    cap = strategy_mod.upload_cap(strat)
+    slots = strat["posting_times"][:cap]
+    i = (day - sim.start).days
+    for k, slot in enumerate(slots):
+        if not sim.ready:
+            break
+        clock.now += timedelta(seconds=rng.randint(30, 90))
+        cid = sim.ready[0]
+        hh, mm = map(int, slot.split(":"))
+        publish_at = _at(sim, day, hh, mm)
+        uid = db.add_upload(cid, privacy="private", publish_at=db.to_iso(publish_at))
+        if not sim.failed_upload_once and i >= sim.days // 2 and k == 1:
+            sim.failed_upload_once = True
+            err = "quotaExceeded: The request cannot be completed because you have exceeded your quota."
+            db.mark_upload_failed(uid, err)
+            db.log_event("upload", f"upload of clip {cid} failed: {err}", level="error", data={"clip_id": cid})
+            db.log_event("upload", "YouTube quota stop: quotaExceeded", level="warning")
+            break
+        sim.ready.pop(0)
+        vid = "demo" + _rand_id(rng, 7)
+        db.mark_upload_succeeded(uid, vid)
+        db.set_clip_status(cid, "uploaded")
+        db.log_event("upload", f"uploaded clip {cid} as {vid}", data={"clip_id": cid, "video_id": vid,
+                                                                     "publish_at": db.to_iso(publish_at)})
+        sim.perf[vid] = _perf_model(sim, sim.clip_meta[cid], slot, day, i)
+        sim.published[vid] = day
+
+
+def _day_share(k: int) -> float:
+    return math.exp(-k / 2.4) + 0.025 * math.exp(-k / 45)
+
+
+_SHARE_NORM = sum(_day_share(k) for k in range(120))
+
+
+def _analytics(sim: Sim, db, day: date, i: int, plan: dict[str, int]) -> None:
+    rng = sim.rng
+    target = day - timedelta(days=2)
+    rows = 0
+    with db.transaction() as c:
+        for vid, pub in sim.published.items():
+            if pub > target:
+                continue
+            p = sim.perf[vid]
+            k = (target - pub).days
+            share = _day_share(k) / _SHARE_NORM * (0.7 if k == 0 else 1.0)
+            views = int(round(p.total * share * math.exp(rng.gauss(0, 0.22))))
+            if views <= 0 and k > 20:
+                continue
+            pct = max(30.0, min(125.0, p.pct + rng.gauss(0, 2.5)))
+            avd = pct / 100 * _length_of(sim, vid)
+            gained = int(round(views * p.sub_rate * math.exp(rng.gauss(0, 0.3))))
+            db.upsert_stat(vid, target, views=views, watch_minutes=round(views * avd / 60, 2),
+                           avg_view_duration_sec=round(avd, 1), avg_view_pct=round(pct, 1),
+                           likes=int(views * p.like_rate), comments=int(views * 0.0021), shares=int(views * 0.0032),
+                           subscribers_gained=gained, subscribers_lost=int(round(gained * rng.uniform(0.05, 0.15))),
+                           retention=p.retention, conn=c)
+            rows += 1
+            if hasattr(db, "upsert_retention"):  # schema v2: canonical per-video curve
+                db.upsert_retention(vid, p.retention, start_day=pub, end_day=target, conn=c)
+        tot = c.execute("SELECT COALESCE(SUM(views),0) AS v, COALESCE(SUM(subscribers_gained - subscribers_lost),0) AS s "
+                        "FROM stats").fetchone()
+        db.upsert_channel_stat(day, subscribers=12 + int(tot["s"]), total_views=int(tot["v"]),
+                               video_count=sum(1 for d in sim.published.values() if d <= day), conn=c)
+    db.log_event("analytics", f"collected stats for {rows} videos ({target.isoformat()})", data={"rows": rows})
+    if i == plan["claim"] and not sim.claimed:
+        cands = [v for v, d in sim.published.items() if (target - d).days >= 3]
+        cc = [v for v in cands if _meta_of(sim, v)["type"] == "cc_by_youtube"] or cands
+        if cc:
+            vid = cc[-1]
+            db.set_copyright_claim(vid, True)
+            sim.claimed = True
+            db.log_event("analytics", f"copyright claim detected on video {vid}", level="warning", data={"video_id": vid})
+            db.add_notification("error", "Heads up: YouTube flagged a copyright claim on one Short. Check the dashboard.",
+                                "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26))
+
+
+def _length_of(sim: Sim, vid: str) -> float:
+    return _meta_of(sim, vid)["length"]
+
+
+def _meta_of(sim: Sim, vid: str) -> dict[str, Any]:
+    import db
+
+    cache = sim.__dict__.setdefault("_vid_meta", {})
+    if vid not in cache:
+        up = db.get_upload_by_video(vid)
+        cache[vid] = sim.clip_meta[up.clip_id] if up else {"length": 40, "type": "nasa"}
+    return cache[vid]
+
+
+def _weekly(sim: Sim, db, budget, strategy_mod, clock: Clock, day: date, i: int, plan: dict[str, int]) -> None:
+    rng = sim.rng
+    inp, out = rng.randint(14000, 22000), rng.randint(2800, 4200)
+    budget.record_usage("claude-sonnet-5-5", "strategist.review", input_tokens=inp, output_tokens=out,
+                        tier="sonnet", request_id="req_demo" + _rand_id(rng, 16))
+    week = db.stats_between(day - timedelta(days=8), day - timedelta(days=2))
+    views = sum(s.views for s in week)
+    perf = db.clip_performance()
+    top = max(perf, key=lambda r: r["views"]) if perf else None
+    by_type: dict[str, list[int]] = {}
+    for r in perf:
+        by_type.setdefault(r["source_type"], []).append(r["views"])
+    type_line = ", ".join(f"{t.replace('_', ' ')} median {sorted(v)[len(v) // 2]:,}" for t, v in sorted(by_type.items()))
+    report = (f"Week ending {day.strftime('%b %d')}: {views:,} views across {len({s.youtube_video_id for s in week})} "
+              f"Shorts. By source type: {type_line or 'no data yet'}."
+              + (f" Best performer: \"{top['title']}\" ({top['views']:,} views)." if top else ""))
+    strat = dict(sim.strategy)
+    saved = None
+    if i == plan["v2"]:
+        report += (" Experiment exp-001 is finished: question hooks held viewers about 5 points longer on average view "
+                   "percentage than bold-claim hooks. Adopting question hooks as the default. No new experiment this week "
+                   "while the new hook style beds in.")
+        strat["hook_style"] = ("Open with a 3-7 word on-screen question that the clip answers within its first half; "
+                               "no clickbait the clip does not pay off; no emojis.")
+        strat["experiment"] = None
+        strat["posting_times"] = ["09:10", "12:15", "17:10", "20:40"]
+        saved = strategy_mod.save_strategy(strat, report=report)
+    elif i == plan["rejected_change"]:
+        report += " Proposing to widen the niche to defense footage from DVIDS (needs approval)."
+        did = db.add_decision("strategy_change", "Widen the channel to military and defense footage from DVIDS, "
+                              "a new source type and a new topic area.",
+                              {"action": "apply_strategy", "added_source_types": ["dvids"], "added_topic_areas": ["defense"]},
+                              expires_at=db.to_iso(clock.now + timedelta(hours=48)))
+        db.add_notification("approval", "Approval needed: widen the channel to defense footage. Press 1 to approve, 2 to reject.",
+                            "call", status="sent", sid="CAdemo" + _rand_id(rng, 26), decision_id=did)
+        clock.now += timedelta(minutes=47)
+        db.resolve_decision(did, "rejected", via="sms", note="Owner replied NO: keep the channel focused on space and science.")
+        db.log_event("notify", f"decision {did} rejected via sms", data={"decision_id": did})
+    elif i == plan["v3"]:
+        report += (" Budget hearings keep underperforming (median well below the channel), so they are dropped; "
+                   "adding Moon to Mars architecture coverage. Shorter cuts (under 40 s) are retaining better, so the "
+                   "target length drops to 38 s. New experiment exp-002 tests centred captions.")
+        strat["topics"] = [t for t in strat["topics"] if t["query"] != "NASA budget hearing"] + [
+            {"query": "Moon to Mars architecture", "area": "space", "source_types": ["nasa"]}]
+        strat["clip_length_sec"] = {"min": 20, "target": 38, "max": 55}
+        end = max(day + timedelta(days=24), sim.start + timedelta(days=sim.days + 5))
+        strat["experiment"] = {
+            "id": "exp-002-caption-centre-vs-lower-third",
+            "hypothesis": "Captions in the centre of the frame keep more viewers than captions in the lower third.",
+            "variable": "caption_style.position",
+            "control": "Captions in the lower third (current).",
+            "variant": "Captions centred on screen.",
+            "start": (day + timedelta(days=1)).isoformat(), "end": end.isoformat(),
+            "success_metric": "avg_view_pct",
+        }
+        saved = strategy_mod.save_strategy(strat, report=report)
+    elif i == plan["budget_request"]:
+        report += " Proposing to raise the daily AI budget from 1.00 to 1.50 dollars to clear the scoring backlog."
+        did = db.add_decision("budget_increase", "Raise the daily AI budget from 1.00 to 1.50 dollars",
+                              {"action": "apply_strategy", "strategy_change": {"daily_llm_budget_usd": 1.5},
+                               "report": report}, expires_at=db.to_iso(clock.now + timedelta(hours=48)))
+        db.add_notification("approval", "Approval needed: raise the daily AI budget from 1.00 to 1.50 dollars. "
+                            "Press 1 to approve, 2 to reject.", "call", status="sent",
+                            sid="CAdemo" + _rand_id(rng, 26), decision_id=did)
+        clock.now += timedelta(minutes=3)
+        db.resolve_decision(did, "approved", via="call")
+        db.log_event("notify", f"decision {did} approved via call", data={"decision_id": did})
+        strat["daily_llm_budget_usd"] = 1.5
+        saved = strategy_mod.save_strategy(strat, report=report, decision_id=did)
+    else:
+        report += " No changes this week; the current experiment keeps collecting data."
+        db.log_event("strategist", "weekly review: no strategy changes", data={"report": report[:200]})
+    if saved is not None:
+        sim.strategy = dict(saved)
+        db.log_event("strategist", f"weekly review saved strategy version {saved.version}",
+                     data={"version": saved.version})
+    db.add_notification("weekly_report", report[:600], "sms", status="sent", sid="SMdemo" + _rand_id(rng, 26))
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _serve(data_dir: Path, host: str, port: int) -> None:
+    import uvicorn
+    from fastapi import FastAPI
+
+    import dashboard
+
+    app = FastAPI(title="Shorts Agent dashboard (demo)")
+    app.include_router(dashboard.router)
+    print(f"Serving the DEMO dashboard on http://{host}:{port}/dashboard/ (Ctrl+C to stop)")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Build a clearly labelled demo database for the dashboard.")
+    ap.add_argument("--data-dir", required=True, type=Path, help="directory for the demo DB (must not hold real data)")
+    ap.add_argument("--days", type=int, default=60, help="days of history to simulate (default 60)")
+    ap.add_argument("--seed", type=int, default=7, help="random seed (default 7)")
+    ap.add_argument("--replace", action="store_true", help="rebuild an existing DEMO database in this directory")
+    ap.add_argument("--serve", action="store_true", help="serve the dashboard on the demo data afterwards")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8000)
+    args = ap.parse_args(argv)
+    if args.days < 1 or args.days > 730:
+        ap.error("--days must be between 1 and 730")
+    d = args.data_dir.expanduser().resolve()
+    if args.serve and not args.replace:
+        configure(d)
+        import config
+
+        if target_state(config.get_settings().db_path) == "demo":
+            _serve(d, args.host, args.port)  # serve the existing demo dataset as-is
+            return 0
+    try:
+        counts = seed(args.data_dir, days=args.days, seed_value=args.seed, replace=args.replace)
+    except RefuseError as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    print("Demo data written to", d / "clipagent.db")
+    print("  " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+    print("View it with:")
+    print(f"  CLIPAGENT_DATA_DIR={d} CLIPAGENT_STRATEGY_PATH={d / 'strategy.json'} python main.py serve")
+    print(f"  (or: python seed_demo.py --data-dir {d} --serve)")
+    if args.serve:
+        _serve(d, args.host, args.port)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -179,7 +179,7 @@ def test_call_live_uses_say_webhook_and_status_callback(live, clock):
 
 def test_urgent_call_failure_falls_back_to_sms(live, clock):
     live.calls.error = RuntimeError("twilio down")
-    notify.notify("upload_failed", "Upload of clip 4 failed", urgent=True)
+    notify.notify("youtube_claim", "Upload of clip 4 failed", urgent=True)
     by_channel = {r.channel: r for r in rows()}
     assert by_channel["call"].status == "failed" and "twilio down" in by_channel["call"].error
     assert by_channel["sms"].status == "sent"
@@ -307,7 +307,7 @@ def test_status_no_answer_approval_falls_back_to_sms(approval, client, live):
 
 
 def test_status_busy_info_call_texts_message(live, client, clock):
-    nid = notify.call("Copyright claim on video X", kind="copyright_claim")
+    nid = notify.call("Copyright claim on video X", kind="youtube_claim")
     post(client, f"/twilio/status?notification_id={nid}", call_params(CallStatus="busy"))
     post(client, f"/twilio/status?notification_id={nid}", call_params(CallStatus="busy"))  # duplicate callback
     assert len(live.messages.created) == 1
@@ -458,6 +458,18 @@ NIGHT = datetime(2026, 11, 14, 4, 0, tzinfo=UTC)      # 23:00 New York
 MORNING = datetime(2026, 11, 14, 13, 30, tzinfo=UTC)  # 08:30 New York
 
 
+def test_urgent_kinds_cover_every_night_call_producer():
+    # kinds other modules queue as calls that must ring even in quiet hours
+    assert {"budget_cap", "youtube_auth", "youtube_claim"} <= notify.URGENT_KINDS
+
+
+def test_quiet_hours_come_from_settings(clock, settings):
+    config.set_settings(settings.replace(quiet_hours_start="09:00", quiet_hours_end="11:00"))
+    assert notify.in_quiet_hours()          # 10:00 local
+    config.set_settings(settings.replace(quiet_hours_start="09:00", quiet_hours_end="09:00"))
+    assert not notify.in_quiet_hours()      # equal start/end disables
+
+
 def test_in_quiet_hours(clock):
     assert not notify.in_quiet_hours()
     clock.set(NIGHT)
@@ -484,20 +496,20 @@ def test_quiet_hours_queue_then_deliver_once(live, clock):
 
 def test_urgent_problem_calls_at_night_but_deduplicated(live, clock):
     clock.set(NIGHT)
-    notify.notify("quota_exhausted", "YouTube quota is used up", urgent=True)
+    notify.notify("youtube_auth", "YouTube token expired", urgent=True)
     assert len(live.calls.created) == 1
-    notify.notify("quota_exhausted", "YouTube quota is used up", urgent=True)
+    notify.notify("youtube_auth", "YouTube token expired", urgent=True)
     assert len(live.calls.created) == 1
     assert rows("queued")[0].channel == "sms"  # repeat becomes a text, held until morning
     clock.set(MORNING)  # 9.5 h later: dedup window (6 h) has passed
-    notify.notify("quota_exhausted", "Still out of quota", urgent=True)
+    notify.notify("youtube_auth", "Token still expired", urgent=True)
     assert len(live.calls.created) == 2
 
 
 def test_urgent_dedup_daytime_texts(live, clock):
-    notify.notify("copyright_claim", "Claim on video A", urgent=True)
+    notify.notify("youtube_claim", "Claim on video A", urgent=True)
     clock.advance(hours=2)
-    notify.notify("copyright_claim", "Claim on video B", urgent=True)
+    notify.notify("youtube_claim", "Claim on video B", urgent=True)
     assert len(live.calls.created) == 1 and len(live.messages.created) == 1
     assert live.messages.created[0]["body"] == "Claim on video B"
 

@@ -24,6 +24,11 @@ strategy, so every rule is unit-testable. Licence policy (see CLAUDE.md):
   videos, and durations that are too short to clip or longer than
   :data:`MAX_DURATION_SEC`.
 
+Direct file links (e.g. NASA Image Library ``.mp4`` URLs) go through yt-dlp's generic
+extractor, which returns no description. :func:`fetch_source` therefore also feeds the
+description and credits the scout stored on the source row into the licence check
+(:func:`licence_info`), so copyright / music notices there still reject the source.
+
 Every decision (approved or not) carries a human-readable ``reason`` and an
 ``evidence`` dict with the raw fields that justified it; both are stored on the
 source row (``status_reason`` / ``licence_evidence``) and in the event log.
@@ -411,6 +416,29 @@ def check_licence(info: Mapping[str, Any], strategy: Strategy, source_type: str)
 # fetch stage
 # ---------------------------------------------------------------------------
 
+# Scout metadata fields that hold publisher-supplied credit text worth scanning for notices.
+_STORED_CREDIT_KEYS = ("secondary_creator", "photographer", "credit")
+
+
+def licence_info(info: Mapping[str, Any], source: db.Source) -> dict[str, Any]:
+    """``info`` with the source row's stored description / credits appended to ``description``.
+
+    Pure. yt-dlp's own description stays first; text it already contains is not repeated.
+    """
+    own = str(info.get("description") or "")
+    extra: list[str] = []
+    if source.description and source.description.strip() and source.description.strip() not in own:
+        extra.append(source.description.strip())
+    meta = source.metadata if isinstance(source.metadata, dict) else {}
+    for key in _STORED_CREDIT_KEYS:
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip() and value.strip() not in own:
+            extra.append(f"{key.replace('_', ' ')}: {value.strip()}")
+    if not extra:
+        return dict(info)
+    return {**info, "description": "\n\n".join(([own] if own else []) + extra)}
+
+
 def source_dir(source_id: int) -> Path:
     return get_settings().downloads_dir / str(source_id)
 
@@ -521,7 +549,7 @@ def fetch_source(source_id: int, strategy: Strategy | None = None) -> Path:
     probe = dict(probe or {})
     probe.setdefault("webpage_url", src.url)
 
-    decision = check_licence(probe, strat, src.source_type)
+    decision = check_licence(licence_info(probe, src), strat, src.source_type)
     if not decision.ok:
         raise _reject(source_id, decision, stage="probe")
 
@@ -541,7 +569,7 @@ def fetch_source(source_id: int, strategy: Strategy | None = None) -> Path:
 
     # Re-check against the metadata of what was actually downloaded (guards against
     # the video changing between probe and download).
-    final = check_licence(info, strat, src.source_type) if info is not probe else decision
+    final = check_licence(licence_info(info, src), strat, src.source_type) if info is not probe else decision
     if not final.ok:
         video.unlink(missing_ok=True)
         raise _reject(source_id, final, stage="download")
@@ -556,7 +584,7 @@ def fetch_source(source_id: int, strategy: Strategy | None = None) -> Path:
     if duration is None:
         duration = probe_duration(video)
         if duration is not None:
-            checked = check_licence({**info, "duration": duration}, strat, src.source_type)
+            checked = check_licence(licence_info({**info, "duration": duration}, src), strat, src.source_type)
             if not checked.ok:
                 video.unlink(missing_ok=True)
                 raise _reject(source_id, checked, stage="post-download duration")

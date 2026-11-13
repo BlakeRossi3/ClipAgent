@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -42,6 +41,7 @@ from urllib.parse import parse_qs, quote, quote_plus, urlparse
 
 import db
 import strategy as strategy_mod
+from config import get_settings
 from strategy import Strategy
 
 log = logging.getLogger(__name__)
@@ -59,7 +59,6 @@ NASA_API = "https://images-api.nasa.gov"
 YT_CC_FILTER = "EgIwAQ%3D%3D"     # YouTube results filter "Creative Commons" (url-encoded protobuf)
 YT_DATA_API = "https://www.googleapis.com/youtube/v3"
 CC_API_SEARCH_UNITS = 100
-DEFAULT_CC_API_SEARCHES_PER_DAY = 2
 
 _COPYRIGHT_RE = re.compile(r"(©|\(c\)\s*\d{4}|copyright|all rights reserved|licensed music|used with permission)", re.I)
 
@@ -382,25 +381,17 @@ def search_cc_youtube(query: str, limit: int, strategy: Strategy) -> list[Candid
     return out
 
 
-def _cc_api_budget() -> int:
-    try:
-        return max(0, int(os.environ.get("SCOUT_CC_API_MAX_SEARCHES_PER_DAY", DEFAULT_CC_API_SEARCHES_PER_DAY)))
-    except ValueError:
-        return DEFAULT_CC_API_SEARCHES_PER_DAY
-
-
 def search_cc_youtube_data_api(query: str, limit: int, strategy: Strategy) -> list[Candidate]:
     """Alternative: Data API search.list(videoLicense=creativeCommon). 100 quota units per call,
     budgeted per local day via kv ``scout:cc_api_searches:<day>``."""
-    key = os.environ.get("YOUTUBE_API_KEY", "")
+    settings = get_settings()
+    key = settings.youtube_api_key
     if not key:
         raise RuntimeError("YOUTUBE_API_KEY not set for the Data API CC search backend")
     kv_key = f"scout:cc_api_searches:{db.local_today().isoformat()}"
-    used = int(db.kv_get(kv_key, 0) or 0)
-    if used >= _cc_api_budget():
-        log.info("cc data-api search budget used (%s/day)", used)
+    if db.kv_incr(kv_key) > settings.scout_cc_api_max_searches_per_day:
+        log.info("cc data-api search budget used (%s/day)", settings.scout_cc_api_max_searches_per_day)
         return []
-    db.kv_set(kv_key, used + 1)
     res = http_get_json(f"{YT_DATA_API}/search", {
         "part": "snippet", "q": query, "type": "video", "videoLicense": "creativeCommon",
         "maxResults": min(50, max(limit * 2, 5)), "order": "relevance", "key": key})
@@ -429,8 +420,7 @@ def search_cc_youtube_data_api(query: str, limit: int, strategy: Strategy) -> li
 
 
 def search_cc_by_youtube(query: str, limit: int, strategy: Strategy) -> list[Candidate]:
-    backend = os.environ.get("SCOUT_CC_BACKEND", "ytdlp").strip().lower()
-    if backend == "data_api":
+    if get_settings().scout_cc_backend == "data_api":
         return search_cc_youtube_data_api(query, limit, strategy)
     return search_cc_youtube(query, limit, strategy)
 

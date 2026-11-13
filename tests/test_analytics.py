@@ -219,15 +219,18 @@ def test_retention_fetched_sparingly(clock, live, videos, services):
     ret_calls = [c for c in services["an"].calls if c.get("dimensions") == "elapsedVideoTimeRatio"]
     assert len(ret_calls) == 2 and ret_calls[0]["filters"] == "video==vA"
     assert ret_calls[0]["startDate"] == "2026-11-01" and ret_calls[0]["metrics"] == "audienceWatchRatio"
+    curve = [[0.01, 1.2], [0.02, 1.1], [1.0, 0.3]]
+    r = db.get_retention("vA")
+    assert r.curve == curve and (r.start_day, r.end_day) == ("2026-11-01", "2026-11-11")
     a = [s for s in db.get_stats("vA") if s.day == "2026-11-11"][0]
-    assert a.retention == [[0.01, 1.2], [0.02, 1.1], [1.0, 0.3]]
-    # next day: not refreshed (weekly), but the curve is carried onto the new day's row
+    assert a.retention == curve            # legacy mirror on the newest day's row
+    # next day: not refreshed (weekly) and not copied onto the new day's row
     clock.advance(days=1)
     services["an"].calls.clear()
     analytics.collect_stats()
     assert not [c for c in services["an"].calls if c.get("dimensions") == "elapsedVideoTimeRatio"]
     a12 = [s for s in db.get_stats("vA") if s.day == "2026-11-12"][0]
-    assert a12.retention == a.retention and a12.views == 12
+    assert a12.retention is None and a12.views == 12 and db.get_retention("vA").curve == curve
     clock.advance(days=7)
     services["an"].calls.clear()
     analytics.collect_stats()
@@ -243,7 +246,7 @@ def test_retention_failure_is_isolated(clock, live, videos, services):
         return base(kw)
     services["an"].handler = h
     assert analytics.collect_stats() == 6
-    assert all(s.retention is None for s in db.get_stats("vA"))
+    assert all(s.retention is None for s in db.get_stats("vA")) and db.get_retention("vA") is None
 
 
 def test_lifetime_counters_cached(clock, live, videos, services):
@@ -345,3 +348,50 @@ def test_real_clients_accept_our_parameters(clock, live, videos):
     assert any("elapsedVideoTimeRatio" in u for u in an_http.uris)
     assert any("/youtube/v3/videos?" in u and "part=statistics" in u for u in data_http.uris)
     assert any("/youtube/v3/channels?" in u and "mine=true" in u for u in data_http.uris)
+
+
+def _token_with(scopes: list[str]) -> None:
+    path = config.get_settings().youtube_token_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"token": "t", "refresh_token": "r", "client_id": "c", "client_secret": "s",
+                                "scopes": scopes}))
+
+
+def _with_revenue(base):
+    def h(kw):
+        if kw["metrics"] == "estimatedRevenue,cpm":
+            ids = kw["filters"].removeprefix("video==").split(",")
+            return video_rows(["estimatedRevenue", "cpm"], {v: [0.25, 3.5] for v in ids})
+        return base(kw)
+    return h
+
+
+def test_revenue_collected_only_with_setting_and_scope(clock, live, videos, services, monkeypatch):
+    services["an"].handler = _with_revenue(standard_handler())
+    analytics.collect_stats()                          # setting off: no revenue report at all
+    assert not [c for c in services["an"].calls if "estimatedRevenue" in c["metrics"]]
+    monkeypatch.setenv("YOUTUBE_MONETARY_ANALYTICS", "true")
+    config.reset_settings()
+    _token_with(list(youtube_auth.SCOPES))             # setting on, scope missing: warned, skipped
+    analytics.collect_stats()
+    assert not [c for c in services["an"].calls if "estimatedRevenue" in c["metrics"]]
+    assert db.list_events(level="warning", module="analytics")[0].message.startswith("YOUTUBE_MONETARY")
+    _token_with(list(youtube_auth.MONETARY_SCOPES))
+    analytics.collect_stats()
+    row = [s for s in db.get_stats("vA") if s.day == "2026-11-11"][0]
+    assert (row.estimated_revenue, row.cpm) == (0.25, 3.5)
+    assert db.clip_performance("2026-11-11")[0]["estimated_revenue"] == pytest.approx(0.25)
+
+
+def test_check_claims_records_youtube_status(clock, live, videos, services):
+    services["data"].items = {
+        "vA": {"status": {"uploadStatus": "processed", "privacyStatus": "public"}, "contentDetails": {}},
+        "vB": {"status": {"uploadStatus": "rejected", "rejectionReason": "copyright", "privacyStatus": "private"},
+               "contentDetails": {}},
+    }
+    assert analytics.check_claims() == 1
+    assert db.get_upload_by_video("vA").youtube_status == "processed/public"
+    b = db.get_upload_by_video("vB")
+    assert b.youtube_status == "rejected/private: rejected by YouTube (copyright)"
+    assert b.status == "removed" and b.copyright_claim and b.error is None
+    assert "youtube_claim" in {n.kind for n in db.list_notifications()}

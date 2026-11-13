@@ -93,9 +93,11 @@ DEFAULT_CAPTION_STYLE: dict[str, Any] = {
     "framing": "auto",
 }
 
-# Heavy, legible fonts tried in order when the configured font is not installed.
-FONT_FALLBACKS = ("Montserrat ExtraBold", "Montserrat Black", "Anton", "Inter Black", "Inter ExtraBold",
-                  "Inter Display Black", "Liberation Sans", "DejaVu Sans")
+# Heavy, legible fonts tried in order when the configured font is not installed. Plain
+# "Montserrat" matches the variable-weight install (Bold=-1 then selects a heavy weight);
+# the last two ship with almost every Linux box, so captions always render.
+FONT_FALLBACKS = ("Montserrat ExtraBold", "Montserrat Black", "Montserrat", "Anton", "Inter Black",
+                  "Inter ExtraBold", "Inter Display Black", "Liberation Sans", "DejaVu Sans")
 ASSETS_FONTS_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
 
 _SENTENCE_END = re.compile(r"[.?!;:]['\")\]]*$")
@@ -613,10 +615,21 @@ def _installed_families() -> frozenset[str] | None:
 
 
 def _bundled_families() -> set[str]:
+    """Family names guessed from ``assets/fonts/*.ttf|otf`` file names.
+
+    ``Montserrat-ExtraBold.ttf`` -> {"montserrat extrabold", "montserrat"};
+    ``Montserrat[wght].ttf`` -> {"montserrat"}.
+    """
     if not ASSETS_FONTS_DIR.is_dir():
         return set()
-    return {p.stem.replace("-", " ").lower() for p in ASSETS_FONTS_DIR.iterdir()
-            if p.suffix.lower() in (".ttf", ".otf")}
+    out: set[str] = set()
+    for p in ASSETS_FONTS_DIR.iterdir():
+        if p.suffix.lower() not in (".ttf", ".otf"):
+            continue
+        stem = re.sub(r"\[.*?\]", "", p.stem).strip()
+        out.add(stem.replace("-", " ").lower())
+        out.add(stem.split("-", 1)[0].lower())
+    return out
 
 
 def resolve_font(name: str | None) -> str:

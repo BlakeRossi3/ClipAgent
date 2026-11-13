@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Source {{ s.id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/dashboard/sources">Pipeline &amp; sources</a> / source #{{ s.id }}</p>
+<div class="page-head">
+  <div>
+    <h1 class="clip-title">{{ s.title or s.url }}</h1>
+    <p class="lede">{{ m.pill(s.status, {"done": "good", "picked": "good", "rejected": "warning", "failed": "critical"}.get(s.status, "neutral")) }}{% if s.status_reason %} {{ s.status_reason }}{% endif %}</p>
+  </div>
+</div>
+<section class="grid-2">
+  <div class="card">
+    <div class="card-head"><h3>Licence decision</h3></div>
+    <dl class="kv">
+      <dt>Licence</dt><dd>{% if s.licence %}{{ m.pill(s.licence | replace("_", " "), "good") }}{% else %}<span class="muted">none recorded</span>{% endif %}</dd>
+      <dt>URL</dt><dd class="break"><a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.url }}</a></dd>
+      <dt>Publisher</dt><dd>{{ s.channel or "—" }}{% if s.channel_id %} <span class="muted">({{ s.channel_id }})</span>{% endif %}</dd>
+      <dt>Platform</dt><dd>{{ s.platform or "—" }} · {{ s.source_type | replace("_", " ") }}</dd>
+    </dl>
+    <h4>Evidence</h4>
+    {% if s.licence_evidence is mapping %}
+    <dl class="kv">{% for k, v in s.licence_evidence | dictsort %}<dt>{{ k | replace("_", " ") }}</dt><dd class="break prewrap">{{ v if v is string else (v | pretty_json) }}</dd>{% endfor %}</dl>
+    {% elif s.licence_evidence %}<pre class="json">{{ s.licence_evidence | pretty_json }}</pre>
+    {% else %}<p class="muted">No evidence recorded (licence not checked yet).</p>{% endif %}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Details</h3></div>
+    <dl class="kv">
+      <dt>Topic</dt><dd>{{ s.topic or "—" }}</dd>
+      <dt>Duration</dt><dd>{{ s.duration_sec | duration }}</dd>
+      <dt>Published</dt><dd>{{ s.published_at | date if s.published_at else "—" }}</dd>
+      <dt>Discovered</dt><dd>{{ s.discovered_at | dt }}</dd>
+      <dt>Updated</dt><dd>{{ s.updated_at | dt }}</dd>
+      <dt>LLM spend</dt><dd>{{ spend | usd }} over {{ calls }} call{{ "s" if calls != 1 else "" }}</dd>
+      <dt>Description</dt><dd class="prewrap clamp">{{ s.description or "—" }}</dd>
+    </dl>
+  </div>
+</section>
+<section class="card">
+  <div class="card-head"><h3>Clips from this source</h3></div>
+  {% if clips %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th scope="col">Title</th><th scope="col" class="num">Segment</th><th scope="col" class="num">Score</th><th scope="col" class="num">Views</th><th scope="col">Status</th></tr></thead>
+    <tbody>{% for c in clips %}<tr><th scope="row" class="title-cell"><a href="/dashboard/clips/{{ c.id }}">{{ c.title or ("Clip " ~ c.id) }}</a></th><td class="num nowrap">{{ c.start_sec | duration }}–{{ c.end_sec | duration }}</td><td class="num">{{ "%.0f" | format(c.haiku_score) if c.haiku_score is not none else "—" }}</td><td class="num">{{ c.views | compact }}</td><td>{{ m.pill(c.display_status[0], c.display_status[1]) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="chart-empty">No clips from this source{% if s.status in ("candidate", "fetched", "transcribed") %} yet{% endif %}.</div>{% endif %}
+</section>
+{% endblock %}

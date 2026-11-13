@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Costs &amp; quotas{% endblock %}
+{% block content %}
+{% set t = d.breakdown.totals %}
+<div class="page-head">
+  <div>
+    <h1>Costs &amp; quotas</h1>
+    <p class="lede">What the AI judgment steps cost, where the money goes, and how close the agent runs to its daily limits.</p>
+  </div>
+</div>
+{{ m.period_picker(periods, d.window.key, (d.window.start | date) ~ " – " ~ (d.window.end | date)) }}
+
+<div class="kpis">
+  <div class="tile"><p class="tile-label">LLM spend</p><p class="tile-value">{{ t.cost | usd }}</p><p class="tile-delta is-flat"><span class="muted">{{ t.calls | int }} calls{% if t.fake_cost %} · {{ t.fake_cost | usd }} fake-mode{% endif %}</span></p></div>
+  <div class="tile"><p class="tile-label">Per clip produced</p><p class="tile-value">{{ t.per_clip | usd }}</p><p class="tile-delta is-flat"><span class="muted">{{ t.clips_created | int }} clips</span></p></div>
+  <div class="tile"><p class="tile-label">Per Short uploaded</p><p class="tile-value">{{ t.per_published | usd }}</p><p class="tile-delta is-flat"><span class="muted">{{ t.clips_published | int }} uploads</span></p></div>
+  <div class="tile"><p class="tile-label">Per source scored</p><p class="tile-value">{{ t.per_source | usd }}</p><p class="tile-delta is-flat"><span class="muted">{{ t.sources_scored | int }} sources</span></p></div>
+  <div class="tile"><p class="tile-label">Prompt cache hit rate</p><p class="tile-value">{{ t.cache_hit | pct }}</p><p class="tile-delta is-flat"><span class="muted">of prompt tokens cached</span></p></div>
+  <div class="tile"><p class="tile-label">Days the cap was hit</p><p class="tile-value">{{ d.days_at_cap }}</p><p class="tile-delta is-flat"><span class="muted">of {{ d.window.days }} days</span></p></div>
+</div>
+
+<section class="grid-2" aria-label="Daily">
+  {{ m.chart(d.charts.spend, "LLM spend per day by model", "Stacked by model · dashed line is the daily cap", "No LLM calls in this period.") }}
+  {{ m.chart(d.charts.uploads, "YouTube uploads per day", "Including dry runs · dashed line is the daily upload cap", "Nothing uploaded in this period.") }}
+</section>
+
+<section class="grid-2" aria-label="Breakdown">
+  <div class="card">
+    <div class="card-head"><h3>Spend by purpose</h3><p class="sub">Which judgment step costs what</p></div>
+    {% if d.purpose_bars.rows %}{{ m.hbars(d.purpose_bars, show_n=False) }}{% else %}<div class="chart-empty">No LLM calls in this period.</div>{% endif %}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Today &amp; quotas</h3><p class="sub">{{ d.today.date | date }}</p></div>
+    {{ m.meter("LLM spend", d.today.spend_usd | usd, (d.today.spend_cap_usd | usd) ~ " cap", d.today.spend_pct, "critical" if d.today.cap_reached else ("warning" if d.today.spend_pct >= 80 else "accent")) }}
+    {{ m.meter("Uploads", d.today.uploads | int, (d.today.upload_cap | int) ~ " cap", d.today.uploads_pct, "critical" if d.today.uploads >= d.today.upload_cap and d.today.upload_cap > 0 else "accent") }}
+    {{ m.meter("YouTube API quota", d.today.quota_units | int, (d.quota.daily_limit | int) ~ " units", [100, d.today.quota_units / d.quota.daily_limit * 100] | min, "accent", "Each upload costs 1,600 units; dry runs cost none. Busiest day this period: " ~ (d.quota.max_day | int) ~ " units.") }}
+  </div>
+</section>
+
+<section class="card" aria-labelledby="tok-h">
+  <div class="card-head"><h3 id="tok-h">Calls and tokens</h3><p class="sub">Cache hit = cache-read tokens ÷ all prompt tokens</p></div>
+  {% if d.breakdown.by_purpose %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th scope="col">Purpose</th><th scope="col">Model</th><th scope="col" class="num">Calls</th><th scope="col" class="num">Input</th><th scope="col" class="num">Cache read</th><th scope="col" class="num">Cache write</th><th scope="col" class="num">Output</th><th scope="col" class="num">Cache hit</th><th scope="col" class="num">Cost / call</th><th scope="col" class="num">Cost</th></tr></thead>
+    <tbody>
+    {% for r in d.breakdown.by_purpose %}
+    <tr><th scope="row">{{ r.purpose }}{% if r.fake_calls %} <span class="tag">fake</span>{% endif %}</th><td class="nowrap">{{ r.model }}</td><td class="num">{{ r.calls | int }}</td><td class="num">{{ r.input_tokens | compact }}</td><td class="num">{{ r.cache_read_tokens | compact }}</td><td class="num">{{ r.cache_write_tokens | compact }}</td><td class="num">{{ r.output_tokens | compact }}</td><td class="num">{{ r.cache_hit | pct }}</td><td class="num">{{ r.cost_per_call | usd }}</td><td class="num">{{ r.cost | usd }}</td></tr>
+    {% endfor %}
+    </tbody>
+    <tfoot><tr><th scope="row">Total</th><td></td><td class="num">{{ t.calls | int }}</td><td class="num">{{ t.input_tokens | compact }}</td><td class="num">{{ t.cache_read_tokens | compact }}</td><td class="num">{{ t.cache_write_tokens | compact }}</td><td class="num">{{ t.output_tokens | compact }}</td><td class="num">{{ t.cache_hit | pct }}</td><td></td><td class="num">{{ t.cost | usd }}</td></tr></tfoot>
+  </table></div>
+  {% else %}<div class="chart-empty">No LLM calls in this period.</div>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="cap-h">
+  <div class="card-head"><h3 id="cap-h">Budget cap hits</h3><p class="sub">Days the agent stopped LLM work because the daily budget ran out</p></div>
+  {% if d.cap_hits %}
+  <ul class="events-mini">{% for h in d.cap_hits %}<li>{{ m.status_dot("warning") }}<span class="ev-msg">{{ h.message }}{% if h.data and h.data.spent is defined %} — spent {{ h.data.spent | usd }} of {{ h.data.cap | usd }}{% endif %}</span><time datetime="{{ h.ts }}">{{ h.ts | dt }}</time></li>{% endfor %}</ul>
+  {% else %}<p class="muted">The cap was not hit in this period.</p>{% endif %}
+</section>
+{% endblock %}

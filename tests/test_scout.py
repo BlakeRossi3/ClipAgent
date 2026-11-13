@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+import config
 import db
 import scout
 import strategy as strategy_mod
@@ -191,6 +192,7 @@ def test_cc_data_api_backend_respects_daily_budget(monkeypatch, strategy, clock)
     monkeypatch.setenv("SCOUT_CC_BACKEND", "data_api")
     monkeypatch.setenv("YOUTUBE_API_KEY", "dummy")
     monkeypatch.setenv("SCOUT_CC_API_MAX_SEARCHES_PER_DAY", "1")
+    config.reset_settings()
     calls = []
 
     def http(url, params=None):

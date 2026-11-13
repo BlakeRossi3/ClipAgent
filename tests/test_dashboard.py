@@ -1,0 +1,450 @@
+"""Dashboard: pages, auth, CSRF, approvals, CSV export, JSON summary, escaping, demo seeding."""
+
+from __future__ import annotations
+
+import csv
+import io
+import re
+import shutil
+import sys
+import types
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import config
+import dashboard
+import db
+import seed_demo
+
+PAGES = ["/dashboard/", "/dashboard", "/dashboard/clips", "/dashboard/insights", "/dashboard/strategy",
+         "/dashboard/sources", "/dashboard/costs", "/dashboard/decisions", "/dashboard/events",
+         "/dashboard/clips?sort=cost&dir=asc&status=published", "/dashboard/insights?metric=pct&period=28",
+         "/dashboard/costs?period=7", "/dashboard/sources?status=rejected", "/dashboard/events?level=error",
+         "/dashboard/?period=all", "/dashboard/?period=90", "/dashboard/decisions?nstatus=sent"]
+APIS = ["/dashboard/api/summary", "/dashboard/api/series", "/dashboard/api/clips", "/dashboard/api/insights",
+        "/dashboard/api/costs", "/dashboard/licences.csv"]
+
+
+def _app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(dashboard.router)
+    return app
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(_app(), base_url="http://testserver")
+
+
+def _with_token(monkeypatch, token: str = "s3cret-token") -> str:
+    monkeypatch.setenv("DASHBOARD_TOKEN", token)
+    config.reset_settings()
+    return token
+
+
+def _csrf(html: str) -> str:
+    m = re.search(r'name="csrf" value="([0-9a-f]+)"', html)
+    assert m, "no csrf field on page"
+    return m.group(1)
+
+
+@pytest.fixture
+def notifier(monkeypatch):
+    """A fake ``notify`` module that records handle_decision calls and resolves like the real one."""
+    calls = []
+
+    def handle_decision(decision_id: int, approved: bool, *, via: str) -> bool:
+        calls.append((decision_id, approved, via))
+        return db.resolve_decision(decision_id, "approved" if approved else "rejected", via=via)
+
+    mod = types.SimpleNamespace(handle_decision=handle_decision)
+    monkeypatch.setitem(sys.modules, "notify", mod)
+    return calls
+
+
+_SEED_CACHE: dict[str, Any] = {}
+
+
+@pytest.fixture
+def seeded(tmp_path_factory, clock, monkeypatch):
+    """Small but complete demo dataset (built once per session, copied into each test's data dir)."""
+    data_dir = config.get_settings().data_dir
+    if "dir" not in _SEED_CACHE:
+        counts = seed_demo.seed(data_dir, days=30, seed_value=3, now=clock.now)
+        assert counts["uploads"] > 10 and counts["stats"] > 50
+        conn = db.connect()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        cache = tmp_path_factory.mktemp("demo-template")
+        for name in ("clipagent.db", "strategy.json", seed_demo.DEMO_MARKER_FILE):
+            shutil.copy(data_dir / name, cache / name)
+        _SEED_CACHE.update(dir=cache, counts=counts)
+    else:
+        for name in ("clipagent.db", "strategy.json", seed_demo.DEMO_MARKER_FILE):
+            shutil.copy(_SEED_CACHE["dir"] / name, data_dir / name)
+    monkeypatch.setenv("CLIPAGENT_STRATEGY_PATH", str(data_dir / "strategy.json"))
+    config.reset_settings()
+    return _SEED_CACHE["counts"]
+
+
+# --------------------------------------------------------------------------- pages
+
+
+@pytest.mark.parametrize("path", PAGES + APIS)
+def test_every_page_200_on_empty_db(client, clock, path):
+    r = client.get(path)
+    assert r.status_code == 200, r.text[:2000]
+
+
+def test_empty_overview_shows_onboarding(client, clock):
+    html = client.get("/dashboard/").text
+    assert "Getting started" in html
+    assert "DEMO DATA" not in html
+    assert "<script src=\"http" not in html and "https://cdn" not in html
+
+
+@pytest.mark.parametrize("path", PAGES + APIS)
+def test_every_page_200_on_seeded_db(client, seeded, path):
+    r = client.get(path)
+    assert r.status_code == 200, r.text[:2000]
+
+
+def test_seeded_detail_pages_and_banner(client, seeded):
+    html = client.get("/dashboard/").text
+    assert "DEMO DATA" in html
+    clip = db.list_clips("uploaded", limit=1)[0]
+    r = client.get(f"/dashboard/clips/{clip.id}")
+    assert r.status_code == 200 and "Licence &amp; source" in r.text
+    assert client.get(f"/dashboard/sources/{clip.source_id}").status_code == 200
+    assert client.get(f"/dashboard/api/clips/{clip.id}").json()["clip"]["id"] == clip.id
+    assert client.get("/dashboard/clips/999999").status_code == 404
+    assert client.get("/dashboard/sources/999999").status_code == 404
+    assert client.get("/dashboard/api/clips/999999").status_code == 404
+
+
+def test_static_files_served_and_traversal_blocked(client):
+    assert client.get("/dashboard/static/dashboard.css").status_code == 200
+    assert client.get("/dashboard/static/charts.js").status_code == 200
+    assert client.get("/dashboard/static/../dashboard.py").status_code == 404
+    assert client.get("/dashboard/static/%2e%2e/dashboard.py").status_code == 404
+
+
+def test_security_headers(client, clock):
+    r = client.get("/dashboard/")
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["referrer-policy"] == "no-referrer"
+
+
+# --------------------------------------------------------------------------- JSON
+
+
+def test_summary_shape(client, seeded):
+    s = client.get("/dashboard/api/summary?period=7").json()
+    assert set(s) >= {"generated_at", "timezone", "demo", "dry_run", "period", "kpis", "today",
+                      "pending_decisions", "pipeline", "experiment", "counts", "recent_events"}
+    assert s["demo"] is True
+    assert s["period"]["key"] == "7" and s["period"]["previous_start"]
+    for k in ("views", "watch_minutes", "subs_net", "published", "avg_view_pct", "spend", "cost_per_1k"):
+        assert set(s["kpis"][k]) == {"value", "previous", "delta_pct", "delta_pts"}
+    assert s["kpis"]["views"]["value"] > 0
+    assert set(s["today"]) >= {"uploads", "upload_cap", "spend_usd", "spend_cap_usd", "paused"}
+    assert [p["module"] for p in s["pipeline"]][:3] == ["scout", "fetch", "transcribe"]
+    assert s["pending_decisions"] and s["pending_decisions"][0]["kind"] == "new_source_type"
+
+
+def test_summary_empty_db(client, clock):
+    s = client.get("/dashboard/api/summary").json()
+    assert s["kpis"]["views"]["value"] == 0
+    assert s["pending_decisions"] == [] and s["demo"] is False
+    assert s["today"]["uploads"] == 0
+
+
+def test_series_and_clips_api(client, seeded):
+    s = client.get("/dashboard/api/series").json()
+    assert len(s["series"]["views"]["x"]) == 28
+    clips = client.get("/dashboard/api/clips?sort=views&limit=5").json()
+    views = [c["views"] for c in clips["clips"]]
+    assert views == sorted(views, reverse=True) and clips["total"] >= len(views)
+
+
+# --------------------------------------------------------------------------- auth
+
+
+def test_auth_off_allows_everything(client, clock):
+    assert client.get("/dashboard/api/summary").status_code == 200
+
+
+def test_auth_on_requires_token(client, clock, monkeypatch):
+    token = _with_token(monkeypatch)
+    r = client.get("/dashboard/")
+    assert r.status_code == 401 and "Sign in" in r.text
+    assert client.get("/dashboard/api/summary").status_code == 401
+    assert client.get("/dashboard/licences.csv").status_code == 401
+    assert client.get("/dashboard/api/summary?token=wrong").status_code == 401
+    assert client.get("/dashboard/api/summary", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert client.get("/dashboard/api/summary", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert client.get(f"/dashboard/api/summary?token={token}").status_code == 200
+    # static assets stay public so the sign-in page is styled
+    assert client.get("/dashboard/static/dashboard.css").status_code == 200
+
+
+def test_token_query_sets_cookie_and_strips_token(client, clock, monkeypatch):
+    token = _with_token(monkeypatch)
+    r = client.get(f"/dashboard/clips?token={token}&sort=views", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/dashboard/clips?sort=views"
+    cookie = r.headers["set-cookie"]
+    assert "HttpOnly" in cookie and token not in cookie
+    # the cookie now authenticates the browser
+    assert client.get("/dashboard/clips").status_code == 200
+
+
+def test_login_form(client, clock, monkeypatch):
+    token = _with_token(monkeypatch)
+    bad = client.post("/dashboard/login", data={"token": "wrong", "next": "/dashboard/costs"})
+    assert bad.status_code == 401
+    r = client.post("/dashboard/login", data={"token": token, "next": "https://evil.example/x"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/dashboard/"  # no open redirect
+    assert client.get("/dashboard/costs").status_code == 200
+    page = client.get("/dashboard/").text
+    out = client.post("/dashboard/logout", data={"csrf": _csrf(page)}, follow_redirects=False)
+    assert out.status_code == 303
+    client.cookies.clear()
+    assert client.get("/dashboard/").status_code == 401
+
+
+# --------------------------------------------------------------------------- decisions
+
+
+def test_approve_calls_notifier(client, clock, notifier):
+    did = db.add_decision("budget_increase", "Raise the daily AI budget from 1.00 to 1.50 dollars")
+    html = client.get("/dashboard/decisions").text
+    assert "Raise the daily AI budget" in html
+    r = client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html), "next": "/dashboard/"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/dashboard/?msg=approved"
+    assert notifier == [(did, True, "dashboard")]
+    assert db.get_decision(did).status == "approved"
+    # a second answer is reported as already resolved and does not call the notifier again
+    r2 = client.post(f"/dashboard/decisions/{did}/reject", data={"csrf": _csrf(html)}, follow_redirects=False)
+    assert "msg=already" in r2.headers["location"]
+    assert len(notifier) == 1
+
+
+def test_reject_calls_notifier(client, clock, notifier):
+    did = db.add_decision("new_niche", "Add history topics")
+    html = client.get("/dashboard/").text
+    r = client.post(f"/dashboard/decisions/{did}/reject", data={"csrf": _csrf(html)}, follow_redirects=False)
+    assert r.status_code == 303 and "msg=rejected" in r.headers["location"]
+    assert notifier == [(did, False, "dashboard")]
+
+
+def test_decision_post_requires_csrf(client, clock, notifier):
+    did = db.add_decision("new_niche", "Add history topics")
+    assert client.post(f"/dashboard/decisions/{did}/approve", data={}).status_code == 403
+    assert client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": "0" * 64}).status_code == 403
+    html = client.get("/dashboard/decisions").text
+    cross = client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html)},
+                        headers={"Origin": "https://evil.example"})
+    assert cross.status_code == 403
+    assert notifier == [] and db.get_decision(did).status == "pending"
+    assert client.get(f"/dashboard/decisions/{did}/approve").status_code == 405  # never on GET
+
+
+def test_decision_post_auth_and_bearer(client, clock, notifier, monkeypatch):
+    token = _with_token(monkeypatch)
+    did = db.add_decision("new_niche", "Add history topics")
+    assert client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": "x"}).status_code == 401
+    r = client.post(f"/dashboard/decisions/{did}/approve", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert notifier == [(did, True, "dashboard")]
+
+
+def test_notifier_failure_is_reported(client, clock, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("twilio down")
+
+    monkeypatch.setitem(sys.modules, "notify", types.SimpleNamespace(handle_decision=boom))
+    did = db.add_decision("new_niche", "Add history topics")
+    html = client.get("/dashboard/decisions").text
+    r = client.post(f"/dashboard/decisions/{did}/approve", data={"csrf": _csrf(html)}, follow_redirects=False)
+    assert "msg=failed" in r.headers["location"]
+    assert any("failed" in e.message for e in db.list_events(level="error"))
+
+
+# --------------------------------------------------------------------------- CSV
+
+
+def test_licence_csv(client, clock, make_clip, make_upload, make_source):
+    sid = make_source(status="picked", channel="NASA", licence="us_gov_public_domain",
+                      licence_evidence={"matched_rule": "allowlisted channel 'NASA'", "license": None})
+    cid = make_clip(sid, status="rendered", title="=HYPERLINK(\"http://evil\")", credit_text="Video: NASA (public domain)")
+    make_upload(cid, video_id="abcDEF12345")
+    dry = make_clip(sid, status="rendered", title="dry one")
+    make_upload(dry, video_id="dryrun-2", dry_run=True)
+    r = client.get("/dashboard/licences.csv")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers["content-disposition"]
+    rows = list(csv.DictReader(io.StringIO(r.text)))
+    assert len(rows) == 1  # dry runs excluded by default
+    row = rows[0]
+    assert row["youtube_video_id"] == "abcDEF12345"
+    assert row["youtube_url"] == "https://www.youtube.com/shorts/abcDEF12345"
+    assert row["licence"] == "us_gov_public_domain"
+    assert row["publisher"] == "NASA"
+    assert row["credit_text"] == "Video: NASA (public domain)"
+    assert row["licence_rule"] == "allowlisted channel 'NASA'"
+    assert row["source_url"].startswith("https://www.youtube.com/watch?v=")
+    assert row["clip_title"].startswith("'=")  # spreadsheet formula injection neutralised
+    rows2 = list(csv.DictReader(io.StringIO(client.get("/dashboard/licences.csv?include_dry_run=1").text)))
+    assert len(rows2) == 2
+
+
+# --------------------------------------------------------------------------- escaping
+
+
+EVIL = '<script>alert("x")</script><img src=x onerror=alert(1)>'
+
+
+def test_malicious_title_is_escaped_everywhere(client, clock, make_source, make_clip, make_upload):
+    sid = make_source(status="picked", title=EVIL, channel=EVIL, description=EVIL,
+                      licence_evidence={"matched_rule": EVIL})
+    cid = make_clip(sid, status="rendered", title=EVIL, hook_text=EVIL, sonnet_rationale=EVIL, description=EVIL)
+    vid = "vidEVIL0001"
+    make_upload(cid, video_id=vid)
+    db.upsert_stat(vid, "2026-11-11", views=50, avg_view_pct=60.0)
+    db.add_decision("other", EVIL, {"x": EVIL})
+    db.log_event("pick", EVIL, level="error", data={"t": EVIL})
+    db.add_notification("sms", EVIL, "sms", status="sent")
+    for path in ["/dashboard/", "/dashboard/clips", f"/dashboard/clips/{cid}", f"/dashboard/sources/{sid}",
+                 "/dashboard/sources", "/dashboard/decisions", "/dashboard/events", "/dashboard/insights",
+                 "/dashboard/clips?q=%3Cscript%3E"]:
+        html = client.get(path).text
+        assert "<script>alert" not in html, path
+        assert "<img src=x" not in html, path
+    assert "&lt;script&gt;" in client.get(f"/dashboard/clips/{cid}").text
+
+
+def test_json_island_cannot_break_out(client, clock, make_source, make_clip, make_upload):
+    sid = make_source(status="picked")
+    cid = make_clip(sid, status="rendered", title="</script><script>alert(1)</script>")
+    make_upload(cid, video_id="vidJSON0001", publish_at="2026-11-01T15:00:00Z")
+    for d in range(10):
+        db.upsert_stat("vidJSON0001", (datetime(2026, 11, 1) + timedelta(days=d)).date(), views=100 + d,
+                       avg_view_pct=70.0)
+    db.update_clip(cid, haiku_score=9)
+    html = client.get("/dashboard/insights").text
+    assert "</script><script>alert(1)" not in html
+
+
+def test_revenue_tiles_only_with_revenue_data(client, clock, make_upload):
+    make_upload(video_id="vidREV00001")
+    db.upsert_stat("vidREV00001", "2026-11-10", views=1000, avg_view_pct=70.0)
+    assert "RPM" not in client.get("/dashboard/").text  # no revenue reported -> no revenue tiles
+    conn = db.connect()
+    try:
+        col = dashboard.revenue_column(conn)
+        if col is None:  # older schema: emulate the optional revenue column
+            conn.execute("ALTER TABLE stats ADD COLUMN estimated_revenue REAL")
+            col = "estimated_revenue"
+        assert "RPM" not in client.get("/dashboard/").text
+        conn.execute(f"UPDATE stats SET {col} = 2.5")
+        conn.commit()
+    finally:
+        conn.close()
+    html = client.get("/dashboard/").text
+    assert "RPM" in html and "Revenue − LLM cost" in html
+    s = client.get("/dashboard/api/summary").json()
+    assert s["kpis"]["revenue"]["value"] == pytest.approx(2.5)
+    assert s["kpis"]["rpm"]["value"] == pytest.approx(2.5)
+
+
+# --------------------------------------------------------------------------- helpers
+
+
+def test_formatters():
+    assert dashboard.fmt_compact(1284) == "1.3K"
+    assert dashboard.fmt_compact(312_000) == "312K"
+    assert dashboard.fmt_compact(4_200_000) == "4.2M"
+    assert dashboard.fmt_compact(None) == "—"
+    assert dashboard.fmt_usd(0.42) == "$0.42"
+    assert dashboard.fmt_usd(0.0108) == "$0.011"
+    assert dashboard.fmt_usd(12.5) == "$12.50"
+    assert dashboard.fmt_pct(54.2) == "54%"
+    assert dashboard.fmt_duration(45) == "0:45"
+
+
+def test_hook_form_and_spearman():
+    assert dashboard.hook_form("Would you fly on this?") == "Question"
+    assert dashboard.hook_form("17,000 mph and falling") == "Number / stat"
+    assert dashboard.hook_form("Nobody expected this.") == "Statement / claim"
+    res = dashboard.spearman([1, 2, 3, 4, 5, 6], [2, 4, 6, 8, 10, 12])
+    assert res["r"] == pytest.approx(1, abs=1e-5)
+    assert dashboard.spearman([1, 2], [1, 2])["r"] is None
+    assert "Not enough data" in dashboard.describe_correlation({"n": 2, "r": None, "p": None})
+
+
+def test_strategy_diff():
+    old = {"version": 1, "uploads_per_day": 4, "topics": [{"query": "a"}], "experiment": {"id": "e1"},
+           "clip_length_sec": {"min": 20, "target": 45, "max": 59}}
+    new = {"version": 2, "uploads_per_day": 5, "topics": [{"query": "b"}], "experiment": {"id": "e2"},
+           "clip_length_sec": {"min": 20, "target": 38, "max": 59}}
+    out = dashboard.strategy_diff(old, new)
+    assert "uploads per day: 4 → 5" in out
+    assert any(x.startswith("topics: +b") for x in out)
+    assert "experiment: e1 → e2" in out
+    assert any("target 45 → 38" in x for x in out)
+
+
+# --------------------------------------------------------------------------- seed_demo
+
+
+def test_seed_demo_refuses_real_db(tmp_path, clock, make_source):
+    make_source()  # real data in the default (test) DB
+    data_dir = config.get_settings().data_dir
+    with pytest.raises(seed_demo.RefuseError):
+        seed_demo.seed(data_dir, days=3, now=clock.now)
+    assert len(db.list_sources()) == 1
+    assert db.kv_get(dashboard.DEMO_KV_KEY) is None
+
+
+def test_seed_demo_cli_refuses_and_replaces(tmp_path, clock, capsys):
+    target = tmp_path / "demo"
+    assert seed_demo.main(["--data-dir", str(target), "--days", "4", "--seed", "1"]) == 0
+    assert seed_demo.main(["--data-dir", str(target), "--days", "4"]) == 2  # existing demo needs --replace
+    assert "refusing" in capsys.readouterr().err
+    assert seed_demo.main(["--data-dir", str(target), "--days", "4", "--replace"]) == 0
+    assert db.kv_get(dashboard.DEMO_KV_KEY)["generator"] == "seed_demo.py"
+
+
+def test_seed_demo_refuses_foreign_strategy_file(tmp_path, clock):
+    target = tmp_path / "other"
+    target.mkdir()
+    (target / "strategy.json").write_text("{}")
+    with pytest.raises(seed_demo.RefuseError):
+        seed_demo.seed(target, days=2, now=clock.now)
+
+
+def test_seeded_data_is_consistent(seeded):
+    # every uploaded clip has a licence and an upload; stats only for real (non-dry-run) videos
+    for c in db.list_clips("uploaded"):
+        assert c.licence in ("us_gov_public_domain", "cc_by") and c.source_url
+        assert db.list_uploads(clip_id=c.id)
+    live = set(db.live_video_ids())
+    conn = db.connect()
+    try:
+        vids = {r[0] for r in conn.execute("SELECT DISTINCT youtube_video_id FROM stats")}
+    finally:
+        conn.close()
+    assert vids <= live and all(v.startswith("demo") for v in vids)
+    assert db.list_decisions("pending")
+    assert any(e.level == "error" for e in db.list_events(limit=2000))
+    assert any(s.status == "rejected" for s in db.list_sources())
+    assert db.utcnow is not None and db.utcnow() == datetime(2026, 11, 13, 15, 0, tzinfo=UTC)

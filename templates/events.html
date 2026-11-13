@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Log{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Event log</h1>
+    <p class="lede">Everything the agent did, newest first.</p>
+  </div>
+</div>
+<form class="filters filters-form" method="get" action="/dashboard/events" role="search">
+  <label class="field"><span>Search</span><input type="search" name="q" value="{{ filters.q }}" placeholder="Message text"></label>
+  <label class="field"><span>Level</span><select name="level"><option value="">All</option>{% for l in levels %}<option value="{{ l }}"{% if filters.level == l %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+  <label class="field"><span>Module</span><select name="module"><option value="">All</option>{% for mo in modules %}<option value="{{ mo }}"{% if filters.module == mo %} selected{% endif %}>{{ mo }}</option>{% endfor %}</select></label>
+  <div class="field field-actions"><button class="btn" type="submit">Apply</button>{% if filters.values() | select | list or paged %}<a href="/dashboard/events">Reset</a>{% endif %}</div>
+</form>
+{% if events %}
+<div class="table-wrap"><table class="data events-table">
+  <thead><tr><th scope="col">When</th><th scope="col">Level</th><th scope="col">Module</th><th scope="col">Message</th></tr></thead>
+  <tbody>
+  {% for e in events %}
+  <tr class="lvl-{{ e.level }}">
+    <td class="nowrap"><time datetime="{{ e.ts }}">{{ e.ts | dt }}</time></td>
+    <td>{{ m.pill(e.level, {"error": "critical", "warning": "warning", "info": "neutral", "debug": "neutral"}[e.level] if e.level in ("error", "warning", "info", "debug") else "neutral") }}</td>
+    <td><a href="{{ link(module=e.module) }}">{{ e.module }}</a></td>
+    <td class="msg-cell">{{ e.message }}{% if e.data %}<details><summary>data</summary><pre class="json">{{ e.data | pretty_json }}</pre></details>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% if more %}{% set last = events[-1] %}<nav class="pager"><a href="{{ link(before_ts=last.ts, before_id=last.id) }}">Older →</a></nav>{% endif %}
+{% else %}
+  {% call m.empty("No events" ~ (" match these filters" if filters.values() | select | list else " yet")) %}{% endcall %}
+{% endif %}
+{% endblock %}

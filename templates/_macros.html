@@ -86,7 +86,7 @@
 {% macro decision_card(d, csrf, next="/dashboard/decisions", compact=False) %}
 <article class="decision">
   <div class="decision-main">
-    <p class="decision-kind">{{ d.kind | replace("_", " ") }} · #{{ d.id }} · requested {{ d.requested_at | ago }}{% if d.expires_at %} · expires {{ d.expires_at | ago }}{% endif %}</p>
+    <p class="decision-kind">{{ d.kind | replace("_", " ") | capitalize }} · #{{ d.id }} · requested {{ d.requested_at | ago }}{% if d.expires_at %} · expires {{ d.expires_at | ago }}{% endif %}</p>
     <p class="decision-summary">{{ d.summary }}</p>
     {% if not compact and d.payload %}
     <details><summary>What would change</summary><pre class="json">{{ d.payload | pretty_json }}</pre></details>

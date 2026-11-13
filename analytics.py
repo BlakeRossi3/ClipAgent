@@ -6,7 +6,7 @@ Public API (CLAUDE.md contract)::
     collect_stats(day=None) -> int        # rows upserted into stats
     refresh_channel_stats() -> None
     check_claims() -> int                 # videos newly flagged
-    lifetime_stats(video_id) -> dict | None   # extension: Data API counters cached in kv
+    lifetime_stats(video_id) -> dict | None   # extension: Data API lifetime counters (uploads row)
 
 Design notes
 ------------
@@ -24,12 +24,17 @@ Design notes
 * **Retention**: ``dimensions=elapsedVideoTimeRatio`` / ``metrics=audienceWatchRatio`` for a
   single video, only for videos at least ``RETENTION_MIN_AGE_DAYS`` old and at most every
   ``RETENTION_REFRESH_DAYS``; stored as ``[[ratio, watch_ratio], ...]`` in the ``retention``
-  JSON column of that video's row for the newest collected day (and carried forward).
+  table (``db.upsert_retention``). The newest collected day's ``stats.retention`` column gets a
+  copy for older readers; it is not carried forward to later rows.
+* **Revenue** (optional): with ``YOUTUBE_MONETARY_ANALYTICS=true`` *and* a token authorised
+  with ``youtube_auth.py --monetary``, ``estimatedRevenue`` / ``cpm`` fill
+  ``stats.estimated_revenue`` / ``stats.cpm``; otherwise those columns stay NULL.
 * **Same-day signal**: ``videos.list(part=statistics)`` lifetime counters (1 unit per 50 ids)
-  are cached in ``kv['yt:lifetime:<video_id>']`` (no column exists for them).
+  are stored on the upload row (``db.set_upload_lifetime``).
 * **Claims**: the Data API does not expose Content ID claim details to ordinary channels.
   ``check_claims`` only sees indirect signals (rejected/failed/deleted uploads, regional
-  blocks, a video that vanished, a scheduled video that never went public).
+  blocks, a video that vanished, a scheduled video that never went public). What YouTube
+  reports is kept in ``uploads.youtube_status``.
 """
 
 from __future__ import annotations
@@ -56,14 +61,16 @@ NOT_PUBLIC_GRACE = timedelta(hours=2)
 
 CORE_METRICS = ("views", "estimatedMinutesWatched", "averageViewDuration", "averageViewPercentage")
 ENGAGEMENT_METRICS = ("likes", "comments", "shares", "subscribersGained", "subscribersLost")
+MONETARY_METRICS = ("estimatedRevenue", "cpm")
 _COLUMN = {
     "views": "views", "estimatedMinutesWatched": "watch_minutes", "averageViewDuration": "avg_view_duration_sec",
     "averageViewPercentage": "avg_view_pct", "likes": "likes", "comments": "comments", "shares": "shares",
     "subscribersGained": "subscribers_gained", "subscribersLost": "subscribers_lost",
+    "estimatedRevenue": "estimated_revenue", "cpm": "cpm",
 }
-_NULLABLE = ("avg_view_duration_sec", "avg_view_pct")
+_NULLABLE = ("avg_view_duration_sec", "avg_view_pct", "estimated_revenue", "cpm")
 _STAT_FIELDS = ("views", "watch_minutes", "avg_view_duration_sec", "avg_view_pct", "likes", "comments", "shares",
-                "subscribers_gained", "subscribers_lost", "retention")
+                "subscribers_gained", "subscribers_lost", "retention", "estimated_revenue", "cpm")
 
 CLAIM_REJECTIONS = frozenset({"claim", "copyright", "trademark", "legal"})
 
@@ -192,21 +199,23 @@ def _coerce(col: str, v: Any) -> Any:
     return float(v) if col in _NULLABLE or col == "watch_minutes" else int(v)
 
 
-def _latest_retention(ids: list[str]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for vid in ids:
-        for st in reversed(db.get_stats(vid)):
-            if st.retention:
-                out[vid] = st.retention
-                break
-    return out
-
-
 def _retention_due(vid: str, live: date, today: date) -> bool:
     if (today - live).days < RETENTION_MIN_AGE_DAYS:
         return False
-    last = db.kv_get(f"analytics:retention:{vid}")
-    return last is None or (today - date.fromisoformat(last)).days >= RETENTION_REFRESH_DAYS
+    last = db.get_retention(vid)
+    return last is None or (today - db.local_date_of(last.fetched_at)).days >= RETENTION_REFRESH_DAYS
+
+
+def revenue_enabled() -> bool:
+    """Revenue is collected only when configured *and* the saved token has the monetary scope."""
+    if not get_settings().youtube_monetary_analytics:
+        return False
+    if youtube_auth.has_scope(youtube_auth.SCOPE_MONETARY):
+        return True
+    if db.kv_set_if_absent(f"analytics:monetary_scope_missing:{db.local_today().isoformat()}", True):
+        db.log_event(MODULE, "YOUTUBE_MONETARY_ANALYTICS is on but the YouTube token lacks the monetary scope; "
+                     "run `python youtube_auth.py --monetary`", level="warning")
+    return False
 
 
 def collect_stats(day: date | None = None) -> int:
@@ -225,7 +234,7 @@ def collect_stats(day: date | None = None) -> int:
     days = [end_day - timedelta(days=i) for i in range(BACKFILL_DAYS - 1, -1, -1)]
     upserted = 0
     failed_reports = 0
-    last_curve = _latest_retention(ids_all)
+    with_revenue = revenue_enabled()
 
     for d in days:
         ids = [v for v in ids_all if live.get(v, d) <= d]
@@ -233,16 +242,15 @@ def collect_stats(day: date | None = None) -> int:
             continue
         core = _video_day_report(analytics, CORE_METRICS, ids, d, "core")
         eng = _video_day_report(analytics, ENGAGEMENT_METRICS, ids, d, "engagement")
-        failed_reports += (core is None) + (eng is None)
+        rev = _video_day_report(analytics, MONETARY_METRICS, ids, d, "revenue") if with_revenue else None
+        failed_reports += (core is None) + (eng is None) + (with_revenue and rev is None)
         if core is None and eng is None:
             continue
         existing = {s.youtube_video_id: s for s in db.stats_between(d, d)}
         for vid in ids:
             prev = existing.get(vid)
             row: dict[str, Any] = {f: getattr(prev, f) for f in _STAT_FIELDS} if prev else {}
-            if row.get("retention") is None and vid in last_curve:
-                row["retention"] = last_curve[vid]
-            for report, metrics in ((core, CORE_METRICS), (eng, ENGAGEMENT_METRICS)):
+            for report, metrics in ((core, CORE_METRICS), (eng, ENGAGEMENT_METRICS), (rev, MONETARY_METRICS)):
                 if report is None:
                     continue  # keep previous values for this report's columns
                 vals = report.get(vid, {})
@@ -251,7 +259,7 @@ def collect_stats(day: date | None = None) -> int:
             db.upsert_stat(vid, d, **row)
             upserted += 1
 
-    # retention curves, sparingly, attached to the newest collected day's row
+    # retention curves, sparingly; mirrored onto the newest collected day's stats row
     newest = {s.youtube_video_id: s for s in db.stats_between(end_day, end_day)}
     for vid in ids_all:
         live_day = live.get(vid)
@@ -261,16 +269,17 @@ def collect_stats(day: date | None = None) -> int:
         curve = _retention(analytics, vid, live_day, end_day)
         if curve is None:
             continue
-        row = {f: getattr(prev, f) for f in _STAT_FIELDS}
-        row["retention"] = curve
-        db.upsert_stat(vid, end_day, **row)
-        db.kv_set(f"analytics:retention:{vid}", today.isoformat())
+        with db.transaction() as conn:
+            db.upsert_retention(vid, curve, start_day=live_day, end_day=end_day, conn=conn)
+            db.upsert_stat(vid, end_day, **{**{f: getattr(prev, f) for f in _STAT_FIELDS}, "retention": curve},
+                           conn=conn)
 
     refreshed = _refresh_lifetime(youtube, ids_all)
     db.log_event(MODULE, f"collected stats: {upserted} rows over {len(days)} days",
                  level="warning" if failed_reports else "info",
                  data={"days": [d.isoformat() for d in days], "videos": len(ids_all), "rows": upserted,
-                       "failed_reports": failed_reports, "lifetime_refreshed": refreshed})
+                       "failed_reports": failed_reports, "lifetime_refreshed": refreshed,
+                       "revenue": with_revenue})
     return upserted
 
 
@@ -299,18 +308,21 @@ def _refresh_lifetime(youtube: Any, ids: list[str]) -> int:
     items = _videos_list(youtube, ids, "statistics")
     if items is None:
         return 0
-    now = db.now_iso()
-    for vid, it in items.items():
-        s = it.get("statistics") or {}
-        db.kv_set(f"yt:lifetime:{vid}", {
-            "views": int(s.get("viewCount", 0)), "likes": int(s.get("likeCount", 0)),
-            "comments": int(s.get("commentCount", 0)), "fetched_at": now})
+    with db.transaction() as conn:
+        for vid, it in items.items():
+            s = it.get("statistics") or {}
+            db.set_upload_lifetime(vid, views=int(s.get("viewCount", 0)), likes=int(s.get("likeCount", 0)),
+                                   comments=int(s.get("commentCount", 0)), conn=conn)
     return len(items)
 
 
 def lifetime_stats(video_id: str) -> dict[str, Any] | None:
     """Latest Data API lifetime counters ``{views, likes, comments, fetched_at}`` (same-day signal)."""
-    return db.kv_get(f"yt:lifetime:{video_id}")
+    up = db.get_upload_by_video(video_id)
+    if up is None or up.lifetime_fetched_at is None:
+        return None
+    return {"views": up.lifetime_views, "likes": up.lifetime_likes, "comments": up.lifetime_comments,
+            "fetched_at": up.lifetime_fetched_at}
 
 
 def refresh_channel_stats() -> None:
@@ -372,11 +384,20 @@ def _problems(item: dict[str, Any]) -> tuple[list[str], bool]:
     return problems, claim
 
 
+def _youtube_status(item: dict[str, Any] | None, problems: list[str]) -> str:
+    """Compact text for ``uploads.youtube_status``: ``uploadStatus/privacyStatus`` plus any problems."""
+    if item is None:
+        return "missing: " + "; ".join(problems)
+    st = item.get("status") or {}
+    base = f"{st.get('uploadStatus') or '?'}/{st.get('privacyStatus') or '?'}"
+    return (base + ": " + "; ".join(problems))[:500] if problems else base
+
+
 def _flag(upload: db.Upload, vid: str, problems: list[str], *, claim: bool, removed: bool) -> None:
     if claim:
         db.set_copyright_claim(vid, True)
     if removed:
-        db.update_upload(upload.id, status="removed", error="; ".join(problems)[:500])
+        db.update_upload(upload.id, status="removed")
     clip = db.get_clip(upload.clip_id)
     title = clip.title if clip else f"clip {upload.clip_id}"
     db.log_event(MODULE, f"video {vid} flagged: {'; '.join(problems)}", level="error",
@@ -409,10 +430,13 @@ def check_claims() -> int:
             continue
         item = items.get(vid)
         if item is None:
-            _flag(up, vid, ["no longer on YouTube (removed or deleted)"], claim=False, removed=True)
+            problems = ["no longer on YouTube (removed or deleted)"]
+            db.set_youtube_status(vid, _youtube_status(None, problems))
+            _flag(up, vid, problems, claim=False, removed=True)
             newly += 1
             continue
         problems, claim = _problems(item)
+        db.set_youtube_status(vid, _youtube_status(item, problems))
         removed = (item.get("status") or {}).get("uploadStatus") in ("rejected", "deleted")
         # flag each distinct set of problems once (a later, different problem flags again)
         if problems and db.kv_set_if_absent(f"analytics:flagged:{vid}:{'|'.join(sorted(problems))}", db.now_iso()):

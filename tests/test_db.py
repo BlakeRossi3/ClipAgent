@@ -235,3 +235,116 @@ def test_llm_usage_helpers(clock):
     summary = db.llm_usage_summary()
     assert summary[0]["calls"] == 2 and summary[0]["cost_usd"] == pytest.approx(0.75)
     assert db.list_llm_usage()[0].fake is True
+
+
+# ---------------------------------------------------------------------------
+# schema v2
+# ---------------------------------------------------------------------------
+
+def test_v1_database_upgrades_in_place(tmp_path, monkeypatch):
+    path = tmp_path / "old.db"
+    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:1])
+    assert db.init_db(path) == 1
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO sources (id, url, source_type, licence, status, discovered_at, updated_at) "
+                 "VALUES (1, 'https://nasa.gov/a.mp4', 'nasa', 'us_gov_public_domain', 'picked', 't', 't')")
+    conn.execute("INSERT INTO clips (id, source_id, start_sec, end_sec, licence, source_url, status, created_at, "
+                 "updated_at) VALUES (1, 1, 0, 30, 'us_gov_public_domain', 'https://nasa.gov/a.mp4', 'uploaded', 't', 't')")
+    conn.execute("INSERT INTO uploads (id, clip_id, youtube_video_id, status, quota_units, dry_run, uploaded_at, "
+                 "created_at, updated_at) VALUES (7, 1, 'vidOld', 'uploaded', 1600, 0, '2026-11-01T12:00:00Z', 't', 't')")
+    conn.execute("INSERT INTO stats (youtube_video_id, day, views, fetched_at) VALUES ('vidOld', '2026-11-02', 42, 't')")
+    conn.commit()
+    conn.close()
+    assert db.schema_version(path) == 1
+
+    monkeypatch.undo()
+    assert db.init_db(path) == db.SCHEMA_VERSION == 2
+    assert db.schema_version(path) == 2
+    with db.transaction(db.connect(path)) as c:
+        up = db.get_upload(7, conn=c)
+        assert up.youtube_video_id == "vidOld" and up.quota_units == 1600 and up.lifetime_views is None
+        db.update_upload(7, status="superseded", conn=c)       # new status accepted by the rebuilt CHECK
+        assert db.get_upload(7, conn=c).status == "superseded"
+        assert db.get_stats("vidOld", conn=c)[0].estimated_revenue is None
+        idx = {r["name"] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert {"idx_uploads_clip", "idx_uploads_uploaded_at", "idx_notifications_sid"} <= idx
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+        c.commit()
+
+
+def test_schema_version_of_missing_db(tmp_path):
+    assert db.schema_version(tmp_path / "nope.db") == 0
+
+
+def test_kv_incr_is_atomic_counter():
+    assert db.kv_incr("n") == 1
+    assert db.kv_incr("n", 5) == 6
+    db.kv_set("m", 10)
+    assert db.kv_incr("m", 3) == 13 and db.kv_get("m") == 13
+
+
+def test_notification_getters():
+    nid = db.add_notification("budget_cap", "hi", "call")
+    assert db.get_notification(nid).kind == "budget_cap"
+    assert db.get_notification(nid + 99) is None
+    db.update_notification(nid, status="sent", sid="CA1")
+    newer = db.add_notification("approval", "x", "call", sid="CA1")
+    assert db.get_notification_by_sid("CA1").id == newer
+    assert db.get_notification_by_sid("nope") is None
+
+
+def test_count_clips_and_strategy_version_for_decision(make_clip):
+    make_clip(experiment_id="exp1", experiment_variant="control")
+    make_clip(experiment_id="exp1", experiment_variant="variant")
+    make_clip(experiment_id="exp1", experiment_variant="variant", status="rendered")
+    make_clip()
+    assert db.count_clips() == 4
+    assert db.count_clips(experiment_id="exp1") == 3
+    assert db.count_clips(experiment_id="exp1", variant="variant") == 2
+    assert db.count_clips(status=["rendered"]) == 1
+    did = db.add_decision("strategy_change", "x")
+    assert db.strategy_version_for_decision(did) is None
+    db.add_strategy_version(5, {"v": 5}, decision_id=did)
+    assert db.strategy_version_for_decision(did).version == 5
+
+
+def test_lifetime_status_and_retention(make_upload):
+    make_upload(video_id="vidL")
+    db.set_upload_lifetime("vidL", views=10, likes=2, comments=1)
+    db.set_youtube_status("vidL", "processed/public")
+    up = db.get_upload_by_video("vidL")
+    assert (up.lifetime_views, up.lifetime_likes, up.lifetime_comments) == (10, 2, 1)
+    assert up.lifetime_fetched_at and up.youtube_status == "processed/public"
+    with pytest.raises(db.NotFound):
+        db.set_upload_lifetime("ghost", views=1, likes=0, comments=0)
+    assert db.get_retention("vidL") is None
+    db.upsert_retention("vidL", [(0.0, 1.0), (1.0, 0.4)], start_day=date(2026, 11, 1), end_day="2026-11-10")
+    db.upsert_retention("vidL", [[0.0, 1.0], [1.0, 0.5]], start_day="2026-11-01", end_day="2026-11-11")
+    r = db.get_retention("vidL")
+    assert r.curve == [[0.0, 1.0], [1.0, 0.5]] and r.end_day == "2026-11-11"
+
+
+def test_clip_performance_period_filters_stats_days(clock, make_upload, make_source, make_clip):
+    sid = make_source(status="picked", topic="Mars rover")
+    old = make_upload(make_clip(sid, status="rendered"), video_id="vOld")      # uploaded 2026-11-13
+    clock.advance(days=10)
+    make_upload(make_clip(sid, status="rendered", title="new"), video_id="vNew")  # uploaded 2026-11-23
+    make_upload(make_clip(sid, status="rendered"), video_id="dry-1", dry_run=True)
+    db.upsert_stat("vOld", "2026-11-14", views=100, avg_view_duration_sec=20.0, estimated_revenue=0.5)
+    db.upsert_stat("vOld", "2026-11-20", views=30, avg_view_duration_sec=30.0)
+    db.upsert_stat("vOld", "2026-11-22", views=7, avg_view_duration_sec=40.0)
+
+    rows = {r["youtube_video_id"]: r for r in db.clip_performance("2026-11-20")}
+    assert set(rows) == {"vOld", "vNew"}                     # old clip earned views in the period
+    o = rows["vOld"]
+    assert o["views"] == 37 and o["days_tracked"] == 2 and o["total_views"] == 137
+    assert o["avg_view_duration_sec"] == pytest.approx(35.0) and o["topic"] == "Mars rover"
+    assert o["estimated_revenue"] is None and o["upload_status"] == "uploaded"
+    assert rows["vNew"]["views"] == 0 and rows["vNew"]["days_tracked"] == 0   # new, no data yet
+
+    prev = db.clip_performance("2026-11-13", "2026-11-19")
+    assert [(r["youtube_video_id"], r["views"], r["estimated_revenue"]) for r in prev] == [("vOld", 100, 0.5)]
+    assert [r["youtube_video_id"] for r in db.clip_performance()] == ["vOld", "vNew"]
+    db.update_upload(old, status="removed")
+    assert db.clip_performance("2026-11-20")[0]["upload_status"] == "removed"
+    assert db.clip_performance("2026-12-01") == []

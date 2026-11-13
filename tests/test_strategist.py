@@ -247,15 +247,13 @@ def test_allowlist_addition_needs_approval(seeded, fake_llm, notify_stub):
         next(e for e in v["allowlist"] if e["source_type"] == "congress")["channels"].append(
             {"name": "House Energy and Commerce Committee", "handle": None, "channel_id": None, "note": ""})
 
-    # diff_major_changes alone does not see this (foundation gap) ...
     cur = _current()
     new = strategist._from_view(reply(mutate)["strategy"], cur)
-    assert strategy_mod.diff_major_changes(cur, new) == []
-    # ... but the strategist treats it as major
+    assert [m.kind for m in strategy_mod.diff_major_changes(cur, new)] == ["strategy_change"]
     fake_llm.queue(reply(mutate))
     review = strategist.weekly_review()
     assert review.status == "approval_requested"
-    assert review.major_changes[0].kind == "strategy_change"
+    assert [m.kind for m in review.major_changes] == ["strategy_change"]   # reported once, not twice
     assert "allowlist" in review.major_changes[0].summary
     assert _current().version == 1
 
@@ -402,3 +400,18 @@ def test_editable_view_roundtrip(strategy):
     assert llm.validate_json(view, strategist.STRATEGY_VIEW_SCHEMA) == []
     merged = strategist._from_view(view, strategy)
     assert json.dumps(merged, sort_keys=True) == json.dumps(dict(strategy), sort_keys=True)
+
+
+def test_clips_uploaded_before_the_period_still_count(clock, make_source, make_clip, make_upload, strategy):
+    clock.advance(days=-20)
+    old = make_upload(make_clip(make_source(status="picked", topic="Mars rover"), status="rendered"), video_id="vOld")
+    clock.advance(days=20)
+    db.upsert_stat("vOld", "2026-10-25", views=5000)          # before the period: ignored
+    db.upsert_stat("vOld", "2026-11-10", views=400, avg_view_duration_sec=21.0)
+    data = strategist.gather(7, strategy)
+    assert [r["youtube_video_id"] for r in data["rows"]] == ["vOld"]
+    row = data["rows"][0]
+    assert row["views"] == 400 and row["topic"] == "Mars rover" and row["avg_view_duration_sec"] == 21.0
+    assert data["tracked_clips"] == 1 and data["uploaded_in_period"] == 0
+    assert db.get_upload(old).clip_id == row["clip_id"]
+    assert "clips_active=1 uploaded_in_period=0" in strategist.build_digest(data)

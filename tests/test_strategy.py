@@ -91,9 +91,45 @@ def test_diff_major_changes(strategy):
     assert all(k in db.DECISION_KINDS for k in kinds)
     budget_change = st.diff_major_changes(strategy, strategy.updated(daily_llm_budget_usd=2.0))[0]
     assert "2.00 dollars" in budget_change.summary
-    # removals and decreases are minor
-    less = strategy.updated(source_types=["nasa"], daily_llm_budget_usd=0.5, topic_areas=["space"])
+    # topic-area removals and budget decreases are minor ...
+    less = strategy.updated(daily_llm_budget_usd=0.5, topic_areas=["space"])
     assert st.diff_major_changes(strategy, less) == []
+    # ... but removing a source type changes what footage is eligible
+    fewer = st.diff_major_changes(strategy, strategy.updated(source_types=["nasa"]))
+    assert [c.kind for c in fewer] == ["strategy_change"]
+    assert fewer[0].detail == {"removed_source_types": ["congress", "cc_by_youtube"]}
+
+
+def test_allowlist_and_blocklist_edits_are_major(strategy):
+    allow = json.loads(json.dumps(strategy["allowlist"]))
+    allow["congress"]["channels"].append({"name": "House Energy and Commerce", "handle": None, "channel_id": None})
+    allow["nasa"]["domains"].append("nara.gov")
+    changes = st.diff_major_changes(strategy, strategy.updated(allowlist=allow))
+    assert [c.kind for c in changes] == ["strategy_change"]
+    assert "house energy and commerce" in changes[0].summary and "allowed websites" in changes[0].summary
+    blocked = st.diff_major_changes(strategy, strategy.updated(
+        blocklist_channels=strategy["blocklist_channels"][1:] + ["Some News"]))
+    assert [c.detail for c in blocked] == [{"blocklist_added": ["some news"]}, {"blocklist_removed": ["c-span"]}]
+
+
+def test_any_channel_only_for_cc_by(strategy):
+    allow = json.loads(json.dumps(strategy["allowlist"]))
+    allow["congress"]["any_channel"] = True
+    errs = st.validate_strategy(strategy.updated(allowlist=allow))
+    assert any("allowlist[congress].any_channel" in e for e in errs)
+    assert st.validate_strategy(strategy) == []      # cc_by_youtube keeps any_channel
+
+
+def test_caption_framing_and_max_windows(strategy):
+    style = {**strategy["caption_style"], "framing": "blur_fill"}
+    assert st.validate_strategy(strategy.updated(caption_style=style)) == []
+    bad = st.validate_strategy(strategy.updated(caption_style={**style, "framing": "stretch"}))
+    assert bad == ["caption_style.framing must be one of ['auto', 'center_crop', 'blur_fill', 'fit']"]
+    assert strategy.max_windows_per_source == 40
+    no_key = st.parse_strategy({k: v for k, v in strategy.items() if k != "max_windows_per_source"})
+    assert no_key.max_windows_per_source == st.DEFAULT_MAX_WINDOWS_PER_SOURCE
+    assert st.validate_strategy(strategy.updated(max_windows_per_source=0)) == [
+        "max_windows_per_source must be an int >= 1"]
 
 
 def test_upload_cap(strategy, monkeypatch):

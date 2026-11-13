@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}What works{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>What works</h1>
+    <p class="lede">Published Shorts compared on <strong>views in their first {{ mature_days }} days</strong>, so old and new clips are judged on equal time. Groups with fewer than {{ min_n }} clips are greyed out: treat them as anecdotes, not findings.</p>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="segmented" role="group" aria-label="Published in">
+    {% for key, label in periods.items() %}<a href="{{ link(period=key) }}"{% if key == d.window.key %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+  </div>
+  <div class="segmented" role="group" aria-label="Metric">
+    {% for key, val in d.metrics.items() %}<a href="{{ link(metric=key) }}"{% if key == d.metric %} aria-current="true"{% endif %}>{{ val[0] }}</a>{% endfor %}
+  </div>
+</div>
+
+{% if d.n_mature == 0 %}
+  {% call m.empty("Not enough data to learn from yet", "This page needs published Shorts that are at least " ~ mature_days ~ " days old with YouTube analytics. " ~ ((d.n_pending ~ " published clip(s) in this period are still too new.") if d.n_pending else "None have been published in this period.")) %}{% endcall %}
+{% else %}
+<p class="result-count">{{ d.n_mature }} clip{{ "s" if d.n_mature != 1 else "" }} published {{ d.window.start | date }} – {{ d.window.end | date }} with {{ mature_days }}+ days of data{% if d.n_pending %} · {{ d.n_pending }} newer clip{{ "s" if d.n_pending != 1 else "" }} not yet included{% endif %}. All clips: median {{ d.overall.views_7d | compact }} {{ mature_days }}-day views, {{ d.overall.pct | pct }} average viewed.</p>
+
+<section class="card" aria-labelledby="score-h">
+  <div class="card-head"><h2 id="score-h">Does the Haiku score predict performance?</h2><p class="sub">Each dot is one Short (horizontal jitter keeps equal scores apart). Views on a log scale.</p></div>
+  <p class="verdict verdict-neutral">{{ d.corr_text }}</p>
+  {% if d.corr_pct.r is not none %}<p class="muted small">Score vs average view %: r = {{ "%+.2f" | format(d.corr_pct.r) }} (n={{ d.corr_pct.n }}).</p>{% endif %}
+  {% if d.scatter.has_data %}
+  <div class="chart" data-chart="{{ d.scatter.id }}" style="height: {{ d.scatter.height }}px" role="img" aria-label="Scatter of Haiku score against {{ mature_days }}-day views; per-score summary in the table below"></div>
+  <script type="application/json" id="{{ d.scatter.id }}-data">{{ d.scatter | tojson }}</script>
+  {% endif %}
+  <details class="table-twin" open>
+    <summary>By score</summary>
+    <div class="table-wrap"><table class="data">
+      <thead><tr>{% for c in d.scatter.table.columns %}<th scope="col"{% if not loop.first %} class="num"{% endif %}>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in d.scatter.table.rows %}<tr>{% for v in row %}<td{% if not loop.first %} class="num"{% endif %}>{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
+</section>
+
+<section class="grid-2" aria-label="Breakdowns">
+  {% for dim in d.dims %}
+  <div class="card">
+    <div class="card-head"><h3>{{ dim.title }}</h3><p class="sub">{{ d.metric_label }}{% if dim.groups > dim.bars.rows | length %} · top {{ dim.bars.rows | length }} of {{ dim.groups }}{% endif %}</p></div>
+    {% if dim.bars.rows %}
+      {{ m.hbars(dim.bars, min_n) }}
+      <details class="table-twin">
+        <summary>All metrics</summary>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th scope="col">Group</th><th scope="col" class="num">Clips</th><th scope="col" class="num">Median {{ mature_days }}-day views</th><th scope="col" class="num">Avg view %</th><th scope="col" class="num">Subs / 1K views</th></tr></thead>
+          <tbody>{% for r in dim.bars.rows %}<tr{% if r.low_n %} class="is-low"{% endif %}><td>{{ r.name }}</td><td class="num">{{ r.n }}</td><td class="num">{{ r.views_7d | compact }}</td><td class="num">{{ r.pct | pct }}</td><td class="num">{{ "%.1f" | format(r.subs_per_1k) if r.subs_per_1k is not none else "—" }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      </details>
+    {% else %}<div class="chart-empty">No data.</div>{% endif %}
+  </div>
+  {% endfor %}
+</section>
+<p class="muted small">Medians are used for views because a few viral Shorts would otherwise dominate every average. Hook form is inferred from the hook text (question mark / question word, digits, otherwise statement). Posting time uses the scheduled publish time in {{ tz }}. Differences between groups are descriptive: confounders (topic, source, timing) overlap, so use the Experiments page for causal answers.</p>
+{% endif %}
+{% endblock %}

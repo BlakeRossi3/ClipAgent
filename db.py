@@ -57,7 +57,8 @@ CLIP_TRANSITIONS: dict[str, frozenset[str]] = {
     "skipped": frozenset({"picked"}),
 }
 
-UPLOAD_STATUSES = ("queued", "uploaded", "failed", "removed")
+# superseded = a dry-run upload replaced by a real one (``main.py requeue-dry-run``)
+UPLOAD_STATUSES = ("queued", "uploaded", "failed", "removed", "superseded")
 DECISION_STATUSES = ("pending", "approved", "rejected", "expired")
 DECISION_KINDS = ("new_niche", "new_source_type", "budget_increase", "strategy_change", "other")
 RESOLVED_VIA = ("call", "sms", "dashboard", "cli", "timeout")
@@ -315,8 +316,56 @@ CREATE TABLE kv (
 );
 """
 
+# v2: lifetime counters + YouTube processing status on uploads, a 'superseded' upload status
+# (SQLite cannot alter a CHECK constraint, so uploads is rebuilt), per-video retention curves,
+# optional revenue columns on stats, and an index for Twilio callbacks looking rows up by sid.
+_SCHEMA_V2 = """
+CREATE TABLE uploads_v2 (
+    id                  INTEGER PRIMARY KEY,
+    clip_id             INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    youtube_video_id    TEXT UNIQUE,
+    privacy             TEXT NOT NULL DEFAULT 'private',
+    publish_at          TEXT,
+    uploaded_at         TEXT,
+    status              TEXT NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued','uploaded','failed','removed','superseded')),
+    quota_units         INTEGER NOT NULL DEFAULT 0,
+    error               TEXT,
+    copyright_claim     INTEGER NOT NULL DEFAULT 0,
+    dry_run             INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    lifetime_views      INTEGER,                 -- Data API videos.list statistics (same-day signal)
+    lifetime_likes      INTEGER,
+    lifetime_comments   INTEGER,
+    lifetime_fetched_at TEXT,
+    youtube_status      TEXT                     -- last status seen by analytics.check_claims
+);
+INSERT INTO uploads_v2 (id, clip_id, youtube_video_id, privacy, publish_at, uploaded_at, status, quota_units,
+                        error, copyright_claim, dry_run, created_at, updated_at)
+    SELECT id, clip_id, youtube_video_id, privacy, publish_at, uploaded_at, status, quota_units,
+           error, copyright_claim, dry_run, created_at, updated_at FROM uploads;
+DROP TABLE uploads;
+ALTER TABLE uploads_v2 RENAME TO uploads;
+CREATE INDEX idx_uploads_clip ON uploads(clip_id);
+CREATE INDEX idx_uploads_uploaded_at ON uploads(uploaded_at);
+
+ALTER TABLE stats ADD COLUMN estimated_revenue REAL;   -- USD, only with the monetary analytics scope
+ALTER TABLE stats ADD COLUMN cpm REAL;
+
+CREATE TABLE retention (
+    youtube_video_id TEXT PRIMARY KEY,
+    curve            TEXT NOT NULL,              -- JSON list of [elapsed_ratio, audience_watch_ratio]
+    start_day        TEXT,                       -- report range (local YYYY-MM-DD)
+    end_day          TEXT,
+    fetched_at       TEXT NOT NULL
+);
+
+CREATE INDEX idx_notifications_sid ON notifications(sid);
+"""
+
 # Append new migrations; never edit a shipped one. Index i -> schema version i+1.
-MIGRATIONS: list[str] = [_SCHEMA_V1]
+MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 _initialised: set[str] = set()
@@ -359,6 +408,20 @@ def init_db(path: Path | str | None = None) -> int:
                 raise
         _initialised.add(str(p.resolve()))
         return len(MIGRATIONS)
+    finally:
+        conn.close()
+
+
+def schema_version(path: Path | str | None = None) -> int:
+    """Schema version recorded in the database file (0 if it was never initialised). Never migrates."""
+    p = Path(path) if path is not None else get_settings().db_path
+    if not p.exists():
+        return 0
+    conn = sqlite3.connect(p)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'schema_version'").fetchone():
+            return 0
+        return int(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0)
     finally:
         conn.close()
 
@@ -516,6 +579,11 @@ class Upload(_Row):
     dry_run: bool
     created_at: str
     updated_at: str
+    lifetime_views: int | None = None
+    lifetime_likes: int | None = None
+    lifetime_comments: int | None = None
+    lifetime_fetched_at: str | None = None
+    youtube_status: str | None = None
     _BOOL: ClassVar[tuple[str, ...]] = ("copyright_claim", "dry_run")
 
 
@@ -535,7 +603,19 @@ class Stat(_Row):
     subscribers_lost: int
     retention: Any
     fetched_at: str
+    estimated_revenue: float | None = None
+    cpm: float | None = None
     _JSON: ClassVar[tuple[str, ...]] = ("retention",)
+
+
+@dataclass(slots=True)
+class Retention(_Row):
+    youtube_video_id: str
+    curve: list[list[float]]
+    start_day: str | None
+    end_day: str | None
+    fetched_at: str
+    _JSON: ClassVar[tuple[str, ...]] = ("curve",)
 
 
 @dataclass(slots=True)
@@ -901,13 +981,37 @@ def set_clip_status(
                   (status, reason, now_iso(), clip_id))
 
 
+def count_clips(
+    *,
+    experiment_id: str | None = None,
+    variant: str | None = None,
+    source_id: int | None = None,
+    status: str | Sequence[str] | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Number of clips matching every given filter (e.g. clips made under an experiment arm)."""
+    where, params = [], []
+    for col, val in (("experiment_id", experiment_id), ("experiment_variant", variant), ("source_id", source_id)):
+        if val is not None:
+            where.append(f"{col} = ?")
+            params.append(val)
+    if status is not None:
+        sts = [status] if isinstance(status, str) else list(status)
+        where.append(f"status IN ({','.join('?' * len(sts))})")
+        params += sts
+    sql = "SELECT COUNT(*) AS n FROM clips" + (" WHERE " + " AND ".join(where) if where else "")
+    with transaction(conn) as c:
+        return int(c.execute(sql, params).fetchone()["n"])
+
+
 # ---------------------------------------------------------------------------
 # uploads
 # ---------------------------------------------------------------------------
 
 _UPLOAD_UPDATABLE = frozenset({
     "youtube_video_id", "privacy", "publish_at", "uploaded_at", "status", "quota_units", "error",
-    "copyright_claim", "dry_run",
+    "copyright_claim", "dry_run", "lifetime_views", "lifetime_likes", "lifetime_comments",
+    "lifetime_fetched_at", "youtube_status",
 })
 
 
@@ -1044,6 +1148,33 @@ def set_copyright_claim(youtube_video_id: str, claimed: bool = True, *, conn: sq
             raise NotFound(f"upload video {youtube_video_id}")
 
 
+def set_upload_lifetime(
+    youtube_video_id: str,
+    *,
+    views: int,
+    likes: int,
+    comments: int,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Store the Data API lifetime counters (``videos.list part=statistics``) of a video."""
+    with transaction(conn) as c:
+        cur = c.execute(
+            "UPDATE uploads SET lifetime_views = ?, lifetime_likes = ?, lifetime_comments = ?, "
+            "lifetime_fetched_at = ?, updated_at = ? WHERE youtube_video_id = ?",
+            (int(views), int(likes), int(comments), now_iso(), now_iso(), youtube_video_id))
+        if cur.rowcount == 0:
+            raise NotFound(f"upload video {youtube_video_id}")
+
+
+def set_youtube_status(youtube_video_id: str, status: str, *, conn: sqlite3.Connection | None = None) -> None:
+    """Record what YouTube last reported for a video (processing / privacy / problems)."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE uploads SET youtube_status = ?, updated_at = ? WHERE youtube_video_id = ?",
+                        (status, now_iso(), youtube_video_id))
+        if cur.rowcount == 0:
+            raise NotFound(f"upload video {youtube_video_id}")
+
+
 # ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
@@ -1062,23 +1193,32 @@ def upsert_stat(
     subscribers_gained: int = 0,
     subscribers_lost: int = 0,
     retention: Any = None,
+    estimated_revenue: float | None = None,
+    cpm: float | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Insert or replace the snapshot for (video, day)."""
+    """Insert or replace the snapshot for (video, day).
+
+    ``retention`` is a legacy per-row copy kept for older readers; the canonical curve lives in
+    the ``retention`` table (:func:`upsert_retention`). ``estimated_revenue`` / ``cpm`` stay NULL
+    unless the monetary analytics scope is granted.
+    """
     day_s = day.isoformat() if isinstance(day, date) else day
     with transaction(conn) as c:
         c.execute(
             """INSERT INTO stats (youtube_video_id, day, views, watch_minutes, avg_view_duration_sec, avg_view_pct,
-                   likes, comments, shares, subscribers_gained, subscribers_lost, retention, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   likes, comments, shares, subscribers_gained, subscribers_lost, retention, estimated_revenue, cpm,
+                   fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT (youtube_video_id, day) DO UPDATE SET
                    views=excluded.views, watch_minutes=excluded.watch_minutes,
                    avg_view_duration_sec=excluded.avg_view_duration_sec, avg_view_pct=excluded.avg_view_pct,
                    likes=excluded.likes, comments=excluded.comments, shares=excluded.shares,
                    subscribers_gained=excluded.subscribers_gained, subscribers_lost=excluded.subscribers_lost,
-                   retention=excluded.retention, fetched_at=excluded.fetched_at""",
+                   retention=excluded.retention, estimated_revenue=excluded.estimated_revenue, cpm=excluded.cpm,
+                   fetched_at=excluded.fetched_at""",
             (youtube_video_id, day_s, views, watch_minutes, avg_view_duration_sec, avg_view_pct, likes, comments,
-             shares, subscribers_gained, subscribers_lost, _dumps(retention), now_iso()),
+             shares, subscribers_gained, subscribers_lost, _dumps(retention), estimated_revenue, cpm, now_iso()),
         )
 
 
@@ -1094,6 +1234,31 @@ def stats_between(start_day: date | str, end_day: date | str, *, conn: sqlite3.C
     e = end_day.isoformat() if isinstance(end_day, date) else end_day
     with transaction(conn) as c:
         return _many(c, Stat, "SELECT * FROM stats WHERE day >= ? AND day <= ? ORDER BY day, youtube_video_id", (s, e))
+
+
+def upsert_retention(
+    youtube_video_id: str,
+    curve: Sequence[Sequence[float]],
+    *,
+    start_day: date | str | None = None,
+    end_day: date | str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Store a video's audience-retention curve (``[[elapsed_ratio, audience_watch_ratio], ...]``)."""
+    def _d(v: date | str | None) -> str | None:
+        return v.isoformat() if isinstance(v, date) else v
+
+    with transaction(conn) as c:
+        c.execute(
+            """INSERT INTO retention (youtube_video_id, curve, start_day, end_day, fetched_at) VALUES (?,?,?,?,?)
+               ON CONFLICT (youtube_video_id) DO UPDATE SET curve=excluded.curve, start_day=excluded.start_day,
+                   end_day=excluded.end_day, fetched_at=excluded.fetched_at""",
+            (youtube_video_id, _dumps([list(p) for p in curve]), _d(start_day), _d(end_day), now_iso()))
+
+
+def get_retention(youtube_video_id: str, *, conn: sqlite3.Connection | None = None) -> Retention | None:
+    with transaction(conn) as c:
+        return _one(c, Retention, "SELECT * FROM retention WHERE youtube_video_id = ?", (youtube_video_id,))
 
 
 def upsert_channel_stat(
@@ -1120,38 +1285,72 @@ def list_channel_stats(limit: int = 90, *, conn: sqlite3.Connection | None = Non
     return list(reversed(rows))
 
 
-def clip_performance(since_day: date | str | None = None, *, conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
-    """One row per uploaded (non-dry-run) clip with lifetime totals from ``stats``.
+def clip_performance(
+    since_day: date | str | None = None,
+    until_day: date | str | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """One row per real (non-dry-run) uploaded or taken-down clip, with its stats summed over a period.
 
-    Keys: clip_id, source_id, source_type, channel, title, hook_text, start_sec, end_sec,
-    haiku_score, strategy_version, experiment_id, experiment_variant, youtube_video_id,
-    publish_at, uploaded_at, copyright_claim, views, watch_minutes, likes, comments, shares,
-    subscribers_gained, subscribers_lost, avg_view_pct (mean of daily values), days_tracked.
-    ``since_day`` filters on local upload day >= since_day (approximated on UTC timestamp).
+    The period ``[since_day, until_day]`` (inclusive, local days; either end optional) filters the
+    **stats days**, not the upload date: a clip uploaded before the period still reports the views
+    it earned during it. A clip appears when it has stats in the period or was uploaded in it (a
+    brand-new clip with no analytics yet shows zeros); clips uploaded after ``until_day`` are left out.
+
+    Keys: clip_id, source_id, source_type, channel, topic (the scout query that found the source),
+    title, hook_text, start_sec, end_sec, haiku_score, strategy_version, experiment_id,
+    experiment_variant, youtube_video_id, publish_at, uploaded_at, upload_status (uploaded |
+    removed), youtube_status, copyright_claim, views, watch_minutes, likes, comments, shares,
+    subscribers_gained, subscribers_lost, estimated_revenue (None without revenue data),
+    avg_view_pct and avg_view_duration_sec (means of the daily values), days_tracked (stats days in
+    the period), total_views (all days), lifetime_views / lifetime_likes / lifetime_comments (Data
+    API counters, None until fetched). Ordered by upload time.
     """
-    params: list[Any] = []
-    where = "u.status = 'uploaded' AND u.dry_run = 0"
-    if since_day is not None:
-        d = since_day if isinstance(since_day, date) else date.fromisoformat(since_day)
-        where += " AND u.uploaded_at >= ?"
-        params.append(local_day_bounds(d)[0])
+    since = since_day.isoformat() if isinstance(since_day, date) else since_day
+    until = until_day.isoformat() if isinstance(until_day, date) else until_day
+    period, params = [], []
+    if since is not None:
+        period.append("day >= ?")
+        params.append(since)
+    if until is not None:
+        period.append("day <= ?")
+        params.append(until)
+    where = ["u.status IN ('uploaded', 'removed')", "u.dry_run = 0"]
+    if until is not None:
+        where.append("u.uploaded_at < ?")
+        params.append(local_day_bounds(date.fromisoformat(until))[1])
+    if since is not None:
+        where.append("(p.days_tracked IS NOT NULL OR u.uploaded_at >= ?)")
+        params.append(local_day_bounds(date.fromisoformat(since))[0])
     sql = f"""
-        SELECT c.id AS clip_id, c.source_id, s.source_type, s.channel, c.title, c.hook_text, c.start_sec, c.end_sec,
-               c.haiku_score, c.strategy_version, c.experiment_id, c.experiment_variant,
-               u.youtube_video_id, u.publish_at, u.uploaded_at, u.copyright_claim,
-               COALESCE(SUM(st.views), 0) AS views, COALESCE(SUM(st.watch_minutes), 0) AS watch_minutes,
-               COALESCE(SUM(st.likes), 0) AS likes, COALESCE(SUM(st.comments), 0) AS comments,
-               COALESCE(SUM(st.shares), 0) AS shares,
-               COALESCE(SUM(st.subscribers_gained), 0) AS subscribers_gained,
-               COALESCE(SUM(st.subscribers_lost), 0) AS subscribers_lost,
-               AVG(st.avg_view_pct) AS avg_view_pct, COUNT(st.id) AS days_tracked
+        SELECT c.id AS clip_id, c.source_id, s.source_type, s.channel, s.topic, c.title, c.hook_text,
+               c.start_sec, c.end_sec, c.haiku_score, c.strategy_version, c.experiment_id, c.experiment_variant,
+               u.youtube_video_id, u.publish_at, u.uploaded_at, u.status AS upload_status, u.youtube_status,
+               u.copyright_claim, u.lifetime_views, u.lifetime_likes, u.lifetime_comments,
+               COALESCE(p.views, 0) AS views, COALESCE(p.watch_minutes, 0) AS watch_minutes,
+               COALESCE(p.likes, 0) AS likes, COALESCE(p.comments, 0) AS comments,
+               COALESCE(p.shares, 0) AS shares, COALESCE(p.subscribers_gained, 0) AS subscribers_gained,
+               COALESCE(p.subscribers_lost, 0) AS subscribers_lost, p.estimated_revenue,
+               p.avg_view_pct, p.avg_view_duration_sec, COALESCE(p.days_tracked, 0) AS days_tracked,
+               COALESCE(t.total_views, 0) AS total_views
         FROM uploads u
         JOIN clips c ON c.id = u.clip_id
         JOIN sources s ON s.id = c.source_id
-        LEFT JOIN stats st ON st.youtube_video_id = u.youtube_video_id
-        WHERE {where}
-        GROUP BY u.id
-        ORDER BY u.uploaded_at"""
+        LEFT JOIN (
+            SELECT youtube_video_id, SUM(views) AS views, SUM(watch_minutes) AS watch_minutes,
+                   SUM(likes) AS likes, SUM(comments) AS comments, SUM(shares) AS shares,
+                   SUM(subscribers_gained) AS subscribers_gained, SUM(subscribers_lost) AS subscribers_lost,
+                   SUM(estimated_revenue) AS estimated_revenue, AVG(avg_view_pct) AS avg_view_pct,
+                   AVG(avg_view_duration_sec) AS avg_view_duration_sec, COUNT(*) AS days_tracked
+            FROM stats {"WHERE " + " AND ".join(period) if period else ""}
+            GROUP BY youtube_video_id
+        ) p ON p.youtube_video_id = u.youtube_video_id
+        LEFT JOIN (
+            SELECT youtube_video_id, SUM(views) AS total_views FROM stats GROUP BY youtube_video_id
+        ) t ON t.youtube_video_id = u.youtube_video_id
+        WHERE {" AND ".join(where)}
+        ORDER BY u.uploaded_at, u.id"""
     with transaction(conn) as c:
         rows = c.execute(sql, params).fetchall()
     out = [dict(r) for r in rows]
@@ -1328,6 +1527,16 @@ def latest_strategy_version(*, conn: sqlite3.Connection | None = None) -> Strate
         return _one(c, StrategyVersion, "SELECT * FROM strategy_versions ORDER BY version DESC LIMIT 1")
 
 
+def strategy_version_for_decision(
+    decision_id: int, *, conn: sqlite3.Connection | None = None
+) -> StrategyVersion | None:
+    """The strategy version saved because of an approved decision (None if not applied yet)."""
+    with transaction(conn) as c:
+        return _one(c, StrategyVersion,
+                    "SELECT * FROM strategy_versions WHERE decision_id = ? ORDER BY version DESC LIMIT 1",
+                    (decision_id,))
+
+
 def list_strategy_versions(limit: int = 20, *, conn: sqlite3.Connection | None = None) -> list[StrategyVersion]:
     """Newest first."""
     with transaction(conn) as c:
@@ -1374,6 +1583,17 @@ def update_notification(
     with transaction(conn) as c:
         _update(c, "notifications", notification_id, {"status": status, "sid": sid, "error": error},
                 allowed=frozenset({"status", "sid", "error"}))
+
+
+def get_notification(notification_id: int, *, conn: sqlite3.Connection | None = None) -> Notification | None:
+    with transaction(conn) as c:
+        return _one(c, Notification, "SELECT * FROM notifications WHERE id = ?", (notification_id,))
+
+
+def get_notification_by_sid(sid: str, *, conn: sqlite3.Connection | None = None) -> Notification | None:
+    """Newest notification carrying a Twilio call/message SID (status callbacks look rows up by it)."""
+    with transaction(conn) as c:
+        return _one(c, Notification, "SELECT * FROM notifications WHERE sid = ? ORDER BY id DESC LIMIT 1", (sid,))
 
 
 def list_notifications(
@@ -1459,6 +1679,20 @@ def kv_set_if_absent(key: str, value: Any, *, conn: sqlite3.Connection | None = 
         cur = c.execute("INSERT OR IGNORE INTO kv (key, value, updated_at) VALUES (?,?,?)",
                         (key, _dumps(value), now_iso()))
         return cur.rowcount == 1
+
+
+def kv_incr(key: str, by: int = 1, *, conn: sqlite3.Connection | None = None) -> int:
+    """Atomically add ``by`` to an integer counter (missing = 0) and return the new value.
+
+    One SQL statement, so concurrent processes never lose an increment.
+    """
+    with transaction(conn) as c:
+        row = c.execute(
+            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = CAST(COALESCE(CAST(kv.value AS INTEGER), 0) + ? AS TEXT), "
+            "updated_at = excluded.updated_at RETURNING value",
+            (key, _dumps(int(by)), now_iso(), int(by))).fetchone()
+    return int(_loads(row["value"]))
 
 
 def kv_delete(key: str, *, conn: sqlite3.Connection | None = None) -> None:

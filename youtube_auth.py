@@ -27,7 +27,8 @@ event plus a queued ``youtube_auth`` call notification (once per local day) so
 Quota: the Data API v3 bills "units" per call against a project-wide daily quota
 (default 10,000) that resets at **midnight Pacific time**. :data:`QUOTA_COSTS`
 is the cost table and :func:`record_quota` keeps a local tally in ``kv`` keyed
-by the Pacific date, so uploads can stop *before* the quota runs out. The YouTube
+by the Pacific date (atomic ``db.kv_incr``), so uploads can stop *before* the quota
+runs out. The daily limit is ``YOUTUBE_DAILY_QUOTA``. The YouTube
 Analytics API has its own separate quota and is not tallied here.
 
 No module-level side effects; googleapiclient / google-auth are imported lazily.
@@ -72,12 +73,11 @@ QUOTA_COSTS: dict[str, int] = {
     "search.list": 100,
     "thumbnails.set": 50,
 }
-DEFAULT_DAILY_QUOTA = 10_000
 # Units kept free for the day's list/status/analytics-adjacent Data API calls.
 QUOTA_RESERVE = 200
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")   # Data API daily quota resets at midnight PT
 _QUOTA_KEY = "youtube:quota:{day}"            # int units used on a Pacific date
-_QUOTA_LIMIT_KEY = "youtube:quota_limit"      # optional override after a quota increase
+_QUOTA_LIMIT_KEY = "youtube:quota_limit"      # legacy runtime override of YOUTUBE_DAILY_QUOTA
 _AUTH_ALERT_KEY = "youtube:auth_alerted:{day}"
 
 
@@ -95,12 +95,14 @@ def quota_day(now: Any = None) -> date:
 
 
 def daily_quota_limit() -> int:
-    """10,000 by default; ``kv['youtube:quota_limit']`` overrides it after Google grants more."""
+    """``YOUTUBE_DAILY_QUOTA`` (default 10,000). A ``kv['youtube:quota_limit']`` value set by
+    older deployments still overrides it."""
+    limit = get_settings().youtube_daily_quota
     v = db.kv_get(_QUOTA_LIMIT_KEY)
     try:
-        return int(v) if v is not None else DEFAULT_DAILY_QUOTA
+        return int(v) if v is not None else limit
     except (TypeError, ValueError):
-        return DEFAULT_DAILY_QUOTA
+        return limit
 
 
 def quota_used(day: date | None = None) -> int:
@@ -114,12 +116,7 @@ def quota_remaining(day: date | None = None) -> int:
 def record_quota(method: str, calls: int = 1, *, units: int | None = None) -> int:
     """Add the cost of ``calls`` x ``method`` to today's (Pacific) tally. Returns the new total."""
     cost = units if units is not None else QUOTA_COSTS.get(method, 1) * calls
-    key = _QUOTA_KEY.format(day=quota_day().isoformat())
-    with db.transaction() as c:
-        c.execute("BEGIN IMMEDIATE")  # serialise read-modify-write across processes
-        total = int(db.kv_get(key, 0, conn=c) or 0) + int(cost)
-        db.kv_set(key, total, conn=c)
-    return total
+    return db.kv_incr(_QUOTA_KEY.format(day=quota_day().isoformat()), int(cost))
 
 
 def quota_allows(method: str, *, reserve: int = QUOTA_RESERVE) -> bool:

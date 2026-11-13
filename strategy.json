@@ -66,12 +66,14 @@
     "max_words_per_line": 3,
     "position": "lower_third",
     "uppercase": true,
-    "animation": "word_pop"
+    "animation": "word_pop",
+    "framing": "auto"
   },
   "clip_length_sec": {"min": 20, "target": 45, "max": 59},
   "min_haiku_score": 7,
   "windows_to_escalate": 3,
   "max_clips_per_source": 2,
+  "max_windows_per_source": 40,
   "uploads_per_day": 4,
   "posting_times": ["08:45", "12:15", "17:10", "20:40"],
   "timezone": "America/New_York",
