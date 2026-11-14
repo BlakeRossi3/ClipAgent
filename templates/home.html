@@ -19,37 +19,37 @@
       {% if a.enabled and a.fake %}<span>Practice</span>{% endif %}
       {% if not a.enabled %}<span class="jv-warn">Assistant off</span>{% endif %}
     </p>
+    <details class="jv-menu" data-jv-menu>
+      <summary class="jv-menu-btn" title="More: history, stop, undo" aria-label="More options"><span aria-hidden="true">&middot;&middot;&middot;</span></summary>
+      <div class="jv-menu-list">
+        <button type="button" class="jv-btn" data-jv-history aria-controls="history" aria-expanded="false" title="Everything said, on every channel; type here too">History</button>
+        {% if a.enabled %}
+        <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn{{ '' if a.stopped else ' jv-btn-stop' }}" title="{{ 'Let ' ~ a.name ~ ' work again' if a.stopped else 'Kill switch: ' ~ a.name ~ ' stops all work until started again' }}">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
+        <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn" title="Revert {{ a.name }}'s last change to its own code">Undo</button></form>
+        {% endif %}
+      </div>
+    </details>
   </header>
 
   <div class="jv-core-wrap">
     <canvas class="jv-core" data-jv-core width="600" height="600" aria-hidden="true"></canvas>
-    <button type="button" class="jv-ptt" data-jv-ptt aria-describedby="jv-hint" {% if not a.can_chat %}disabled{% endif %}>
-      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      <span class="sr-only">Hold to talk to {{ a.name }}</span>
+    <button type="button" class="jv-ptt" data-jv-ptt aria-pressed="false" aria-describedby="jv-hint" {% if not a.can_chat %}disabled{% endif %}>
+      <svg class="jv-ico-mic" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="sr-only" data-jv-ptt-label>Talk to {{ a.name }}: tap to start listening</span>
     </button>
   </div>
 
   <div class="jv-statusbar">
-    <p class="jv-status" role="status" data-jv-status>{% if a.can_chat %}Standing by, {{ a.honorific }}{% else %}{{ a.reason }}{% endif %}</p>
+    <p class="jv-status" role="status" data-jv-status>{% if a.can_chat %}Tap to talk{% else %}{{ a.reason }}{% endif %}</p>
     <a class="jv-needs" href="#needs" data-needs-count {% if not h.needs.count %}hidden{% endif %}><b>{{ h.needs.count }}</b> need{{ "s" if h.needs.count == 1 else "" }} you</a>
   </div>
+  <p class="jv-tip" data-jv-tip hidden><span>Tap the ring and just talk, {{ a.honorific }}.</span><button type="button" class="jv-tip-x" data-jv-tip-x aria-label="Dismiss tip">&times;</button></p>
   <div class="jv-captions" aria-live="polite">
     <p class="jv-cap-you" data-jv-you></p>
     <p class="jv-cap-them" data-jv-them>{{ h.hello.salute }}</p>
   </div>
-  <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Hold the ring to talk · or hold <kbd>Space</kbd>{% elif a.reason %}{{ a.reason }}{% else %}Voice opens once I am switched on.{% endif %}</p>
+  <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Keyboard: hold <kbd>Space</kbd> to talk{% elif not a.reason %}Voice opens once I am switched on.{% endif %}</p>
 
-  <div class="jv-controls">
-    <label class="jv-toggle"><input type="checkbox" data-jv-always {% if not a.can_chat %}disabled{% endif %}><span>Always listen in this tab</span></label>
-    <span class="jv-cluster">
-      <button type="button" class="jv-btn" data-jv-mute data-csrf="{{ csrf }}" title="Mute the microphone (this tab and the laptop's voice loop)">Mute</button>
-      <button type="button" class="jv-btn" data-jv-history aria-controls="history" aria-expanded="false">History</button>
-      {% if a.enabled %}
-      <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn{{ '' if a.stopped else ' jv-btn-stop' }}">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
-      <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn" title="Revert {{ a.name }}'s last change to its own code">Undo</button></form>
-      {% endif %}
-    </span>
-  </div>
   <a class="jv-more" href="#briefing">Briefing <span aria-hidden="true">&darr;</span></a>
 </section>
 

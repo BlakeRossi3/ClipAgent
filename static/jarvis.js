@@ -1,13 +1,16 @@
 /* Jarvis view: the voice-first home stage (templates/home.html).
    - An animated core drawn on a canvas (original art) whose state follows this tab's microphone and
      the laptop's background voice loop (/voice/api/status).
-   - In-browser voice: hold the ring (or Space) to talk, or "Always listen in this tab" (energy VAD).
+   - In-browser voice: the ring is the ONE mic control. Tap it: this tab listens continuously (energy VAD
+     finds the end of each sentence); tap again: off. When the laptop's background voice loop runs, the
+     same tap also unmutes / mutes it (POST /voice/api/mute), so there is one on/off state, shown once.
+     Holding Space is a push-to-talk shortcut for keyboard users.
      The clip goes to POST /voice/api/talk; the answer is polled at /dashboard/chat/job/{id}. The
      server streams it as sentences (job.parts, each with its own audio), which are queued and played
      in order through Web Audio while the rest is still being generated, so the core pulses with it.
      Background tasks: /voice/api/status lists them ("Working on: ...") and carries the spoken
      summary of each finished one (events), which is captioned, added to History and played.
-   - History drawer + mute. Look and feel adapted from adewaskar/jarvis src/ui/Hud.tsx and index.css
+   - History / Stop / Undo live in a small "..." menu. Look and feel adapted from adewaskar/jarvis src/ui/Hud.tsx and index.css
      (MIT License, Copyright (c) 2026 Aditya Dewaskar).
    No framework, no external requests. Every user/model string is inserted with textContent. */
 (function () {
@@ -17,11 +20,13 @@
   document.documentElement.classList.add('jv-on');
   function q(s) { return root.querySelector(s); }
   var canvas = q('[data-jv-core]'), ptt = q('[data-jv-ptt]'), statusEl = q('[data-jv-status]'),
-    youEl = q('[data-jv-you]'), themEl = q('[data-jv-them]'), hintEl = q('[data-jv-hint]'), sysEl = q('[data-jv-sys]'),
-    alwaysEl = q('[data-jv-always]'), muteBtn = q('[data-jv-mute]'), histBtn = q('[data-jv-history]');
+    youEl = q('[data-jv-you]'), themEl = q('[data-jv-them]'), sysEl = q('[data-jv-sys]'),
+    pttLabel = q('[data-jv-ptt-label]'), histBtn = q('[data-jv-history]'), menu = q('[data-jv-menu]'),
+    tip = q('[data-jv-tip]'), tipX = q('[data-jv-tip-x]');
   var drawer = document.querySelector('[data-jv-drawer]'), scrim = document.querySelector('[data-jv-scrim]');
   var logEl = document.querySelector('[data-chat-log]');
   var csrf = root.getAttribute('data-csrf'), H = root.getAttribute('data-honorific') || 'sir';
+  var NAME = root.getAttribute('data-name') || 'Sterling';
   var canTalk = root.getAttribute('data-can-talk') === '1';
   var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   var serverStatus = statusEl.textContent;
@@ -29,40 +34,46 @@
   /* ---- state ---------------------------------------------------------------------------- */
   var local = null;          // listening | thinking | speaking | error: this tab is busy
   var bg = { state: 'offline', online: false, muted: false };
-  var tabMuted = false, always = false, errText = '', errTimer = null, note = '', noteTimer = null;
+  var always = false;        // the ring is on: this tab listens continuously
+  var errText = '', errTimer = null, note = '', noteTimer = null;
   var BG = { idle: 'idle', followup: 'listening', listening: 'listening', thinking: 'thinking', speaking: 'speaking',
-    muted: 'muted', no_mic: 'idle', starting: 'idle', offline: 'idle', stopped: 'idle' };
+    muted: 'idle', no_mic: 'idle', starting: 'idle', offline: 'idle', stopped: 'idle' };
+  function laptopLive() {    // the laptop's background loop is running and its mic is open
+    return !!(bg.online && !bg.muted && bg.state !== 'no_mic' && bg.state !== 'stopped' && bg.state !== 'starting');
+  }
+  function isOn() { return always || laptopLive(); }
   function visual() {
     if (local) return local;
-    if (tabMuted || bg.muted) return 'muted';
-    return BG[bg.state] || 'idle';
+    if (always) return 'listening';
+    if (laptopLive()) return BG[bg.state] || 'idle';
+    return 'idle';
   }
   function render() {
-    var v = visual(), text;
+    var v = visual(), on = canTalk && isOn(), text;
     root.setAttribute('data-state', v);
+    root.setAttribute('data-on', on ? '1' : '0');
     if (!canTalk) text = serverStatus;
     else if (v === 'error') text = errText;
-    else if (note && v === 'idle') text = note;
-    else if (v === 'listening') text = 'Listening, ' + H;
     else if (v === 'thinking') text = 'Thinking…';
-    else if (v === 'speaking') text = 'Speaking';
-    else if (v === 'muted') text = 'Muted — tap Unmute to talk';
+    else if (v === 'speaking') text = 'Speaking — tap to interrupt';
+    else if (local === 'listening' || (v === 'listening' && !always && bg.state === 'listening')) text = 'Listening…';
+    else if (note) text = note;
     else if (bg.tasks && bg.tasks.length) text = 'Working on: ' + bg.tasks[0].task;
-    else if (always && stream) text = 'Listening for you in this tab, ' + H;
-    else text = 'Standing by, ' + H;
+    else if (always) text = 'Listening — tap to stop';
+    else if (on) text = 'Listening on your laptop mic — tap to stop';
+    else text = 'Tap to talk';
     if (statusEl.textContent !== text) statusEl.textContent = text;
-    var sys = bg.online ? (bg.muted ? 'laptop mic muted' : (bg.state === 'no_mic' ? 'laptop mic missing' : 'laptop mic live'))
-      : 'laptop voice off';
-    if (always && stream) sys += ' · tab mic on';
-    sysEl.textContent = sys;
-    muteBtn.textContent = (tabMuted || bg.muted) ? 'Unmute' : 'Mute';
-    muteBtn.setAttribute('aria-pressed', (tabMuted || bg.muted) ? 'true' : 'false');
+    statusEl.classList.toggle('is-long', text.length > 34);
+    ptt.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (pttLabel) pttLabel.textContent = v === 'speaking' ? 'Interrupt ' + NAME
+      : on ? 'Stop listening' : 'Talk to ' + NAME + ': tap to start listening';
     ptt.classList.toggle('is-live', local === 'listening');
+    if (sysEl && canTalk) sysEl.textContent = 'online';
   }
-  function fail(msg) {
+  function fail(msg, ms) {
     errText = msg; local = 'error'; render();
     clearTimeout(errTimer);
-    errTimer = setTimeout(function () { if (local === 'error') { local = null; render(); } }, 7000);
+    errTimer = setTimeout(function () { if (local === 'error') { local = null; render(); } }, ms || 7000);
   }
   function flash(msg) {
     note = msg; render(); clearTimeout(noteTimer);
@@ -109,16 +120,16 @@
   }
   function releaseSoon() {   // the browser's red mic dot goes away when nobody is using it
     clearTimeout(releaseTimer);
-    releaseTimer = setTimeout(function () { if (!always && !rec) releaseMic(); }, 60000);
+    releaseTimer = setTimeout(function () { if (!always && !rec) releaseMic(); }, 15000);
   }
   function micError(e) {
     var n = e && e.name;
-    if (n === 'NotAllowedError' || n === 'SecurityError') fail('Microphone blocked. Allow it for this site (the icon left of the address), then try again.');
-    else if (n === 'NotFoundError' || n === 'OverconstrainedError') fail('No microphone found on this device.');
-    else if (n === 'NotReadableError') fail('The microphone is in use by another app.');
-    else if (n === 'Insecure') fail('Browsers only allow the microphone on https:// or http://127.0.0.1 — open the dashboard that way.');
-    else fail('Could not open the microphone.');
-    always = false; if (alwaysEl) alwaysEl.checked = false;
+    always = false;
+    if (n === 'NotAllowedError' || n === 'SecurityError') fail('Mic blocked — click the icon left of the address bar, allow Microphone, then tap the ring.', 15000);
+    else if (n === 'NotFoundError' || n === 'OverconstrainedError') fail('Mic blocked — no microphone found. Plug one in, then tap the ring.', 15000);
+    else if (n === 'NotReadableError') fail('Mic blocked — another app is using it. Close that app, then tap the ring.', 15000);
+    else if (n === 'Insecure') fail('Mic blocked — this address is not secure. Open the dashboard at http://127.0.0.1:8000 instead.', 15000);
+    else fail('Mic blocked — the browser refused it. Reload the page, then tap the ring.', 15000);
   }
   function rms(an) {
     if (!an) return 0;
@@ -139,7 +150,6 @@
   function startRec(mode) {
     if (!canTalk || rec) return;
     stopPlayback();                       // barge-in: talking again stops the reply
-    if (tabMuted) { tabMuted = false; }
     audioCtx();
     ensureMic().then(function (s) {
       if (rec || (mode === 'ptt' && !pttDown)) return;   // released before the mic opened
@@ -153,7 +163,11 @@
         var blob = new Blob(chunks, { type: (r && r.mimeType) || type || 'audio/webm' });
         if (!always) releaseSoon();
         if (discard) { local = null; render(); return; }
-        if (dur < 450 || blob.size < 600) { local = null; flash('Hold the ring while you speak, ' + H + '.'); return; }
+        if (dur < 450 || blob.size < 600) {
+          local = null;
+          if (recMode === 'ptt') flash('Keep Space held while you speak, ' + H + '.'); else render();
+          return;
+        }
         send(blob);
       };
       rec.start(250);
@@ -216,7 +230,7 @@
     }, 250);
   }
   function command(cmd) {
-    if (cmd === 'mute') { setMuted(true); caption('Microphone off, ' + H + '.'); }
+    if (cmd === 'mute') { setOn(false); caption('Microphone off, ' + H + '. Tap the ring when you want me.'); }
     else { stopPlayback(); local = null; caption('Very good, ' + H + '.'); render(); }
   }
 
@@ -303,43 +317,50 @@
       if (vad.quiet >= 900) stopRec();
     }
   }, 50);
-  if (alwaysEl) alwaysEl.addEventListener('change', function () {
-    if (alwaysEl.checked) {
+
+  /* ---- the ring: tap = on/off (and interrupts while speaking); hold Space = push-to-talk ------- */
+  function postMute(muted) {     // the laptop's voice loop follows the ring (CSRF-checked)
+    var fd = new FormData(); fd.append('csrf', csrf); fd.append('muted', muted ? '1' : '0');
+    bg.muted = muted;
+    return fetch('/voice/api/mute', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .catch(function () { /* the tab state still holds */ });
+  }
+  function setOn(on) {
+    dismissTip();
+    if (on) {
       audioCtx();
-      ensureMic().then(function () { always = true; tabMuted = false; render(); }, micError);
+      if (bg.online || bg.muted) postMute(false);
+      ensureMic().then(function () { always = true; vad.on = 0; vad.quiet = 0; local = local === 'error' ? null : local; render(); },
+        function (e) { micError(e); render(); });
     } else {
       always = false;
-      if (recMode === 'vad') stopRec(true);
-      releaseSoon(); render();
+      if (rec) stopRec(true);
+      if (local === 'listening' || local === 'error') local = null;
+      if (bg.online) postMute(true);
+      releaseMic();
     }
+    render();
+  }
+  ptt.addEventListener('click', function () {
+    if (!canTalk) return;
+    if (pttDown) return;                                       // Space on the focused ring is push-to-talk
+    if (src || playQ.length) { stopPlayback(); render(); return; }   // "Speaking — tap to interrupt"
+    setOn(!isOn());
   });
-
-  /* ---- push-to-talk: hold the ring, or hold Space ------------------------------------------ */
-  function press() { if (pttDown) return; pttDown = true; ptt.classList.add('is-down'); startRec('ptt'); }
+  ptt.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  function press() { if (pttDown) return; pttDown = true; ptt.classList.add('is-down'); dismissTip(); startRec('ptt'); }
   function release() {
     if (!pttDown) return;
-    pttDown = false; ptt.classList.remove('is-down');
+    setTimeout(function () { pttDown = false; }, 0);
+    ptt.classList.remove('is-down');
     if (rec && recMode === 'ptt') stopRec();
   }
-  ptt.addEventListener('pointerdown', function (e) {
-    if (e.button) return;
-    e.preventDefault();
-    if (ptt.setPointerCapture) { try { ptt.setPointerCapture(e.pointerId); } catch (x) { /* ignore */ } }
-    press();
-  });
-  ptt.addEventListener('pointerup', release);
-  ptt.addEventListener('pointercancel', release);
-  ptt.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  ptt.addEventListener('click', function (e) {      // keyboard Enter: toggle
-    if (e.detail !== 0) return;
-    if (rec) stopRec(); else startRec('toggle');
-  });
   function typingIn(el) {
     if (!el || el === ptt) return false;
     return /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(el.tagName) || el.isContentEditable;
   }
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { if (drawerOpen()) setDrawer(false); else if (rec) stopRec(true); else stopPlayback(); render(); return; }
+    if (e.key === 'Escape') { if (drawerOpen()) setDrawer(false); else if (menu && menu.open) menu.open = false; else if (rec && recMode === 'ptt') stopRec(true); else stopPlayback(); render(); return; }
     if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target) || !canTalk) return;
     if (document.querySelector('dialog[open]')) return;
     e.preventDefault();
@@ -347,16 +368,19 @@
   });
   document.addEventListener('keyup', function (e) { if (e.code === 'Space' && pttDown) { e.preventDefault(); release(); } });
 
-  /* ---- mute (this tab + the laptop's voice loop) ---------------------------------------------- */
-  function setMuted(on) {
-    tabMuted = on;
-    if (on) { always = false; if (alwaysEl) alwaysEl.checked = false; stopRec(true); stopPlayback(); releaseMic(); local = null; }
-    var fd = new FormData(); fd.append('csrf', muteBtn.getAttribute('data-csrf')); fd.append('muted', on ? '1' : '0');
-    fetch('/voice/api/mute', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-      .then(function () { bg.muted = on; render(); }).catch(function () { /* the tab mute still holds */ });
-    render();
+  /* ---- first visit: one dismissible tip ------------------------------------------------------ */
+  var TIP_KEY = 'jv:tip-seen';
+  function dismissTip() {
+    if (!tip || tip.hidden) return;
+    tip.hidden = true;
+    try { localStorage.setItem(TIP_KEY, '1'); } catch (e) { /* private window: show again next time */ }
   }
-  muteBtn.addEventListener('click', function () { setMuted(!(tabMuted || bg.muted)); });
+  if (tip && canTalk) {
+    var seen = null;
+    try { seen = localStorage.getItem(TIP_KEY); } catch (e) { seen = null; }
+    if (!seen) tip.hidden = false;
+  }
+  if (tipX) tipX.addEventListener('click', dismissTip);
 
   /* ---- history drawer ---------------------------------------------------------------------- */
   function drawerOpen() { return document.documentElement.classList.contains('jv-drawer-open'); }
@@ -366,10 +390,13 @@
     if (scrim) scrim.hidden = !open;
     histBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open && logEl) logEl.scrollTop = logEl.scrollHeight;
-    if (!open) histBtn.focus({ preventScroll: true });
+    if (!open) (menu ? menu.querySelector('summary') : histBtn).focus({ preventScroll: true });
   }
   if (drawer) drawer.inert = true;
-  histBtn.addEventListener('click', function () { setDrawer(!drawerOpen()); });
+  histBtn.addEventListener('click', function () { if (menu) menu.open = false; setDrawer(!drawerOpen()); });
+  document.addEventListener('click', function (e) {     // close the "..." menu on an outside click
+    if (menu && menu.open && !menu.contains(e.target)) menu.open = false;
+  });
   if (scrim) scrim.addEventListener('click', function () { setDrawer(false); });
   var closeBtn = document.querySelector('[data-jv-close]');
   if (closeBtn) closeBtn.addEventListener('click', function () { setDrawer(false); });
@@ -429,7 +456,7 @@
     var st = root.getAttribute('data-state'), t = reduced ? 0 : now / 1000;
     var target = COLORS[st] || COLORS.idle;
     for (var k = 0; k < 3; k++) col[k] += (target[k] - col[k]) * Math.min(1, dt * 4);
-    var an = st === 'speaking' && src ? outAnalyser : (st === 'listening' && local ? micAnalyser : null);
+    var an = st === 'speaking' && src ? outAnalyser : (st === 'listening' && stream ? micAnalyser : null);
     var want = an ? Math.min(1, rms(an) * 7) : st === 'listening' ? 0.18 + 0.12 * Math.sin(now / 160) : st === 'speaking' ? 0.3 + 0.25 * Math.abs(Math.sin(now / 110)) : 0;
     level += (want - level) * Math.min(1, dt * 12);
     var speed = { idle: 0.06, listening: 0.18, thinking: 1.1, speaking: 0.25, muted: 0.015, error: 0.03 }[st] || 0.06;

@@ -354,6 +354,7 @@ body.section-home .brand-px { fill: #e2f4f7; }
   box-shadow: 0 0 8px var(--jv); vertical-align: 1px; }
 .jv-emblem { width: 26px; height: 26px; display: inline-block; }
 .jv-emblem .sprite { width: 26px; height: 26px; }
+.jv-hud .jv-meta { margin-left: auto; }
 .jv-meta span + span::before { content: "\00b7"; margin-right: 10px; }
 .jv-warn { color: #ffb4a6; }
 
@@ -373,7 +374,7 @@ body.section-home .brand-px { fill: #e2f4f7; }
 .jv-statusbar { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; min-height: 30px; }
 .jv-status { margin: 0; font: 600 0.82rem/1.3 var(--mono); letter-spacing: 0.24em; text-transform: uppercase; color: var(--jv); transition: color .6s;
   text-shadow: 0 0 14px color-mix(in srgb, var(--jv) 45%, transparent); max-width: 60ch; }
-.jv[data-state="error"] .jv-status { letter-spacing: 0.06em; text-transform: none; font-size: 0.88rem; }
+.jv[data-state="error"] .jv-status, .jv-status.is-long { letter-spacing: 0.06em; text-transform: none; font-size: 0.88rem; }
 .jv-needs { font: 600 0.72rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: #1a1306; background: #e8b054;
   border-radius: 999px; padding: 4px 10px; text-decoration: none; box-shadow: 0 0 14px rgba(232, 176, 84, .35); }
 .jv-needs:hover { text-decoration: none; filter: brightness(1.08); }
@@ -387,17 +388,28 @@ body.section-home .brand-px { fill: #e2f4f7; }
 .jv-hint { margin: 8px 0 0; font-size: 0.8rem; color: var(--jv-dim); }
 .jv-hint kbd { font: 600 0.72rem var(--mono); border: 1px solid rgba(0, 229, 255, .3); border-radius: 4px; padding: 1px 6px; color: var(--jv-ink); }
 
-.jv-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 18px; margin-top: 14px; }
-.jv-toggle { display: inline-flex; align-items: center; gap: 9px; font-size: 0.86rem; color: var(--jv-ink); cursor: pointer; }
-.jv-toggle input { appearance: none; -webkit-appearance: none; width: 38px; height: 22px; min-height: 0; padding: 0; flex: none; border-radius: 999px; margin: 0; cursor: pointer; position: relative;
-  background: rgba(0, 229, 255, .08); border: 1px solid rgba(0, 229, 255, .35); transition: background .2s; }
-.jv-toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #8fb3bb; transition: transform .2s, background .2s; }
-.jv-toggle input:checked { background: rgba(0, 229, 255, .35); }
-.jv-toggle input:checked::after { transform: translateX(16px); background: #e9fdff; }
-.jv-toggle input:focus-visible { outline: 2px solid var(--jv); outline-offset: 2px; }
-.jv-toggle input:disabled { opacity: .4; cursor: not-allowed; }
-.jv-cluster { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
-.jv-cluster form { display: inline; margin: 0; }
+/* the ring is the one mic control: off = "Tap to talk", on = continuous listening */
+.jv[data-on="1"] .jv-ptt { border: 2px solid var(--jv); box-shadow: 0 0 0 4px color-mix(in srgb, var(--jv) 16%, transparent), 0 0 28px color-mix(in srgb, var(--jv) 45%, transparent);
+  animation: jv-live 2.2s ease-in-out infinite; }
+.jv[data-on="1"] .jv-ptt svg { opacity: 1; color: var(--jv); }
+@keyframes jv-live { 50% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--jv) 8%, transparent), 0 0 36px color-mix(in srgb, var(--jv) 55%, transparent); } }
+.jv-tip { display: inline-flex; align-items: center; gap: 10px; margin: 6px 0 0; padding: 6px 8px 6px 14px; border-radius: 999px; font-size: 0.86rem;
+  color: var(--jv-ink); background: rgba(0, 229, 255, .07); border: 1px solid rgba(0, 229, 255, .25); }
+.jv-tip[hidden] { display: none; }
+.jv-tip-x { border: 0; background: transparent; color: var(--jv-dim); font-size: 1.1rem; line-height: 1; padding: 2px 6px; min-height: 0; cursor: pointer; border-radius: 50%; }
+.jv-tip-x:hover { color: var(--jv-ink); }
+.jv-tip-x:focus-visible { outline: 2px solid var(--jv); }
+/* secondary controls: a quiet "..." menu in the corner */
+.jv-menu { position: relative; z-index: 5; text-align: left; flex: none; letter-spacing: normal; text-transform: none; }
+.jv-menu-btn { list-style: none; cursor: pointer; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  font: 700 1rem/1 var(--mono); letter-spacing: 0.05em; color: var(--jv-dim); border: 1px solid rgba(0, 229, 255, .22); background: rgba(0, 229, 255, .04); }
+.jv-menu-btn::-webkit-details-marker { display: none; }
+.jv-menu-btn:hover, .jv-menu[open] .jv-menu-btn { color: var(--jv-ink); border-color: rgba(0, 229, 255, .5); }
+.jv-menu-btn:focus-visible { outline: 2px solid var(--jv); outline-offset: 2px; }
+.jv-menu-list { position: absolute; right: 0; top: calc(100% + 8px); display: flex; flex-direction: column; gap: 6px; padding: 8px; min-width: 170px;
+  background: rgba(3, 14, 22, .96); border: 1px solid rgba(0, 229, 255, .22); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+.jv-menu-list form { margin: 0; }
+.jv-menu-list .jv-btn { width: 100%; text-align: left; }
 .jv-btn { font: 600 0.72rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; padding: 9px 12px; min-height: 34px; border-radius: 6px;
   color: var(--jv-ink); background: rgba(0, 229, 255, .05); border: 1px solid rgba(0, 229, 255, .25); cursor: pointer; }
 .jv-btn:hover { background: rgba(0, 229, 255, .12); border-color: rgba(0, 229, 255, .5); }
@@ -439,4 +451,5 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 @media (min-width: 1100px) { .jv-cap-them { font-size: 1.4rem; } }
 @media (prefers-reduced-motion: reduce) {
   html.jv-on .jv-drawer, .jv-ptt, .jv-status, .jv-corner, .jv-id b { transition: none; }
+  .jv[data-on="1"] .jv-ptt { animation: none; }
 }

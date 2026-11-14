@@ -347,6 +347,11 @@ def test_web_status_mute_and_settings_page(tmp_path, monkeypatch):
     r = c.post("/voice/api/mute", data={"csrf": csrf, "muted": "1"}, headers={"Accept": "application/json"})
     assert r.json() == {"ok": True, "muted": True}
     assert control.status()["muted"]
+    # the ring turning back on unmutes the laptop loop; a forged request is refused
+    r = c.post("/voice/api/mute", data={"csrf": csrf, "muted": "0"}, headers={"Accept": "application/json"})
+    assert r.json() == {"ok": True, "muted": False} and not control.status()["muted"]
+    r = c.post("/voice/api/mute", data={"csrf": "bad", "muted": "1"}, headers={"Accept": "application/json"})
+    assert r.status_code == 403 and not control.status()["muted"]
 
 
 def test_no_heavy_imports():
@@ -472,6 +477,11 @@ def test_jarvis_home_renders_with_and_without_voice_process(talk):
     html = c.get("/dashboard/").text
     assert "data-jarvis" in html and "data-jv-core" in html and "jarvis.js" in html and 'id="history"' in html
     assert "<script>alert" not in html and "&lt;script&gt;" in html and "chan-voice" in html
+    # one mic control: the ring is a toggle; no separate "always listen" switch or Mute button;
+    # History / Stop / Undo sit in the quiet "..." menu; a first-visit tip
+    assert 'data-jv-ptt aria-pressed="false"' in html and "Tap to talk" in html
+    assert "data-jv-always" not in html and "data-jv-mute" not in html and "Always listen" not in html
+    assert "data-jv-menu" in html and "data-jv-history" in html and "data-jv-tip" in html
     assert c.get("/voice/api/status").json()["state"] == "offline"
     control.Control().publish("speaking", heard="hi", said="Good evening, sir.")
     st = c.get("/voice/api/status").json()
