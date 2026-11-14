@@ -26,6 +26,29 @@ files, markdown and SQLite, so it can be read, edited, versioned and replaced pi
 
 Scheduled work (briefs, reviews, tidy-ups) calls `runtime.run_task(agent, task, deliver=...)`.
 
+## What Sterling can do: administrator of the whole app
+
+Blake's rule: Sterling reads and changes **everything** in ClipAgent except secret values.
+`assistant/admin.py` (skill `skills/app-admin`, tools on `agents/main.md`):
+
+- **Read:** `app_map` (generated live: every table with columns, row counts and purpose; every config key
+  with its value; vault layout; staff and skills; scheduler jobs; paths and logs), `app_query` (one
+  read-only SELECT: `mode=ro` + `query_only` + a SQLite authorizer, row cap, 5 s timeout), `app_search`
+  (messages on every channel, imported Claude history, vault, events, notifications, approvals, clips,
+  sources, goals, income...), `conversation_history` (by day and channel, with dates), `config_get`.
+- **Change** (each logged as an `admin` event with an undo record in kv; `app_changes`, `app_undo`):
+  `config_set` (any config key or friendly name; validated, applied live, says when a restart is needed;
+  `settings_set` now accepts every non-secret key too and has no caps beyond sanity bounds),
+  `pay_log`, `hours_log`, `job_set`, `income_edit`, `income_delete`, `staff_add/rename/update/delete/restore`
+  (`agents/*.md`; deletes go to `agents/.archive/`; the registry validates and a broken change is rolled
+  back; on the full-power backend the self-edit flow commits them after the turn), `memory_write`,
+  `memory_delete` (not `Agent/Heartbeat.md`), `app_update` / `app_delete` on any pipeline or `as_*` row.
+  Dashboard look and labels are code: he edits `templates/`, `static/`, `*.py` through self-edit.
+- **Never:** secret values. `admin.SECRET_KEYS` + `admin.SECRET_RE` are the one definition: secret config
+  keys show only "set / not set" and are refused by `config_set`; secret-looking columns read as NULL and
+  secret `kv` entries as `[redacted]` in `app_query`; and `tools.dispatch` runs `admin.redact` over every
+  tool result (known secret values and well-known key formats), so no tool can leak one.
+
 ## Runtime decision: Messages API tool loop, not the Agent SDK
 
 `claude-agent-sdk` 0.2.181 was installed and read. It is Claude Code as a library: every query

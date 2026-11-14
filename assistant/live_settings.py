@@ -1,4 +1,4 @@
-"""``settings_get`` / ``settings_set``: Sterling reads and changes a safe allowlist of his own settings.
+"""``settings_get`` / ``settings_set``: Sterling reads and changes his settings - every one except secrets.
 
 Blake says "switch to Lewis" and the very next sentence is in Lewis's voice: the tool writes
 ``config.env`` (comment-preserving, atomic: :mod:`config_store`), drops every settings cache, tells
@@ -7,7 +7,11 @@ voice is rebuilt on its next sentence because ``voice.web`` keys its engine on
 :meth:`VoiceSettings.tts_signature`. The separate laptop voice process notices the file change
 (``voice.settings.reload_if_changed``) and rebuilds its voice too.
 
-Only these settings exist for the tools (anything else, and every secret, is refused):
+The friendly names below get special handling (voice lookup by name, "22:00-08:00" parsing...). Any
+other name is a config key (``DRY_RUN``, ``MAX_UPLOADS_PER_DAY``...) and goes to
+:func:`assistant.admin.config_set`: everything is settable except :data:`assistant.admin.SECRET_KEYS`
+(and anything matching ``admin.SECRET_RE``). Blake owns the values: only sanity bounds remain
+(money cannot be negative), no artificial caps.
 
 ==========================  ==============================================================
 setting                     value
@@ -20,8 +24,8 @@ voice_speed                 0.5 - 2.0 (Kokoro)
 wake_word                   both | hey_jarvis | name
 heartbeat_minutes           0 - 240 (0 = off; the schedule changes after a restart)
 quiet_hours                 "22:00-08:00"
-assistant_daily_budget_usd  0 - ASSISTANT_BUDGET_CAP_USD (10)
-assistant_max_turn_usd      0 - TURN_BUDGET_CAP_USD (2)
+assistant_daily_budget_usd  dollars, >= 0
+assistant_max_turn_usd      dollars, >= 0
 ==========================  ==============================================================
 """
 
@@ -32,12 +36,9 @@ from typing import Any
 
 import db
 
-ASSISTANT_BUDGET_CAP_USD = 10.0
-TURN_BUDGET_CAP_USD = 2.0
 KV_BROWSER_VOICES = "voice:browser_voices"
 SETTINGS = ("voice", "voice_engine", "voice_speed", "wake_word", "heartbeat_minutes", "quiet_hours",
             "assistant_daily_budget_usd", "assistant_max_turn_usd")
-_SECRETY = re.compile(r"(key|token|secret|password|passwd|sid|credential|auth)", re.I)
 _HHMM = re.compile(r"^([01]?\d|2[0-3])[:.]?([0-5]\d)$")
 _WAKE = {"both": "both", "either": "both", "hey jarvis": "hey_jarvis", "hey_jarvis": "hey_jarvis", "jarvis": "hey_jarvis",
          "name": "name", "my name": "name", "sterling": "name", "your name": "name"}
@@ -78,11 +79,10 @@ def current() -> dict[str, Any]:
         "quiet_hours": f"{c.quiet_hours_start}-{c.quiet_hours_end}",
         "assistant_daily_budget_usd": a.daily_budget_usd,
         "assistant_max_turn_usd": a.max_turn_usd,
-        "caps": {"assistant_daily_budget_usd": ASSISTANT_BUDGET_CAP_USD, "assistant_max_turn_usd": TURN_BUDGET_CAP_USD},
         "voices_available": {"kokoro": [kokoro_name(k) for k in KOKORO_VOICES],
                              "browser": browser_voices()[:30],
                              "elevenlabs": "available" if v.elevenlabs_api_key else "needs an ElevenLabs key in Settings"},
-        "settable": list(SETTINGS),
+        "settable": list(SETTINGS) + ["any other non-secret config key (config_get lists them)"],
     }
 
 
@@ -96,15 +96,13 @@ def _describe_voice(v: Any) -> str:
     return f"browser voice {v.web_voice}" if v.web_voice else "the browser's best British male voice"
 
 
-def _money(setting: str, value: Any, cap: float) -> float:
+def _money(setting: str, value: Any) -> float:
     try:
         x = float(str(value).replace("$", "").strip())
     except ValueError:
         raise SettingRefused(f"{setting} needs a number of dollars.") from None
     if x < 0:
         raise SettingRefused(f"{setting} cannot be negative.")
-    if x > cap:
-        raise SettingRefused(f"Refused: {setting} is capped at ${cap:.2f}; he can raise the cap only in config.env.")
     return round(x, 2)
 
 
@@ -147,12 +145,15 @@ def changes_for(setting: str, value: Any) -> tuple[dict[str, str], str]:
     from voice.settings import BARGE_IN_MODES  # noqa: F401 - keeps the import cheap and local
     from voice.settings import get_voice_settings
 
+    from assistant import admin
+
     setting = str(setting or "").strip().lower()
+    if admin.is_secret_key(setting):
+        raise SettingRefused("Refused: keys, tokens and passwords are never changed by me. He can change "
+                             "them himself in Settings.")
     if setting not in SETTINGS:
-        if _SECRETY.search(setting):
-            raise SettingRefused("Refused: keys, tokens and passwords are never changed by voice. He can change "
-                                 "them himself in Settings.")
-        raise SettingRefused(f"Refused: {setting!r} is not a setting I may change. Allowed: {', '.join(SETTINGS)}.")
+        raise SettingRefused(f"{setting!r} is not one of the friendly settings ({', '.join(SETTINGS)}); "
+                             "use config_set with its config key.")
     sval = " ".join(str(value if value is not None else "").split())
     if setting == "voice":
         return resolve_voice(sval)
@@ -201,10 +202,10 @@ def changes_for(setting: str, value: Any) -> tuple[dict[str, str], str]:
             out.append(f"{int(m.group(1)):02d}:{m.group(2)}")
         return {"QUIET_HOURS_START": out[0], "QUIET_HOURS_END": out[1]}, f"{out[0]} to {out[1]}"
     if setting == "assistant_daily_budget_usd":
-        x = _money(setting, sval, ASSISTANT_BUDGET_CAP_USD)
+        x = _money(setting, sval)
         return {"ASSISTANT_DAILY_BUDGET_USD": f"{x:.2f}"}, f"${x:.2f} a day"
     if setting == "assistant_max_turn_usd":
-        x = _money(setting, sval, TURN_BUDGET_CAP_USD)
+        x = _money(setting, sval)
         return {"ASSISTANT_MAX_TURN_USD": f"{x:.2f}"}, f"${x:.2f} a turn"
     raise SettingRefused(f"{setting} cannot be set.")  # pragma: no cover - SETTINGS is exhaustive
     _ = config  # pragma: no cover
@@ -213,10 +214,20 @@ def changes_for(setting: str, value: Any) -> tuple[dict[str, str], str]:
 def apply(setting: str, value: Any, *, via: str = "assistant") -> dict[str, Any]:
     """settings_set: validate, write config.env, reload every cache, tell the page. Raises SettingRefused."""
     import config_store
-    from assistant import events
+    from assistant import admin, events
 
+    name = str(setting or "").strip()
+    if name.lower() not in SETTINGS:  # any other non-secret setting: the administrator path
+        if admin.is_secret_key(name):
+            raise SettingRefused("Refused: keys, tokens and passwords are never changed by me. He can change "
+                                 "them himself in Settings.")
+        try:
+            return admin.config_set(name, value, via=via)
+        except admin.AdminError as exc:
+            raise SettingRefused(str(exc)) from None
+    setting = name.lower()
     changes, said = changes_for(setting, value)
-    if any(_SECRETY.search(k) and k != "ELEVENLABS_VOICE_ID" for k in changes):  # belt and braces
+    if any(admin.is_secret_key(k) and k != "ELEVENLABS_VOICE_ID" for k in changes):  # belt and braces
         raise SettingRefused("Refused: that would change a secret.")
     config_store.update(changes)
     config_store.reload()
@@ -259,12 +270,14 @@ def register_tools(register: Any) -> None:
     from assistant.tools import Tool, _obj
 
     register(Tool("settings_get", "Read your own voice and assistant settings (current voice and engine, wake "
-                                  "word, heartbeat, quiet hours, budgets and caps) and the voices he can pick.",
+                                  "word, heartbeat, quiet hours, budgets) and the voices he can pick. Every other "
+                                  "setting: config_get.",
                   _obj({}), _get, owner="assistant.live_settings"), replace=True)
     register(Tool("settings_set", "Change one of your settings at once, live, e.g. {setting: 'voice', value: "
-                                  "'Lewis'}. Allowed: " + ", ".join(SETTINGS) + ". Budgets are capped; secrets "
-                                  "are never changed. Do it immediately when he asks, then confirm in a few words.",
-                  _obj({"setting": {"type": "string", "enum": list(SETTINGS)},
+                                  "'Lewis'}. Friendly names: " + ", ".join(SETTINGS) + "; any other non-secret "
+                                  "config key works too (e.g. DRY_RUN). Secrets are never changed. Do it "
+                                  "immediately when he asks, then confirm in a few words.",
+                  _obj({"setting": {"type": "string"},
                         "value": {"type": "string", "description": "The new value, e.g. 'Lewis', '22:00-07:00', '4'."}},
                        required=["setting", "value"]),
                   _set, owner="assistant.live_settings", side_effects=True), replace=True)

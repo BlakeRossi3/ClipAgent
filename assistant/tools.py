@@ -116,12 +116,18 @@ PLANNED_TOOLS: dict[str, str] = {
     "heartbeat_status": "assistant.heartbeat",
     "settings_get": "assistant.live_settings",
     "settings_set": "assistant.live_settings",
+    # the administrator toolkit: read everything, change everything except secrets (assistant/admin.py)
+    **{name: "assistant.admin" for name in (
+        "app_map", "app_query", "app_search", "conversation_history", "config_get", "config_set", "pay_log",
+        "hours_log", "job_set", "income_edit", "income_delete", "staff_list", "staff_add", "staff_rename",
+        "staff_update", "staff_delete", "staff_restore", "memory_write", "memory_delete", "app_update",
+        "app_delete", "app_undo", "app_changes")},
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
 EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve", "assistant.usage",
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
-                     "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings")
+                     "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 
 
@@ -212,6 +218,17 @@ def _validate(args: Any, schema: dict[str, Any]) -> list[str]:
     return errs
 
 
+def _redact_secrets(text: str) -> str:
+    """Last line of defence: no tool result ever carries a secret value (assistant.admin.redact)."""
+    try:
+        from assistant import admin
+
+        return admin.redact(text)
+    except Exception:  # redaction must never break a tool call
+        log.debug("secret redaction failed", exc_info=True)
+        return text
+
+
 def dispatch(name: str, args: Any, ctx: ToolContext, *, allowed: set[str] | frozenset[str]) -> ToolResult:
     """Run tool ``name`` for ``ctx.agent`` if (and only if) it is in ``allowed``."""
     _ensure_builtin()
@@ -230,6 +247,7 @@ def dispatch(name: str, args: Any, ctx: ToolContext, *, allowed: set[str] | froz
             try:
                 out = tool.fn(ctx, args_d)
                 text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, default=str)
+                text = _redact_secrets(text)
                 if len(text) > MAX_RESULT_CHARS:
                     text = text[:MAX_RESULT_CHARS] + "…[truncated]"
                 res = ToolResult(True, text)

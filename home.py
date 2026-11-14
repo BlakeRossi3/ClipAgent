@@ -652,8 +652,9 @@ def roster_data(today: date) -> list[dict[str, Any]]:
             elif last.status == "error" and age < timedelta(hours=24):
                 status = "error"
         out.append({
-            "name": name, "display": s.name if name == "main" else name.capitalize(),
-            "role": AGENT_ROLES.get(name, name.replace("-", " ").capitalize()),
+            "name": name, "display": s.name if name == "main" else (spec.extra.get("display_name")
+                                                                      or name.replace("-", " ").capitalize()),
+            "role": spec.extra.get("role") or AGENT_ROLES.get(name, name.replace("-", " ").capitalize()),
             "description": spec.description, "model": _agent_model(spec, s),
             "tools": list(spec.tools), "skills": [{"name": k, "description": skills[k].description if k in skills else ""}
                                                     for k in spec.skills],

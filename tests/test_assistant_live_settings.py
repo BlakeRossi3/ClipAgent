@@ -43,20 +43,21 @@ def test_voice_by_name_engine_and_browser_voices(cfg):
         live_settings.apply("voice", "Gandalf")
 
 
-def test_allowlist_caps_and_secrets(cfg):
+def test_everything_but_secrets_no_caps(cfg):
     assert _set("assistant_daily_budget_usd", "4").ok
     assert config_store.read_values()["ASSISTANT_DAILY_BUDGET_USD"] == "4.00"
-    over = _set("assistant_daily_budget_usd", "50")
-    assert not over.ok and "capped" in over.content
-    assert config_store.read_values()["ASSISTANT_DAILY_BUDGET_USD"] == "4.00"
-    assert not _set("assistant_max_turn_usd", "9").ok
-    for secret in ("ANTHROPIC_API_KEY", "dashboard_token", "twilio_auth_token"):
+    assert _set("assistant_daily_budget_usd", "50").ok            # Blake owns the values: no artificial cap
+    assert config_store.read_values()["ASSISTANT_DAILY_BUDGET_USD"] == "50.00"
+    assert not _set("assistant_max_turn_usd", "-1").ok            # sanity bound only
+    for secret in ("ANTHROPIC_API_KEY", "dashboard_token", "twilio_auth_token", "TWILIO_ACCOUNT_SID"):
         r = _set(secret, "x")
-        assert not r.ok
+        assert not r.ok and "never" in r.content
     with pytest.raises(live_settings.SettingRefused, match="never changed"):
         live_settings.apply("anthropic_api_key", "sk-x")
-    with pytest.raises(live_settings.SettingRefused, match="not a setting"):
-        live_settings.apply("dry_run", "false")
+    assert live_settings.apply("dry_run", "false")["changed"] == {"DRY_RUN": "false"}   # any other key
+    assert config_store.read_values()["DRY_RUN"] == "false"
+    with pytest.raises(live_settings.SettingRefused, match="unknown setting"):
+        live_settings.apply("no_such_thing", "1")
     assert "ANTHROPIC_API_KEY" not in config_store.read_values()
 
 
