@@ -19,7 +19,7 @@ import pytest
 from assistant import runtime, store, tools
 from assistant import settings as asettings
 
-_PREFIXES = ("ASSISTANT_", "SUBAGENT_")
+_PREFIXES = ("ASSISTANT_", "SUBAGENT_", "HEARTBEAT_")
 _KEYS = ("VAULT_DIR", "FAKE_ASSISTANT", "OWNER_HONORIFIC")
 
 

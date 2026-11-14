@@ -63,6 +63,9 @@ class AssistantSettings:
     self_edit: bool = True                   # test + commit (or roll back) its own code changes
     self_edit_branch: str = "sterling/self"
     self_edit_test_timeout_sec: int = 1200
+    # --- the heartbeat (assistant/heartbeat.py): checklist Agent/Heartbeat.md, every N minutes
+    heartbeat_minutes: int = 30              # 0 = off
+    heartbeat_max_tasks_per_day: int = 6
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -119,6 +122,8 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         self_edit=config._bool(env.get("ASSISTANT_SELF_EDIT"), True),
         self_edit_branch=s("ASSISTANT_SELF_EDIT_BRANCH", "sterling/self"),
         self_edit_test_timeout_sec=max(60, int(s("ASSISTANT_SELF_EDIT_TEST_TIMEOUT_SEC", "1200"))),
+        heartbeat_minutes=max(0, int(s("HEARTBEAT_MINUTES", "30"))),
+        heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),
     )
 
 

@@ -590,6 +590,10 @@ def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = N
     secret = list(SECRET_PATTERNS) + [rule_path(home_dir()) + "/**"]
     deny = [f"Read({p})" for p in secret] + [f"Edit({p})" for p in secret]
     deny += [f"Bash({c})" for c in DENY_COMMANDS] + [f"PowerShell({c})" for c in DENY_POWERSHELL]
+    from assistant import heartbeat   # his checklist: proposals go through request_approval
+
+    for p in heartbeat.protected_paths():
+        deny += [f"Edit({rule_path(p)})", f"Write({rule_path(p)})"]
     return {"permissions": {"allow": allow, "deny": deny, "defaultMode": "dontAsk"},
             # Keep the PowerShell tool on next to Bash deny rules (Windows with Git Bash).
             "env": {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"}}

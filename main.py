@@ -672,7 +672,10 @@ def assistant_job_specs() -> list[JobSpec]:
                 "cron", {"hour": 1, "minute": 37}, "distil the next batch of imported Claude chats"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
-    ]
+    ] + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
+                  "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
+                  "heartbeat: check Agent/Heartbeat.md against the live status")]
+         if get_assistant_settings().heartbeat_minutes > 0 else [])
 
 
 def build_scheduler() -> Any:
@@ -1024,6 +1027,10 @@ def assistant_cli(args: argparse.Namespace) -> int:
         import importlib
 
         return int(importlib.import_module(f"assistant.{args.acmd}").main(args.rest) or 0)
+    if args.acmd == "heartbeat":
+        from assistant import heartbeat
+
+        return heartbeat.main_cli(now=args.now)
     if args.acmd == "validate":
         errs = registry.validate_all(tools.known_tool_names())
         skills = registry.load_skills(strict=False)
@@ -1260,6 +1267,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--schedule", choices=["weekly", "biweekly", "semimonthly", "monthly"])
     p.add_argument("--tax", type=float, help="tax set-aside, e.g. 0.2 or 20")
     asub.add_parser("plan", help="plan and show today's check-ins")
+    p = asub.add_parser("heartbeat", help="heartbeat status (--now: run one tick now)")
+    p.add_argument("--now", action="store_true", help="run one heartbeat now, even if nothing changed")
     for name in ("evals", "improve"):
         p = asub.add_parser(name, help=f"pass-through to assistant.{name} (see its --help)", add_help=False)
         p.add_argument("rest", nargs=argparse.REMAINDER)

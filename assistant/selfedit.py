@@ -116,6 +116,7 @@ class Snapshot:
     branch: str
     ok: bool = True
     note: str = ""
+    protected: dict[str, bytes | None] = field(default_factory=dict)   # owner-only files as they were
 
 
 @dataclass
@@ -164,22 +165,71 @@ def changed_files() -> list[str]:
     return sorted({ln[3:].split(" -> ")[-1].strip('"') for ln in lines if ln.strip()})
 
 
+def _protected_now() -> dict[str, bytes | None]:
+    """Owner-only files (the heartbeat checklist + its template): their bytes, None = absent."""
+    out: dict[str, bytes | None] = {}
+    try:
+        from assistant import heartbeat
+
+        for p in heartbeat.protected_paths():
+            out[str(p)] = p.read_bytes() if p.is_file() else None
+    except Exception as exc:
+        log.warning("protected-file snapshot failed: %s", exc)
+    return out
+
+
+def _restore_protected(before: dict[str, bytes | None]) -> list[str]:
+    """Put back any owner-only file the turn changed. Returns the names restored."""
+    restored = []
+    for path, now in _protected_now().items():
+        if path not in before or before[path] == now:
+            continue
+        p = Path(path)
+        if before[path] is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(before[path])  # type: ignore[arg-type]
+        restored.append(p.name)
+    if restored:
+        db.log_event("assistant", "refused a change to the owner's heartbeat checklist", level="warning",
+                     data={"files": restored})
+    return restored
+
+
 def begin() -> Snapshot:
     """Before a full-power turn. Never raises: a broken git setup just disables the guardrail."""
     s = get_assistant_settings()
+    guard = _protected_now()
     if not s.self_edit or not is_repo():
-        return Snapshot("", True, "", ok=False, note="not a git checkout")
+        return Snapshot("", True, "", ok=False, note="not a git checkout", protected=guard)
     try:
         clean = not changed_files()
         branch = ensure_branch() if clean else current_branch()
-        return Snapshot(_out("rev-parse", "HEAD"), clean, branch)
+        return Snapshot(_out("rev-parse", "HEAD"), clean, branch, protected=guard)
     except Exception as exc:
         db.log_event("assistant", "self-edit guard unavailable", level="warning", data={"error": repr(exc)[:300]})
-        return Snapshot("", True, "", ok=False, note=str(exc)[:200])
+        return Snapshot("", True, "", ok=False, note=str(exc)[:200], protected=guard)
+
+
+REFUSED_NOTE = ("I tried to change Agent/Heartbeat.md, which is yours to edit, so I put it back. I can propose the "
+                "change for your approval instead.")
 
 
 def finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
-    """After the turn: test, then commit + restart, or roll back. None when nothing changed."""
+    """After the turn: test, then commit + restart, or roll back. None when nothing changed.
+    Owner-only files (the heartbeat checklist) are restored first, whatever else happened."""
+    restored = _restore_protected(snap.protected) if snap.protected else []
+    out = _finish(snap, summary=summary)
+    if not restored:
+        return out
+    if out is None:
+        return Outcome("refused", REFUSED_NOTE, restored)
+    out.summary = f"{out.summary} {REFUSED_NOTE}"
+    return out
+
+
+def _finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
     if not snap.ok:
         return None
     files = changed_files()

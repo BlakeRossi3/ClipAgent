@@ -74,7 +74,7 @@ def task_status(after: str | None) -> dict[str, Any]:
         return {"tasks": tasks, "event_id": voice_front.latest_event_id(), "events": []}
     events = voice_front.task_events(int(after))
     for e in events:
-        if e["origin"] == "browser":
+        if e["origin"] in ("browser", "any"):   # "any": heartbeat news and its tasks
             e["audio"] = _event_audio_url(e["id"], e["text"])
     return {"tasks": tasks, "event_id": events[-1]["id"] if events else int(after), "events": events}
 

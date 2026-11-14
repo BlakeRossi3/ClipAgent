@@ -279,7 +279,13 @@ def status_snapshot() -> str:
         return ["Recent events:"] + [f"- {_local_hm(e.ts)} {e.module} ({e.level}): {e.message[:90]}" for e in evs] \
             if evs else []
 
-    for fn in (tasks, approvals, checkins, money, shorts, plan, events):
+    def heartbeat() -> list[str]:
+        from assistant import heartbeat as hb
+
+        line = hb.status_line()
+        return [line] if line else []
+
+    for fn in (tasks, approvals, checkins, money, shorts, plan, heartbeat, events):
         part(fn)
     return "\n".join(lines)
 
@@ -664,4 +670,4 @@ class Announcer:
         evs = task_events(self.after)
         if evs:
             self.after = evs[-1]["id"]
-        return [e["text"] for e in evs if e["origin"] == self.origin]
+        return [e["text"] for e in evs if e["origin"] in (self.origin, "any")]   # "any": heartbeat news

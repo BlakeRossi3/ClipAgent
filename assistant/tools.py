@@ -113,12 +113,13 @@ PLANNED_TOOLS: dict[str, str] = {
     "skill_vet": "assistant.skill_vetting",
     "skill_install": "assistant.skill_vetting",
     "skill_third_party": "assistant.skill_vetting",
+    "heartbeat_status": "assistant.heartbeat",
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
 EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve", "assistant.usage",
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
-                     "assistant.skill_vetting")
+                     "assistant.skill_vetting", "assistant.heartbeat")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 
 
@@ -441,10 +442,11 @@ def outbound_sms_today() -> int:
 
 
 def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply_to: int | None = None,
-                  cost_usd: float = 0.0) -> dict[str, Any]:
+                  cost_usd: float = 0.0, urgent: bool = False) -> dict[str, Any]:
     """The single outbound path: the owner's own number only, daily cap, quiet hours, DRY_RUN.
 
     ``kind="reply"`` (a direct answer to an inbound message) is exempt from the daily cap.
+    ``urgent=True`` (plain code only, e.g. the heartbeat) texts now even in quiet hours; still capped.
     Goes through ``notify.notify`` (quiet hours queue it; DRY_RUN records without sending).
     """
     from assistant import persona
@@ -462,7 +464,7 @@ def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply
     nkind = kind if kind.startswith("assistant") else f"assistant_{kind}"
     # A reply answers a text he just sent: deliver now, even in quiet hours. Anything else goes
     # through the policy layer (quiet hours queue it, DRY_RUN records it).
-    nid = notify.sms(body, kind=nkind) if kind == "reply" else notify.notify(nkind, body)
+    nid = notify.sms(body, kind=nkind) if kind == "reply" or urgent else notify.notify(nkind, body)
     mid = store.add_message("out", "sms", body, kind=kind, agent=agent, cost_usd=cost_usd, reply_to=reply_to,
                             meta={"notification_id": nid})
     n = db.get_notification(nid)

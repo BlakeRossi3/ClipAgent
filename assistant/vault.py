@@ -128,6 +128,24 @@ class IndexStats:
 # paths
 # ---------------------------------------------------------------------------
 
+# Notes only the owner writes (the heartbeat checklist): tool, sub-agent and self-edit writes are refused.
+# Sterling proposes changes with request_approval; the approved handler writes with ``owner=True``.
+PROTECTED_NOTES = frozenset({"Agent/Heartbeat.md"})
+
+
+class VaultProtected(VaultError):
+    """A write to an owner-only note (see :data:`PROTECTED_NOTES`)."""
+
+
+def is_protected(rel_posix: str) -> bool:
+    return rel_posix.lower() in {p.lower() for p in PROTECTED_NOTES}
+
+
+def _guard(rel_posix: str, owner: bool) -> None:
+    if not owner and is_protected(rel_posix):
+        raise VaultProtected(f"{rel_posix} is the owner's own note; propose a change with request_approval instead")
+
+
 def vault_root() -> Path:
     return get_assistant_settings().vault_dir
 
@@ -299,7 +317,8 @@ def _default_meta(note_type: str, source: str, confidence: str = "stated",
 
 
 def write_note(rel: str, body: str, *, meta: dict[str, Any] | None = None, base_sha: str | None = None,
-               on_conflict: str = "append", source: str = "assistant", note_type: str = "note") -> Note:
+               on_conflict: str = "append", source: str = "assistant", note_type: str = "note",
+               owner: bool = False) -> Note:
     """Create or replace a note atomically, stamping ``updated`` (and ``created`` when new).
 
     ``base_sha`` is the sha of the version the caller read (``None`` = caller did not read
@@ -311,6 +330,7 @@ def write_note(rel: str, body: str, *, meta: dict[str, Any] | None = None, base_
     if on_conflict not in ("append", "raise"):
         raise ValueError("on_conflict must be 'append' or 'raise'")
     path, rel_posix = safe_path(rel)
+    _guard(rel_posix, owner)
     with _lock:
         if path.is_file():
             current_text = path.read_text(encoding="utf-8", errors="replace")
@@ -318,7 +338,8 @@ def write_note(rel: str, body: str, *, meta: dict[str, Any] | None = None, base_
                 if on_conflict == "raise":
                     raise NoteConflict(f"{rel_posix} changed on disk since it was read")
                 stamp = db.local_now().strftime("%Y-%m-%d %H:%M")
-                return append_to_note(rel_posix, body, heading=f"Merged {stamp} ({source})", source=source)
+                return append_to_note(rel_posix, body, heading=f"Merged {stamp} ({source})", source=source,
+                                      owner=owner)
             old_meta, _ = parse_note_text(current_text)
             merged = {**old_meta, **(meta or {})}
         else:
@@ -332,13 +353,14 @@ def write_note(rel: str, body: str, *, meta: dict[str, Any] | None = None, base_
 
 
 def append_to_note(rel: str, text: str, *, heading: str | None = None, source: str = "assistant",
-                   note_type: str = "note", tags: list[str] | None = None) -> Note:
+                   note_type: str = "note", tags: list[str] | None = None, owner: bool = False) -> Note:
     """Append ``text`` (at the end, or at the end of the ``## heading`` section, created if missing).
 
     Creates the note with frontmatter when absent. Always re-reads the file under the lock,
     so a human's concurrent edit is merged, never lost.
     """
     path, rel_posix = safe_path(rel)
+    _guard(rel_posix, owner)
     text = text.rstrip()
     if not text:
         raise VaultError("nothing to append")
@@ -373,9 +395,10 @@ def _insert_under_heading(body: str, text: str, heading: str | None) -> str:
     return "\n".join(lines[:end] + text.split("\n") + lines[end:]) + "\n"
 
 
-def delete_note(rel: str) -> bool:
+def delete_note(rel: str, *, owner: bool = False) -> bool:
     """Delete a note (used by forget/tidy). Returns False if it did not exist."""
     path, rel_posix = safe_path(rel)
+    _guard(rel_posix, owner)
     with _lock:
         if not path.is_file():
             return False
@@ -529,7 +552,7 @@ def forget(fact: str, *, area: str | None = None, threshold: float = DUPLICATE_T
 
     Nothing is kept elsewhere: forgetting means deleting.
     """
-    targets = [note_for_area(area)[0]] if area else list_notes()
+    targets = [note_for_area(area)[0]] if area else [r for r in list_notes() if not is_protected(r)]
     removed: list[str] = []
     with _lock:
         for rel in targets:

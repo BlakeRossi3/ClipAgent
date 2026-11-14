@@ -225,6 +225,34 @@ the adopted lessons, the approved/rejected proposals and the owner's conversatio
 corrections are exactly the dataset one would use - all already in the places above. No exporter
 is built yet. Model ids are settings, so newer models drop in without code changes.
 
+## The heartbeat (proactive checks)
+
+`assistant/heartbeat.py`, skill `skills/heartbeat/`. OpenClaw's "heartbeat", minus its poisoning risk.
+
+- **Checklist**: `Agent/Heartbeat.md` in the vault (default shipped from `vault_template/`, never
+  overwritten). Bullets are conditions ("If a Short failed to upload, tell me") or timed items
+  ("Each morning ...", "At 9pm ...", "Every hour ...", "Every Monday ..."). **Only Blake edits it**:
+  `vault.write_note/append_to_note/delete_note` raise `VaultProtected` for `vault.PROTECTED_NOTES`
+  (unless `owner=True`), Claude Code gets Edit/Write deny rules for it, and `selfedit.finish` restores
+  it (and its template) after any full-power turn that changed it. Sterling proposes changes with
+  `request_approval` handler `heartbeat_checklist` (`details.text` = the full new note); YES writes it.
+- **Tick** (job `assistant_heartbeat`, every `HEARTBEAT_MINUTES`, default 30, only with
+  `ASSISTANT_ENABLED`): skipped while stopped or while `usage.constrained()` (plan >= 80%). Plain code
+  hashes the checklist + `heartbeat.facts()` (failed uploads, approval age buckets, plan, eval
+  regressions, error events, pipeline pause, running tasks). Same hash and nothing timed due -> no model
+  call. Otherwise one call on voice_front's fast model (assistant budget, `assistant.heartbeat` usage)
+  with the checklist and `voice_front.status_snapshot()` wrapped as untrusted; it returns
+  `{"notify": [{"text", "urgency"}], "tasks": [{"task", "why"}], "nothing"}`.
+- **Notes** go through `tools.send_to_owner(kind="heartbeat")` (daily SMS cap), are not repeated
+  within 12 h (exact or near-identical), and are spoken by the voice process and the Jarvis page
+  (`task_done` voice message, origin `any`). Quiet hours: urgent notes are texted at once, the rest
+  (and tasks) are held and re-asked on the first tick after quiet hours; timed items wait too.
+- **Tasks** run like `voice_front.delegate` (origin `any`): one at a time, at most
+  `HEARTBEAT_MAX_TASKS_PER_DAY` (default 6); `usage.should_defer("heartbeat", ...)` queues them when
+  the plan is tight. The brief says it came from the heartbeat; approvals apply as always.
+- **Visibility**: `heartbeat_status` tool, "Last heartbeat: 12 min ago — all quiet" in the voice
+  status snapshot, one `heartbeat` event per tick, `python main.py assistant heartbeat [--now]`.
+
 ## Toolkit: reels, skill vetting, desktop modes, Claude history, Twilio doctor
 
 Each is a plain module with `register_tools(register)` (tools reach Sterling in-process and over MCP)
