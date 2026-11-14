@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import random
 import re
-from typing import Callable
+from typing import Any, Callable, Mapping
 
-# Said only when the fast voice front has not started answering within VOICE_FILLER_DELAY_SEC.
+# Said only when the brain has not started answering within VOICE_FILLER_DELAY_SEC.
 WORKING = ("One moment, {h}.", "Working on it, {h}.", "Very good, {h}.", "Checking now.", "Right away, {h}.",
            "Looking into it.", "Under way.", "Certainly, {h}. One moment.")
 # Still waiting after STILL_AFTER_SEC more: one more line, then quiet until the answer.
@@ -108,3 +108,159 @@ def prepare_reply(text: str, *, honorific: str = "sir",
     if long:
         spoken = " ".join(sentences[:SUMMARY_SENTENCES]) or spoken[:240]
     return spoken.strip(), long
+
+
+# ---------------------------------------------------------------------------
+# streamed answers: sentences as they complete, cleaned for speaking
+# ---------------------------------------------------------------------------
+
+class SentenceStream:
+    """Feed text deltas; get back finished sentences (the last piece waits for more text or flush).
+
+    As adewaskar/jarvis ``src/lib/tts.ts`` (MIT): a sentence is spoken the moment it is complete,
+    abbreviations do not end a sentence, and a run-on clause is cut at a word boundary past
+    ``MAX_UNSPOKEN`` characters so speech never stalls. Nothing is ever cut mid-word."""
+
+    def __init__(self) -> None:
+        self.buf = ""
+
+    def feed(self, delta: str) -> list[str]:
+        self.buf += delta
+        parts = split_sentences(self.buf)
+        if len(parts) <= 1:
+            return []
+        done = parts[:-1]
+        self.buf = parts[-1] + (" " if self.buf[-1:].isspace() else "")   # keep the word boundary
+        return done
+
+    def flush(self) -> list[str]:
+        out, self.buf = split_sentences(self.buf), ""
+        return out
+
+
+_URL = re.compile(r"\b(?:https?://|www\.)\S*[^\s.,;:!?)\]]", re.I)
+_MD = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MARKS = re.compile(r"[*_`#>|]+")
+# Plumbing Blake should never hear (the old two-layer voice leaked it). "channel" is only plumbing
+# with these words: "your YouTube channel" is his business and stays.
+_PLUMBING_SUBS = (
+    (re.compile(r"\s*\b(?:from|on|in|over|via|through) (?:this|the|that|my|your) (?:voice |text |sms |dashboard )?"
+                r"channel\b", re.I), ""),
+    (re.compile(r"\bmy full self\b", re.I), "I"),
+    (re.compile(r"\b(?:the|my) full self\b", re.I), "the full system"),
+    (re.compile(r"\bI(?:'ll| will) delegate (?:this|that|it)(?: to [\w\s-]{1,30}?)?(?=[.,;!?]|$)", re.I),
+     "I'll get on with it"),
+    (re.compile(r"\bdelegat(?:e|ed|ing)\b", re.I), "hand"),
+)
+_PLUMBING = re.compile(r"\b(?:full self|delegat\w*|(?:voice|fast|slow) (?:front|worker|layer)|front[- ]end|"
+                       r"the front\b(?! door| of)|(?:this|voice|text|sms|dashboard) channel)\b", re.I)
+_ACK = re.compile(r"^(?:(?:very good|understood|certainly|right away|of course|as you wish|noted|got it|okay|ok|"
+                  r"sure|right|will do|on it|consider it done|directly|at once|indeed|yes)"
+                  r"(?:,?\s*(?:sir|madam|ma'am|blake))?[.!]?\s*)+$", re.I)
+
+
+def clean_spoken(text: str) -> str:
+    """One sentence as it is said: no links or markdown, no plumbing words (channel, front, full self,
+    delegate), whitespace tidied. Returns "" when nothing speakable is left."""
+    t = _MD.sub(r"\1", text or "")
+    t = _URL.sub("", t)
+    t = _MARKS.sub("", t)
+    for rx, rep in _PLUMBING_SUBS:
+        t = rx.sub(rep, t)
+    t = " ".join(t.split()).strip()
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    if _PLUMBING.search(t):
+        return ""
+    return t if re.search(r"[A-Za-z0-9]", t) else ""
+
+
+def has_plumbing(text: str) -> bool:
+    return bool(_PLUMBING.search(text or ""))
+
+
+def is_empty_ack(text: str) -> bool:
+    """"Understood, sir." and nothing else: an acknowledgement that neither answers nor does anything."""
+    t = " ".join((text or "").split())
+    return bool(t) and bool(_ACK.match(t))
+
+
+def trim_to_sentence(text: str, limit: int) -> str:
+    """At most ``limit`` characters, cut at the last sentence end (never mid-word or mid-sentence)."""
+    t = " ".join((text or "").split())
+    if len(t) <= limit:
+        return t
+    out = ""
+    for s in split_sentences(t):
+        if len(out) + len(s) + 1 > limit:
+            break
+        out = f"{out} {s}".strip()
+    if out:
+        return out
+    cut = t.rfind(" ", 0, limit)
+    return (t[:cut] if cut > 0 else t[:limit]).rstrip(",;:") + "."
+
+
+# ---------------------------------------------------------------------------
+# what a tool step is called on the activity rail ("Reading home.py", "Running tests")
+# ---------------------------------------------------------------------------
+
+def _base(path: Any) -> str:
+    p = str(path or "").replace("\\", "/").rstrip("/")
+    return p.rsplit("/", 1)[-1] or p
+
+
+def _host(url: str) -> str:
+    m = re.match(r"^\w+://(?:www\.)?([^/:?#]+)", url or "")
+    h = (m.group(1) if m else url or "").lower()
+    named = {"youtube.com": "YouTube", "m.youtube.com": "YouTube", "studio.youtube.com": "YouTube Studio",
+             "youtu.be": "YouTube", "github.com": "GitHub", "claude.ai": "Claude", "google.com": "Google",
+             "mail.google.com": "Gmail", "instagram.com": "Instagram", "tiktok.com": "TikTok"}
+    return named.get(h, h)
+
+
+def tool_label(name: str, inp: Mapping[str, Any] | None = None) -> str:
+    """A short human label for a tool call (adapted from adewaskar/jarvis ``fillers.ts`` forTool)."""
+    inp = inp or {}
+    raw = name or ""
+    tool = raw.split("__")[-1] if raw.startswith("mcp__") else raw
+    desc = " ".join(str(inp.get("description") or "").split())[:70]
+    if tool == "Read":
+        return f"Reading {_base(inp.get('file_path'))}" if inp.get("file_path") else "Reading a file"
+    if tool in ("Edit", "MultiEdit", "NotebookEdit"):
+        return f"Editing {_base(inp.get('file_path') or inp.get('notebook_path'))}" if inp else "Editing a file"
+    if tool == "Write":
+        return f"Writing {_base(inp.get('file_path'))}" if inp.get("file_path") else "Writing a file"
+    if tool in ("Bash", "PowerShell"):
+        cmd = str(inp.get("command") or "")
+        if re.search(r"\bpytest\b|\bnpm (?:run )?test\b|\bunittest\b", cmd):
+            return "Running tests"
+        if re.search(r"^\s*git\b", cmd):
+            return "Checking git"
+        return desc or ("Running a command" if not cmd else f"Running {cmd.split()[0][:30]}")
+    if tool in ("Grep", "Glob"):
+        pat = str(inp.get("pattern") or "")[:30]
+        return f"Searching the code for {pat}" if pat else "Searching the code"
+    if tool == "WebSearch":
+        q = str(inp.get("query") or "")[:50]
+        return f"Searching the web: {q}" if q else "Searching the web"
+    if tool == "WebFetch":
+        return f"Reading {_host(str(inp.get('url') or ''))}" if inp.get("url") else "Reading a web page"
+    if tool in ("Agent", "Task"):
+        return f"Helper: {desc}" if desc else "Starting a helper"
+    if tool in ("TodoWrite", "TaskCreate", "TaskUpdate"):
+        return "Planning the steps"
+    if tool == "Skill":
+        return f"Using the {inp.get('skill') or inp.get('name') or ''} skill".replace("the  skill", "a skill")
+    labels = {"open_url": lambda: f"Opening {_host(str(inp.get('url') or ''))}" if inp.get("url") else "Opening a page",
+              "memory_search": lambda: "Checking my notes", "memory_read": lambda: "Reading my notes",
+              "memory_remember": lambda: "Noting that down", "journal_append": lambda: "Writing in the journal",
+              "settings_set": lambda: f"Changing the {str(inp.get('setting') or 'setting').replace('_', ' ')}",
+              "settings_get": lambda: "Checking my settings", "studio_status": lambda: "Checking the Shorts channel",
+              "ledger_summary": lambda: "Checking the books", "ledger_log_hours": lambda: "Logging your hours",
+              "usage_status": lambda: "Checking plan usage", "desktop_mode_run": lambda: "Switching desktop mode",
+              "start_task": lambda: "Starting a background task", "task_list": lambda: "Checking background tasks",
+              "request_approval": lambda: "Asking for your approval", "message_owner": lambda: "Texting you",
+              "goals_list": lambda: "Checking your goals", "heartbeat_status": lambda: "Checking the heartbeat"}
+    if tool in labels:
+        return labels[tool]()
+    return tool.replace("_", " ").strip().capitalize() or "Working"

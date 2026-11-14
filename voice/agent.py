@@ -12,8 +12,8 @@
 
 Single-threaded and clock-driven so it can be tested frame by frame: the app (or a test) calls
 :meth:`VoiceAgent.feed` with each 80 ms frame and :meth:`VoiceAgent.tick` when no audio arrives.
-Only the brain (the fast voice front, ``assistant/voice_front.py``; it streams sentences, which are
-spoken while the rest is still being generated) runs on a worker thread; the tray and hotkey post
+Only the brain (Sterling's warm brain, ``assistant/brain.py``, reached through the server; it streams
+sentences, which are spoken while the rest is still being generated) runs on a worker thread; the tray and hotkey post
 requests with :meth:`VoiceAgent.post`, which the loop picks up on its own thread.
 
 Interaction details adapted from adewaskar/jarvis ``src/lib/voice.ts`` (MIT License, Copyright
@@ -49,6 +49,7 @@ BARGE_FRAMES = 3               # 240 ms of loud speech while talking = he is int
 NAME_MAX_SEC = 10.0            # longest burst the name spotter transcribes
 HEARTBEAT_SEC = 5.0
 ANNOUNCE_POLL_SEC = 2.0        # how often finished background tasks are checked for (spoken when idle)
+RELOAD_POLL_SEC = 3.0          # how often a changed voice setting is looked for (Settings page / settings_set)
 MUTE_POLL_SEC = 0.5
 
 Brain = Callable[[str], str]
@@ -127,13 +128,16 @@ class VoiceAgent:
     def __init__(self, *, wake: Any, vad: Any, stt: Any, tts: Any, player: Any, brain: Brain, control: Control,
                  settings: VoiceSettings, name_stt: Any = None, history: History | None = None,
                  clock: Callable[[], float] = time.monotonic, executor: Executor | None = None,
-                 rng: random.Random | None = None, announcer: Callable[[], list[str]] | None = None):
+                 rng: random.Random | None = None, announcer: Callable[[], list[str]] | None = None,
+                 tts_reloader: Callable[[], Any] | None = None):
         self.wake, self.vad, self.stt, self.tts, self.player = wake, vad, stt, tts, player
         self.name_stt = name_stt if settings.wake_mode in ("both", "name") or name_stt is not None else None
         self.brain, self.control, self.s = brain, control, settings
         self.history = history or (lambda heard, reply: None)
         self.announcer = announcer
         self._announce_at = -1e9
+        self.tts_reloader = tts_reloader
+        self._reload_at = -1e9
         self.clock = clock
         self.executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-brain")
         rng = rng or random.Random()
@@ -206,6 +210,7 @@ class VoiceAgent:
         if self.state == SPEAKING and not self.speaking and self.turn is None:
             self._finished_speaking()
         self._announce_tick(now)
+        self._reload_tick(now)
         if self.state in (LISTENING, FOLLOWUP) and not self.rec.started and now > self._deadline \
                 and not self._chime_playing():
             if self._held:
@@ -373,6 +378,21 @@ class VoiceAgent:
             self.diag.last_said = " ".join(texts)
             self._say(" ".join(texts), "reply", after=FOLLOWUP)
 
+    def _reload_tick(self, now: float) -> None:
+        """A changed voice ("switch to Lewis", or the Settings page) takes effect on the next sentence."""
+        if self.tts_reloader is None or now - self._reload_at < RELOAD_POLL_SEC:
+            return
+        self._reload_at = now
+        try:
+            new = self.tts_reloader()
+        except Exception as exc:
+            log.warning("voice not reloaded: %s", exc)
+            return
+        if new is not None:
+            log.info("voice changed to %s", getattr(new, "name", "?"))
+            self.tts = new
+            self._publish()
+
     def _barge(self) -> None:
         log.info("barge-in")
         if self.turn is not None:   # talking over a streamed answer drops the rest of it
@@ -406,7 +426,7 @@ class VoiceAgent:
             self._set(IDLE)
 
     def _utterance(self, text: str) -> None:
-        if commands.is_noise(text) or self._is_echo(text):
+        if commands.is_noise(text) or self._is_echo(text) or (commands.is_filler_utterance(text) and not self._held):
             self.diag.dropped += 1
             if self._held:
                 held, self._held = self._held, ""
@@ -586,8 +606,8 @@ class VoiceAgent:
 # ---------------------------------------------------------------------------
 
 def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None) -> str:
-    """Hand the transcript to the fast voice front (which records both messages) and return what to
-    say. ``on_sentence`` receives each sentence as soon as it is ready (streamed speech)."""
+    """Hand the transcript to Sterling's warm brain and return what was said. ``on_sentence``
+    receives each sentence as soon as it is ready (streamed speech)."""
     return brain_reply(text, on_sentence, origin="voice")["spoken"]
 
 
@@ -596,12 +616,13 @@ assistant_brain.streams = True  # type: ignore[attr-defined]
 
 def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
                 origin: str = "voice") -> dict[str, Any]:
-    """:func:`assistant_brain` with the details: ``{"reply", "spoken", "status", "cost_usd", "task",
-    "first_sentence_ms"}``. Used by the background voice process (origin "voice") and the in-browser
-    voice (voice/web.py, origin "browser"). Real work is delegated to the full agent in the
-    background (``task`` = its id); its spoken summary arrives later as a ``task_done`` message."""
-    from assistant import store, voice_front
+    """One turn of the warm brain (``assistant/brain.py``) -> ``{"reply", "spoken", "status", "cost_usd",
+    "task", "first_sentence_ms"}``. The laptop voice process is a separate process, so it asks the
+    server that holds the brain (``POST /voice/api/ask``, streamed sentences); if the server is not
+    reachable it runs a brain of its own in-process. Fillers like "maybe, um" get no reply."""
+    from assistant import store
     from assistant.settings import get_assistant_settings
+    from voice import commands
 
     a = get_assistant_settings()
     if not a.enabled:
@@ -610,9 +631,57 @@ def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
         store.add_message("out", "voice", reply, kind="reply", reply_to=in_id)
         return {"reply": reply, "spoken": reply, "status": "off", "cost_usd": 0.0, "task": None,
                 "first_sentence_ms": None}
-    res = voice_front.respond(text, on_sentence=on_sentence, origin=origin)
-    return {"reply": res.text, "spoken": res.text, "status": res.status, "cost_usd": res.cost_usd,
-            "task": res.task_id, "first_sentence_ms": res.first_sentence_ms, "backend": res.backend}
+    if commands.is_filler_utterance(text):
+        return {"reply": "", "spoken": "", "status": "ignored", "cost_usd": 0.0, "task": None,
+                "first_sentence_ms": None}
+    try:
+        return remote_reply(text, on_sentence, origin=origin)
+    except _Unreachable as exc:
+        log.info("brain server not reachable (%s); answering in-process", exc)
+    from assistant import brain
+
+    return brain.ask(text, origin=origin, on_sentence=on_sentence).wait(brain.TURN_TIMEOUT_SEC + 30)
+
+
+class _Unreachable(Exception):
+    pass
+
+
+_remote_post: Callable[..., Any] | None = None
+
+
+def remote_reply(text: str, on_sentence: Callable[[str], None] | None = None, *, origin: str = "voice",
+                 post: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Ask the server's brain over HTTP (loopback, local key), reading its sentences as they arrive."""
+    import json
+
+    import httpx
+
+    from voice import web
+    from voice.settings import get_voice_settings
+
+    url = get_voice_settings().brain_url + "/voice/api/ask"
+    headers = {"X-Voice-Key": web.local_key(), "Accept": "application/x-ndjson"}
+    data = {"text": text, "origin": origin}
+    out: dict[str, Any] = {}
+    stream = post or _remote_post or (lambda **kw: httpx.stream("POST", **kw))
+    try:
+        with stream(url=url, data=data, headers=headers, timeout=httpx.Timeout(10.0, read=960.0)) as r:
+            if r.status_code != 200:
+                raise _Unreachable(f"HTTP {r.status_code}")
+            for line in r.iter_lines():
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if "sentence" in msg and on_sentence is not None:
+                    on_sentence(msg["sentence"])
+                if msg.get("done"):
+                    out = msg
+    except (httpx.TransportError, OSError) as exc:
+        raise _Unreachable(str(exc)) from exc
+    if not out:
+        raise _Unreachable("no answer")
+    return out
 
 
 def store_history(heard: str, reply: str) -> None:

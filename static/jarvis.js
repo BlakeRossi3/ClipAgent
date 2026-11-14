@@ -1,18 +1,25 @@
-/* Jarvis view: the voice-first home stage (templates/home.html).
-   - An animated core drawn on a canvas (original art) whose state follows this tab's microphone and
-     the laptop's background voice loop (/voice/api/status).
-   - In-browser voice: the ring is the ONE mic control. Tap it: this tab listens continuously (energy VAD
-     finds the end of each sentence); tap again: off. When the laptop's background voice loop runs, the
-     same tap also unmutes / mutes it (POST /voice/api/mute), so there is one on/off state, shown once.
-     Holding Space is a push-to-talk shortcut for keyboard users.
-     The clip goes to POST /voice/api/talk; the answer is polled at /dashboard/chat/job/{id}. The
-     server streams it as sentences (job.parts, each with its own audio), which are queued and played
-     in order through Web Audio while the rest is still being generated, so the core pulses with it.
-     Background tasks: /voice/api/status lists them ("Working on: ...") and carries the spoken
-     summary of each finished one (events), which is captioned, added to History and played.
-   - History / Stop / Undo live in a small "..." menu. Look and feel adapted from adewaskar/jarvis src/ui/Hud.tsx and index.css
-     (MIT License, Copyright (c) 2026 Aditya Dewaskar).
-   No framework, no external requests. Every user/model string is inserted with textContent. */
+/* Jarvis view: the voice-first home stage (templates/home.html), live over server-sent events.
+   - One warm brain on the server (assistant/brain.py). This page streams everything it says and does from
+     GET /voice/api/stream: the turn, its text, each finished sentence, tool steps ("Reading home.py"),
+     background tasks, panels from the `display` tool, and voice-setting changes. No polling for answers.
+   - Speaking (adapted from adewaskar/jarvis src/lib/tts.ts, MIT License, Copyright (c) 2026 Aditya Dewaskar):
+     the browser's own speechSynthesis by default (instant; the best British male voice installed, e.g.
+     "Microsoft Ryan Online (Natural)" on Windows, "Google UK English Male" in Chrome), sentence by sentence as
+     each one completes, one sentence primed ahead; Kokoro or ElevenLabs through POST /voice/api/tts when chosen.
+     Chrome's 15-second cut-off and its wedged-after-cancel bug are handled (pause/resume keepalive, resume
+     before every utterance, a start watchdog).
+   - Listening (adapted from src/lib/vad.ts and voice.ts): an energy detector with an adaptive noise floor
+     finds each spoken segment; the clip goes to POST /voice/api/talk (speech-to-text on the server); an
+     assembler holds a sentence that trails off ("remind me to...") for a moment; our own voice coming back
+     through the speakers is recognised as echo; fillers ("maybe, um") are ignored. Barge-in: speech while he
+     talks pauses him at once, and once the words arrive it either stops him (and the answer in flight) or,
+     if it was only noise, lets him carry on.
+   - Fillers (src/lib/fillers.ts): one short line the moment the first tool starts, then quiet until the answer.
+   - The activity rail: current steps, background tasks with elapsed time, finished tasks with a one-line
+     result, and panels. Panel markup is model-written, so it is rebuilt node by node from a strict allowlist
+     (sanitizePanel: the same tags and classes as assistant/panels.py; no scripts, handlers, links or styles
+     other than --v; images only from http(s) or data:image).
+   Every user/model string is inserted with textContent or through sanitizePanel. No external requests. */
 (function () {
   'use strict';
   var root = document.querySelector('[data-jarvis]');
@@ -23,6 +30,7 @@
     youEl = q('[data-jv-you]'), themEl = q('[data-jv-them]'), sysEl = q('[data-jv-sys]'),
     pttLabel = q('[data-jv-ptt-label]'), histBtn = q('[data-jv-history]'), menu = q('[data-jv-menu]'),
     tip = q('[data-jv-tip]'), tipX = q('[data-jv-tip-x]');
+  var stepsEl = q('[data-jv-steps]'), tasksEl = q('[data-jv-tasks]'), panelsEl = q('[data-jv-panels]'), liveEl = q('[data-jv-live]');
   var drawer = document.querySelector('[data-jv-drawer]'), scrim = document.querySelector('[data-jv-scrim]');
   var logEl = document.querySelector('[data-chat-log]');
   var csrf = root.getAttribute('data-csrf'), H = root.getAttribute('data-honorific') || 'sir';
@@ -30,20 +38,23 @@
   var canTalk = root.getAttribute('data-can-talk') === '1';
   var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   var serverStatus = statusEl.textContent;
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
   /* ---- state ---------------------------------------------------------------------------- */
   var local = null;          // listening | thinking | speaking | error: this tab is busy
   var bg = { state: 'offline', online: false, muted: false };
   var always = false;        // the ring is on: this tab listens continuously
-  var errText = '', errTimer = null, note = '', noteTimer = null;
+  var errText = '', errTimer = null, note = '', noteTimer = null, working = '';
   var BG = { idle: 'idle', followup: 'listening', listening: 'listening', thinking: 'thinking', speaking: 'speaking',
     muted: 'idle', no_mic: 'idle', starting: 'idle', offline: 'idle', stopped: 'idle' };
-  function laptopLive() {    // the laptop's background loop is running and its mic is open
+  function laptopLive() {
     return !!(bg.online && !bg.muted && bg.state !== 'no_mic' && bg.state !== 'stopped' && bg.state !== 'starting');
   }
   function isOn() { return always || laptopLive(); }
   function visual() {
     if (local) return local;
+    if (speaker.busy()) return 'speaking';
+    if (pending) return 'thinking';
     if (always) return 'listening';
     if (laptopLive()) return BG[bg.state] || 'idle';
     return 'idle';
@@ -54,11 +65,10 @@
     root.setAttribute('data-on', on ? '1' : '0');
     if (!canTalk) text = serverStatus;
     else if (v === 'error') text = errText;
-    else if (v === 'thinking') text = 'Thinking…';
+    else if (v === 'thinking') text = working || 'Thinking…';
     else if (v === 'speaking') text = 'Speaking — tap to interrupt';
     else if (local === 'listening' || (v === 'listening' && !always && bg.state === 'listening')) text = 'Listening…';
     else if (note) text = note;
-    else if (bg.tasks && bg.tasks.length) text = 'Working on: ' + bg.tasks[0].task;
     else if (always) text = 'Listening — tap to stop';
     else if (on) text = 'Listening on your laptop mic — tap to stop';
     else text = 'Tap to talk';
@@ -79,9 +89,15 @@
     note = msg; render(); clearTimeout(noteTimer);
     noteTimer = setTimeout(function () { note = ''; render(); }, 3500);
   }
+  function post(url, fields) {
+    var fd = new FormData(); fd.append('csrf', csrf);
+    Object.keys(fields || {}).forEach(function (k) { fd.append(k, fields[k]); });
+    return fetch(url, { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+  }
+  function getJSON(r) { return r.json().catch(function () { return {}; }); }
 
   /* ---- audio graph ------------------------------------------------------------------------ */
-  var ctx = null, outAnalyser = null, micAnalyser = null, stream = null, micReady = null, releaseTimer = null;
+  var ctx = null, outAnalyser = null, micAnalyser = null, stream = null, micReady = null, releaseTimer = null, src = null;
   var tbuf = new Float32Array(1024), fbuf = new Uint8Array(512);
   function audioCtx() {
     if (!ctx) {
@@ -105,7 +121,7 @@
         stream = s;
         var c = audioCtx();
         if (c) {
-          micAnalyser = c.createAnalyser(); micAnalyser.fftSize = 1024; micAnalyser.smoothingTimeConstant = 0.5;
+          micAnalyser = c.createAnalyser(); micAnalyser.fftSize = 1024; micAnalyser.smoothingTimeConstant = 0.35;
           c.createMediaStreamSource(s).connect(micAnalyser);
         }
         s.getAudioTracks().forEach(function (t) { t.addEventListener('ended', releaseMic); });
@@ -118,7 +134,7 @@
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     stream = null; micReady = null; micAnalyser = null; render();
   }
-  function releaseSoon() {   // the browser's red mic dot goes away when nobody is using it
+  function releaseSoon() {
     clearTimeout(releaseTimer);
     releaseTimer = setTimeout(function () { if (!always && !rec) releaseMic(); }, 15000);
   }
@@ -139,8 +155,235 @@
     return Math.sqrt(s / tbuf.length);
   }
 
-  /* ---- recording ------------------------------------------------------------------------- */
-  var rec = null, recMode = '', recStart = 0, maxTimer = null, pttDown = false, discard = false, turn = 0;
+  /* ---- the voice: speechSynthesis by default, Kokoro / ElevenLabs through the server ------- */
+  var voiceCfg = { web_tts: 'browser', web_voice: '' };
+  var synth = window.speechSynthesis || null;
+  var cachedVoice;
+  function score(v) {         // a British male, level and natural; Windows' neural voices first
+    var n = v.name.toLowerCase(), s = 0;
+    if (/ryan.*(online|natural)/.test(n)) s += 130;
+    else if (/thomas.*(online|natural)/.test(n)) s += 115;
+    else if (/(alfie|elliot|oliver|noah|ethan).*(online|natural)/.test(n)) s += 105;
+    else if (/microsoft george/.test(n)) s += 95;
+    else if (n.indexOf('google uk english male') >= 0) s += 90;
+    else if (/^daniel/.test(n)) s += 88;
+    else if (/\b(ryan|thomas|oliver|arthur|jamie|malcolm|george|hazel)\b/.test(n)) s += 60;
+    if (/natural|online|neural|premium|enhanced/.test(n)) s += 20;
+    if (/en[-_]gb/i.test(v.lang)) s += 25; else if (/^en/i.test(v.lang)) s += 5;
+    if (/\b(sonia|libby|maisie|mia|bella|hollie|abbie|olivia|susan|hazel|kate|serena|fiona|moira|karen|tessa|samantha|zira|aria|jenny|ava|emma|female)\b/.test(n)) s -= 70;
+    return s;
+  }
+  function voices() { return synth ? synth.getVoices().filter(function (v) { return /^en/i.test(v.lang); }) : []; }
+  function pickVoice() {
+    if (cachedVoice !== undefined) return cachedVoice;
+    var all = voices();
+    if (!all.length) return null;
+    var want = (voiceCfg.web_voice || '').toLowerCase(), hit = null;
+    if (want) all.forEach(function (v) { if (!hit && v.name.toLowerCase() === want) hit = v; });
+    if (!hit && want) all.forEach(function (v) { if (!hit && v.name.toLowerCase().indexOf(want) >= 0) hit = v; });
+    if (!hit) hit = all.map(function (v) { return { v: v, s: score(v) }; }).sort(function (a, b) { return b.s - a.s; })[0].v;
+    cachedVoice = hit;
+    return hit;
+  }
+  var reported = false;
+  function reportVoices() {         // so "switch to Ryan" can find a browser voice by name
+    var names = voices().map(function (v) { return v.name; });
+    if (reported || !names.length || !canTalk) return;
+    reported = true;
+    post('/voice/api/voices', { voices: JSON.stringify(names.slice(0, 100)) }).catch(function () { reported = false; });
+  }
+  if (synth) synth.addEventListener('voiceschanged', function () { cachedVoice = undefined; pickVoice(); reportVoices(); });
+
+  function shape(text) {
+    return text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/https?:\/\/[^\s]*[^\s.,;:!?)\]]/g, '')
+      .replace(/[*_`#>]+/g, '').replace(/([^,\s])\s+(sir)(\s*[.,!?;:]|\s*$)/gi, '$1, $2$3').replace(/\s+/g, ' ').trim();
+  }
+  var speaker = (function () {
+    var queue = [], current = null, pumping = false, paused = false, speaking = '', speakingAt = 0;
+    var recent = '', recentUntil = 0, keepalive = null;
+    function setSpeaking(t) {
+      if (t) { speaking = t; speakingAt = Date.now(); return; }
+      if (speaking) { recent = speaking; recentUntil = Date.now() + 1800; }
+      speaking = '';
+    }
+    function serverAudio(text) {      // Kokoro / ElevenLabs: one sentence primed ahead
+      if (voiceCfg.web_tts === 'browser') return null;
+      var c = audioCtx();
+      if (!c) return null;
+      return post('/voice/api/tts', { text: text }).then(function (r) { if (!r.ok) throw new Error('tts'); return r.arrayBuffer(); })
+        .then(function (ab) { return new Promise(function (res, rej) { c.decodeAudioData(ab, res, rej); }); })
+        .catch(function () { return null; });
+    }
+    function prime(item) { if (item && item.audio === undefined) item.audio = serverAudio(item.text); }
+    function playBuffer(buffer) {
+      return new Promise(function (resolve) {
+        var c = audioCtx(), s = c.createBufferSource();
+        s.buffer = buffer; s.connect(outAnalyser);
+        var done = false;
+        function fin() { if (done) return; done = true; if (src === s) src = null; resolve(); }
+        s.onended = fin; s.__stop = fin;
+        src = s; s.start();
+      });
+    }
+    function speakNative(text) {
+      return new Promise(function (resolve) {
+        if (!synth) { resolve(false); return; }
+        synth.resume();               // Chrome wedges after cancel(); resume() un-wedges it
+        var u = new SpeechSynthesisUtterance(text), v = pickVoice();
+        if (v) u.voice = v;
+        u.lang = (v && v.lang) || 'en-GB'; u.rate = 1.0; u.pitch = 0.95;
+        var started = false, done = false, watchdog = null;
+        function fin() {
+          if (done) return; done = true; clearTimeout(watchdog); clearInterval(keepalive); keepalive = null; resolve(started);
+        }
+        u.onstart = function () {
+          started = true; clearTimeout(watchdog);
+          keepalive = setInterval(function () { if (!paused && synth.speaking) { synth.pause(); synth.resume(); } }, 5000);
+        };
+        u.onend = fin; u.onerror = fin;
+        watchdog = setTimeout(function () {
+          if (started || done) return;
+          synth.cancel(); synth.resume();
+          try { synth.speak(u); } catch (e) { fin(); return; }
+          watchdog = setTimeout(function () { if (!started) fin(); }, 1500);
+        }, 900);
+        current = { native: true };
+        synth.speak(u);
+      });
+    }
+    function pump() {
+      if (pumping) return;
+      pumping = true;
+      (function next() {
+        var item = queue.shift();
+        if (!item) { pumping = false; current = null; setSpeaking(''); render(); onIdle(); return; }
+        prime(item); prime(queue[0]);
+        setSpeaking(item.text); render();
+        Promise.resolve(item.audio).then(function (buffer) {
+          if (item.dead) return null;
+          if (buffer) { current = { buffer: true }; return playBuffer(buffer); }
+          return speakNative(item.text);
+        }).then(function () { setSpeaking(''); next(); }, function () { setSpeaking(''); next(); });
+      })();
+    }
+    return {
+      say: function (text, turn, front) {
+        var t = shape(text);
+        if (!t) return;
+        var item = { text: t, turn: turn };
+        if (front) queue.unshift(item); else queue.push(item);
+        pump();
+      },
+      busy: function () { return pumping || !!speaking; },
+      since: function () { return speaking ? speakingAt : 0; },
+      now: function () { return (speaking + ' ' + (Date.now() < recentUntil ? recent : '')).trim(); },
+      pause: function () {
+        if (!this.busy() || paused) return false;
+        paused = true;
+        if (synth && synth.speaking) synth.pause();
+        if (ctx && src) ctx.suspend();
+        return true;
+      },
+      resume: function () {
+        if (!paused) return;
+        paused = false;
+        if (synth) synth.resume();
+        if (ctx && ctx.state === 'suspended') ctx.resume();
+      },
+      cancel: function () {
+        queue.forEach(function (i) { i.dead = true; }); queue = [];
+        paused = false;
+        if (synth) { synth.cancel(); synth.resume(); }
+        if (src) { var s = src; src = null; try { s.stop(); } catch (e) { /* stopped */ } if (s.__stop) s.__stop(); }
+        if (ctx && ctx.state === 'suspended') ctx.resume();
+        setSpeaking('');
+      },
+      isPaused: function () { return paused; }
+    };
+  })();
+  function onIdle() { /* nothing queued: the ring settles */ if (!pending && local === 'speaking') local = null; render(); }
+
+  /* ---- fillers (adewaskar/jarvis src/lib/fillers.ts: subjectless, short, "sir" final and only sometimes) */
+  function picker(pool) { var last = -1; return function () { var i = last; while (pool.length > 1 && i === last) i = Math.floor(Math.random() * pool.length); last = i; return pool[Math.max(0, i)].replace('{h}', H); }; }
+  var WORKING = picker(['Working on it, {h}.', 'Under way.', 'One moment, {h}.', 'Looking into it.', 'Checking.']);
+  var BY_TOOL = [
+    [/test/i, picker(['Running the tests.', 'Testing it now.'])],
+    [/^(reading|editing|writing|searching the code)/i, picker(['Looking through the code.', 'Opening the files.'])],
+    [/web/i, picker(['Searching.', 'Consulting the record.'])],
+    [/^opening/i, picker(['Opening it now.', 'Bringing it up.'])],
+    [/notes|journal|noting/i, picker(['Checking my notes.', 'Consulting the archive.'])],
+    [/voice|setting/i, picker(['Very good, {h}.', 'Directly, {h}.'])],
+    [/shorts|books|hours|goals|usage/i, picker(['Pulling the figures.', 'Checking the numbers.'])],
+    [/background task|helper/i, picker(['Setting it going.', 'Under way.'])]
+  ];
+  function fillerFor(label) {
+    for (var i = 0; i < BY_TOOL.length; i++) if (BY_TOOL[i][0].test(label)) return BY_TOOL[i][1]();
+    return WORKING();
+  }
+
+  /* ---- what he says: segments -> words -> one utterance (src/lib/voice.ts makeAssembler) ---- */
+  var CONTINUES = /\b(and|or|but|so|because|since|if|when|while|that|which|who|to|of|in|on|at|by|for|with|from|about|into|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|do|does|did|have|has|had|can|could|would|should|will|might|must|like|than|then|as|very|really|just|some|any)$/i;
+  var OVERRIDE = /\b(stop|wait|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i;
+  var STOPW = ('a an the and or but so of to in on at by for with from is are was were be it its this that these those i you he she we they me him her them my your our their what which who how why when where do does did can could would should will shall not no yes if then than as about into over under out up down one two three first second third now here there just very really got get have has had say said tell okay ok well right sir').split(' ');
+  function norm(s) { return s.toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  function isEcho(heard, spoken) {         // is the mic hearing the speakers? (bags of distinctive words)
+    if (!spoken || OVERRIDE.test(heard)) return false;
+    var all = norm(heard).split(' ').filter(Boolean);
+    if (!all.length) return true;
+    var mine = {}; norm(spoken).split(' ').forEach(function (w) { mine[w] = 1; });
+    var content = all.filter(function (w) { return STOPW.indexOf(w) < 0; });
+    if (content.length < 2) return all.length >= 2 && all.every(function (w) { return mine[w]; });
+    var hits = content.filter(function (w) { return mine[w]; }).length;
+    return hits / content.length >= 0.6;
+  }
+  function holdFor(text) {
+    var words = text.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return 1600;
+    if (/[.!?]$/.test(text)) return 0;
+    if (/[,;:–—-]$/.test(text.trim())) return 1600;
+    if (CONTINUES.test(words[words.length - 1])) return 1600;
+    return 250;
+  }
+  var held = '', holdTimer = null, firstAt = 0;
+  function assemble(text, active) {
+    held = (held + ' ' + text).replace(/\s+/g, ' ').trim();
+    if (!firstAt) firstAt = Date.now();
+    youEl.textContent = held;
+    clearTimeout(holdTimer);
+    if (active) { holdTimer = setTimeout(fire, 6000); return; }
+    var wait = Math.min(holdFor(held), Math.max(0, 6000 - (Date.now() - firstAt)));
+    if (!wait) fire(); else holdTimer = setTimeout(fire, wait);
+  }
+  function fire() {
+    clearTimeout(holdTimer);
+    var t = held.trim(); held = ''; firstAt = 0;
+    if (t) ask(t);
+  }
+
+  /* ---- asking the brain ------------------------------------------------------------------- */
+  var myTurns = {}, cancelled = {}, pending = null, turnKinds = {}, spokeIn = {}, filled = {};
+  function ask(text) {
+    youEl.textContent = text;
+    pending = 'asking'; render();
+    post('/voice/api/ask', { text: text, origin: 'browser' }).then(getJSON).then(function (j) {
+      if (j.ok && j.turn) { myTurns[j.turn] = 1; pending = j.turn; addHistory('me', text, 'voice · this tab'); }
+      else {
+        pending = null;
+        if (j.quiet) youEl.textContent = '';              // a filler or noise: keep listening, say nothing
+        else if (j.error) fail(j.msg || j.reason || 'That did not go through.');
+      }
+      render();
+    }).catch(function () { pending = null; fail('The connection dropped. Try again.'); });
+  }
+  function interrupt() {
+    if (pending && pending !== 'asking') { cancelled[pending] = 1; pending = null; }
+    speaker.cancel();
+    post('/voice/api/interrupt', {}).catch(function () { /* nothing in flight */ });
+    working = ''; render();
+  }
+
+  /* ---- recording segments ----------------------------------------------------------------- */
+  var rec = null, recMode = '', recStart = 0, maxTimer = null, pttDown = false, discard = false;
   function mimeType() {
     if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
     var types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -149,145 +392,98 @@
   }
   function startRec(mode) {
     if (!canTalk || rec) return;
-    stopPlayback();                       // barge-in: talking again stops the reply
     audioCtx();
     ensureMic().then(function (s) {
-      if (rec || (mode === 'ptt' && !pttDown)) return;   // released before the mic opened
+      if (rec || (mode === 'ptt' && !pttDown)) return;
       if (!window.MediaRecorder) { fail('This browser cannot record audio. Type in History instead.'); return; }
       var type = mimeType(), chunks = [];
       try { rec = type ? new MediaRecorder(s, { mimeType: type }) : new MediaRecorder(s); } catch (e) { fail('This browser cannot record audio.'); return; }
       recMode = mode; recStart = performance.now(); discard = false;
       rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
       rec.onstop = function () {
-        var r = rec, dur = performance.now() - recStart; rec = null;
+        var r = rec, dur = performance.now() - recStart, m = recMode; rec = null;
         var blob = new Blob(chunks, { type: (r && r.mimeType) || type || 'audio/webm' });
         if (!always) releaseSoon();
-        if (discard) { local = null; render(); return; }
-        if (dur < 450 || blob.size < 600) {
-          local = null;
-          if (recMode === 'ptt') flash('Keep Space held while you speak, ' + H + '.'); else render();
-          return;
-        }
-        send(blob);
+        if (local === 'listening') local = null;
+        if (discard || dur < 300 || blob.size < 600) { speaker.resume(); render(); return; }
+        transcribe(blob, m);
       };
       rec.start(250);
+      if (mode === 'ptt') { speaker.cancel(); interrupt(); }
       local = 'listening'; render();
-      clearTimeout(maxTimer); maxTimer = setTimeout(function () { stopRec(); }, 30000);
+      clearTimeout(maxTimer); maxTimer = setTimeout(function () { stopRec(); }, 20000);
     }, micError);
   }
   function stopRec(drop) {
     clearTimeout(maxTimer);
     if (rec && rec.state !== 'inactive') { discard = !!drop; rec.stop(); }
   }
-
-  function getJSON(r) { return r.json().catch(function () { return {}; }); }
-  function send(blob) {
-    var my = ++turn;
-    local = 'thinking'; youEl.textContent = '…'; render();
+  function transcribe(blob, mode) {
     var fd = new FormData();
     fd.append('csrf', csrf);
     fd.append('audio', blob, 'speech.' + (/mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm'));
     fetch('/voice/api/talk', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(getJSON).then(function (j) {
-        if (my !== turn) return;
         if (!j.ok) {
-          youEl.textContent = '';
-          if (j.error === 'no_speech' || j.error === 'too_short') { local = null; flash(j.msg); }
-          else fail(j.msg || j.reason || 'That did not go through.');
-          return;
+          speaker.resume();
+          if (!j.quiet && j.error !== 'no_speech') fail(j.msg || j.reason || 'That did not go through.');
+          render(); return;
         }
-        youEl.textContent = j.heard;
-        addHistory('me', j.heard, 'voice · this tab');
-        if (j.command) { command(j.command); return; }
-        streamDone = false;
-        poll(j.job, my, 1200);
-      }).catch(function () { if (my === turn) fail('The connection dropped. Try again.'); });
-  }
-  function poll(job, my, tries, seen) {
-    seen = seen || 0;
-    setTimeout(function () {
-      if (my !== turn) return;
-      fetch('/dashboard/chat/job/' + job, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-        .then(getJSON).then(function (j) {
-          if (my !== turn) return;
-          var parts = j.parts || [];
-          for (; seen < parts.length; seen++) {           // streamed sentences: speak each one as it lands
-            if (seen === 0) caption(parts[0].text || '');
-            if (parts[seen].audio) enqueue(parts[seen].audio, my);
-          }
-          if (!j.done) {
-            if (tries > 0) poll(job, my, tries - 1, seen);
-            else { streamDone = true; fail('Still working; the answer will land in History.'); }
-            return;
-          }
-          streamDone = true;
-          if (!j.ok) { fail(j.msg || 'That did not go through.'); return; }
-          caption(j.reply || '');
-          addHistory('them', j.reply || '', 'voice · just now');
-          if (!seen && j.audio) enqueue(j.audio, my);
-          else if (!playing && !playQ.length && local !== 'speaking') { local = null; render(); }
-        }).catch(function () { if (tries > 0) poll(job, my, tries - 1, seen); });
-    }, 250);
+        if (j.command) { speaker.cancel(); interrupt(); command(j.command); return; }
+        var heard = j.heard || '';
+        if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); return; }   // his own voice
+        if (speaker.busy() || pending) interrupt();                                        // a real barge-in
+        if (mode === 'ptt') { held = ''; ask(heard); } else assemble(heard, !!rec);
+      }).catch(function () { speaker.resume(); fail('The connection dropped. Try again.'); });
   }
   function command(cmd) {
     if (cmd === 'mute') { setOn(false); caption('Microphone off, ' + H + '. Tap the ring when you want me.'); }
-    else { stopPlayback(); local = null; caption('Very good, ' + H + '.'); render(); }
+    else { local = null; caption('Very good, ' + H + '.'); render(); }
   }
 
-  /* ---- playback -------------------------------------------------------------------------- */
-  var src = null, playQ = [], playing = false, streamDone = true;
-  function enqueue(url, my) {         // fetch + decode now, play in order (sentence 2 decodes while 1 plays)
-    var c = audioCtx();
-    if (!c || !url) return;
-    var p = fetch(url, { credentials: 'same-origin' }).then(function (r) { if (!r.ok) throw new Error('audio'); return r.arrayBuffer(); })
-      .then(function (ab) { return new Promise(function (res, rej) { c.decodeAudioData(ab, res, rej); }); });
-    playQ.push({ p: p, my: my });
-    if (!playing) playNext();
-  }
-  function playNext() {
-    var item = playQ.shift();
-    if (!item) {
-      playing = false;
-      if (local === 'speaking') { local = streamDone ? null : 'thinking'; render(); }
-      return;
+  /* ---- always-listen: energy VAD with an adaptive floor (src/lib/vad.ts) -------------------- */
+  var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 };
+  setInterval(function () {
+    if (!always || !micAnalyser || recMode === 'ptt' && rec) return;
+    var e = rms(micAnalyser), now = performance.now();
+    vad.smooth += (e - vad.smooth) * 0.5;
+    if (!vad.speaking && !vad.armed) {
+      vad.floor += (vad.smooth - vad.floor) * (vad.smooth > vad.floor ? 0.0008 * 6 : 0.02 * 6);
+      vad.floor = Math.max(vad.floor, 0.0015);
     }
-    playing = true;
-    item.p.then(function (buffer) {
-      if (item.my !== null && item.my !== turn) { playNext(); return; }
-      var c = audioCtx();
-      var s = c.createBufferSource();
-      s.buffer = buffer; s.connect(outAnalyser);
-      s.onended = function () { if (src === s) { src = null; playNext(); } };
-      src = s; s.start();
-      local = 'speaking'; render();
-    }).catch(function () { playNext(); });
-  }
-  function stopPlayback() {
-    playQ = []; playing = false;
-    if (!src) { if (local === 'speaking') local = null; return; }
-    var s = src; src = null;
-    try { s.stop(); } catch (e) { /* already stopped */ }
-    if (local === 'speaking') local = null;
-  }
+    var thr = Math.max(0.012, vad.floor * 2.6) * (speaker.busy() ? 2.4 : 1);   // guard: his own voice leaks back
+    if (!vad.speaking) {
+      if (vad.smooth > thr) {
+        if (!vad.armed) { vad.armed = now; startRec('vad'); }
+        else if (now - vad.armed >= 110) {
+          vad.speaking = true; vad.lastLoud = now;
+          // barge-in: not in his own first syllable (350 ms); pause, decide once the words are in
+          if (speaker.busy() && Date.now() - speaker.since() > 350) speaker.pause();
+        }
+      } else if (vad.armed) { vad.armed = 0; stopRec(true); }
+    } else {
+      if (vad.smooth > thr * 0.6) vad.lastLoud = now;
+      if (now - vad.lastLoud >= 650 || now - vad.armed >= 20000) { vad.speaking = false; vad.armed = 0; stopRec(); }
+    }
+  }, 40);
 
   /* ---- captions (the reply resolves out of glyph noise, as in adewaskar/jarvis DecodeText) ---- */
-  var GLYPHS = '/\\|<>[]{}=+*#%&0123456789ABCDEFGHJKLMNPQRSTUVWXYZ', capTimer = null;
-  function caption(text) {
+  var GLYPHS = '/\\|<>[]{}=+*#%&0123456789ABCDEFGHJKLMNPQRSTUVWXYZ', capTimer = null, capShown = 0;
+  function caption(text, keep) {
     clearInterval(capTimer);
-    if (reduced || !text) { themEl.textContent = text; return; }
-    var shown = 0, rate = Math.max(3, Math.ceil(text.length / 30));
+    if (reduced || !text) { themEl.textContent = text; capShown = text.length; return; }
+    var shown = keep ? Math.min(capShown, text.length) : 0, rate = Math.max(2, Math.ceil(text.length / 40));
     capTimer = setInterval(function () {
       shown = Math.min(text.length, shown + rate);
       var noise = '';
-      for (var i = shown; i < Math.min(text.length, shown + 14); i++) {
-        noise += text[i] === ' ' ? ' ' : GLYPHS[(i * 7919 + shown * 31) % GLYPHS.length];
-      }
+      for (var i = shown; i < Math.min(text.length, shown + 10); i++) noise += text[i] === ' ' ? ' ' : GLYPHS[(i * 7919 + shown * 31) % GLYPHS.length];
       themEl.textContent = text.slice(0, shown) + noise;
+      capShown = shown;
       if (shown >= text.length) clearInterval(capTimer);
     }, 33);
   }
   function addHistory(who, text, meta) {
-    if (!logEl) return;
+    if (!logEl || !text) return;
     var empty = logEl.querySelector('[data-empty]');
     if (empty) empty.remove();
     var li = document.createElement('li');
@@ -301,36 +497,209 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  /* ---- always-listen (energy VAD with an adaptive noise floor) ---------------------------- */
-  var vad = { floor: 0.01, on: 0, quiet: 0 };
-  setInterval(function () {
-    if (!always || !micAnalyser) return;
-    var l = rms(micAnalyser);
-    if (!rec) {
-      if (local === 'thinking') return;
-      vad.floor = l < vad.floor ? vad.floor * 0.7 + l * 0.3 : vad.floor * 0.995 + l * 0.005;
-      var thr = Math.max(0.018, vad.floor * 3.2) * (src ? 2.6 : 1);   // higher while it is talking (echo)
-      vad.on = l > thr ? vad.on + 1 : 0;
-      if (vad.on >= 3) { vad.on = 0; vad.quiet = 0; startRec('vad'); }
-    } else if (recMode === 'vad') {
-      vad.quiet = l < Math.max(0.012, vad.floor * 2.2) ? vad.quiet + 50 : 0;
-      if (vad.quiet >= 900) stopRec();
+  /* ---- panels: model-written markup, rebuilt from a strict allowlist (= assistant/panels.py) ---- */
+  var P_TAGS = ['div', 'span', 'p', 'ul', 'ol', 'li', 'img', 'b', 'strong', 'em', 'i', 'br', 'small', 'table', 'thead',
+    'tbody', 'tr', 'td', 'th', 'code', 'pre', 'h3', 'h4'];
+  var P_CLASSES = ['hud-rows', 'hud-row', 'hud-idx', 'hud-main', 'hud-label', 'hud-sub', 'hud-tag', 'hud-metric', 'hud-unit',
+    'hud-note', 'hud-img', 'hud-caption', 'hud-grid', 'hud-bar', 'hud-dim', 'hud-hot', 'hud-gallery', 'hud-thumb', 'hud-figure'];
+  var P_DROP = ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'math', 'template', 'noscript', 'textarea', 'select',
+    'button', 'form', 'frame', 'frameset', 'head', 'title', 'video', 'audio', 'canvas', 'link', 'meta', 'base'];
+  var SRC_OK = /^(?:https?:\/\/[^\s"'<>`]+|data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+)$/i;
+  function copyInto(from, to, depth) {
+    if (depth > 12) return;
+    for (var n = from.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) { to.appendChild(document.createTextNode(n.nodeValue)); continue; }
+      if (n.nodeType !== 1) continue;
+      var tag = n.tagName.toLowerCase();
+      if (P_DROP.indexOf(tag) >= 0) continue;
+      if (P_TAGS.indexOf(tag) < 0) { copyInto(n, to, depth + 1); continue; }     // unwrap, keep its text
+      var el = document.createElement(tag);
+      var cls = (n.getAttribute('class') || '').split(/\s+/).filter(function (c) { return P_CLASSES.indexOf(c) >= 0; });
+      if (cls.length) el.className = cls.join(' ');
+      var v = /--v\s*:\s*([0-9]*\.?[0-9]+)/.exec(n.getAttribute('style') || '');
+      if (v) el.style.setProperty('--v', String(Math.min(1, parseFloat(v[1]))));
+      ['alt', 'title'].forEach(function (a) { if (n.hasAttribute(a)) el.setAttribute(a, n.getAttribute(a).slice(0, 200)); });
+      ['colspan', 'rowspan'].forEach(function (a) { var x = n.getAttribute(a); if (x && /^\d{1,2}$/.test(x)) el.setAttribute(a, x); });
+      if (tag === 'img') {
+        var s = (n.getAttribute('src') || '').trim();
+        if (!SRC_OK.test(s)) continue;
+        el.referrerPolicy = 'no-referrer'; el.loading = 'lazy'; el.src = s;
+      } else if (tag !== 'br') copyInto(n, el, depth + 1);
+      to.appendChild(el);
     }
-  }, 50);
+  }
+  function sanitizePanel(html) {
+    var doc = new DOMParser().parseFromString('<!doctype html><body>' + String(html || ''), 'text/html');
+    var frag = document.createDocumentFragment();
+    copyInto(doc.body, frag, 0);
+    return frag;
+  }
+  window.__sanitizePanel = function (html) { var d = document.createElement('div'); d.appendChild(sanitizePanel(html)); return d.innerHTML; };
+
+  /* ---- the activity rail ------------------------------------------------------------------- */
+  var act = { turns: {}, order: [], tasks: {}, panels: [] };
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function elapsed(iso, until) {
+    var t0 = Date.parse(iso || ''), t1 = until ? Date.parse(until) : Date.now();
+    if (!t0) return '';
+    var s = Math.max(0, Math.round((t1 - t0) / 1000));
+    return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+  }
+  function renderSteps() {
+    var id = act.order[act.order.length - 1], t = id && act.turns[id];
+    stepsEl.textContent = '';
+    if (liveEl) liveEl.hidden = !(t && t.status === 'running');
+    if (!t) { stepsEl.appendChild(el('li', 'rail-empty', 'Standing by.')); return; }
+    if (t.heard) stepsEl.appendChild(el('li', 'rail-heard', '› ' + t.heard));
+    else if (t.kind === 'announce') stepsEl.appendChild(el('li', 'rail-heard', 'Reporting back'));
+    t.steps.slice(-12).forEach(function (s) {
+      var li = el('li', 'rail-step is-' + s.status + (s.parent ? ' is-sub' : ''));
+      li.appendChild(el('span', 'rail-dot')); li.appendChild(el('span', '', s.label));
+      stepsEl.appendChild(li);
+    });
+    var li = el('li', 'rail-step is-' + (t.status === 'running' ? 'running' : (t.status === 'ok' ? 'ok' : 'error')));
+    li.appendChild(el('span', 'rail-dot'));
+    li.appendChild(el('span', '', t.status === 'running' ? (t.text ? 'Answering' : 'Thinking') : t.status === 'ok' ? 'Answered' :
+      t.status === 'cancelled' ? 'Stopped' : 'Did not finish'));
+    stepsEl.appendChild(li);
+  }
+  function renderTasks() {
+    var list = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; })
+      .sort(function (a, b) { return (a.started || '') < (b.started || '') ? -1 : 1; }).slice(-6).reverse();
+    tasksEl.textContent = '';
+    if (!list.length) { tasksEl.appendChild(el('li', 'rail-empty', 'Nothing running in the background.')); return; }
+    list.forEach(function (t) {
+      var li = el('li', 'rail-task is-' + (t.status || 'running'));
+      li.appendChild(el('b', '', t.task || 'Task'));
+      var steps = t.steps || [], lastStep = steps.length ? steps[steps.length - 1].label : '';
+      var line = t.status === 'running' ? 'Working · ' + elapsed(t.started) + (lastStep ? ' · ' + lastStep : '')
+        : (t.status === 'done' ? 'Done' : cap(t.status || 'stopped')) + ' · ' + elapsed(t.started, t.finished) + (t.summary ? ' · ' + t.summary : '');
+      var small = el('small', '', line); small.title = line;
+      li.appendChild(small);
+      tasksEl.appendChild(li);
+    });
+  }
+  function renderPanels() {
+    panelsEl.textContent = '';
+    panelsEl.hidden = !act.panels.length;
+    act.panels.slice(-4).reverse().forEach(function (p) {
+      var box = el('article', 'hud-panel');
+      box.setAttribute('data-accent', /^(amber|violet|green|red)$/.test(p.accent) ? p.accent : 'default');
+      box.appendChild(el('h3', 'hud-title', p.title || 'DISPLAY'));
+      var body = el('div', 'hud-body'); body.appendChild(sanitizePanel(p.html)); box.appendChild(body);
+      panelsEl.appendChild(box);
+    });
+  }
+  function renderRail() { renderSteps(); renderTasks(); renderPanels(); }
+  setInterval(function () {
+    if (Object.keys(act.tasks).some(function (k) { return act.tasks[k].status === 'running'; })) renderTasks();
+  }, 1000);
+
+  /* ---- the live stream ---------------------------------------------------------------------- */
+  var seq = null, es = null, turnText = {};
+  function shouldSpeak(e) {
+    if (cancelled[e.turn]) return false;
+    if (myTurns[e.turn]) return true;
+    return turnKinds[e.turn] === 'announce' && (e.origin === 'browser' || e.origin === 'any');
+  }
+  var handlers = {
+    turn: function (e) {
+      act.turns[e.turn] = { id: e.turn, heard: e.heard || '', kind: e.kind, origin: e.origin, steps: [], status: 'running', text: '' };
+      act.order.push(e.turn); if (act.order.length > 8) delete act.turns[act.order.shift()];
+      turnKinds[e.turn] = e.kind;
+      if (e.kind === 'chat') act.panels = act.panels.filter(function (p) { return p.hold === 'sticky'; });
+      if (e.kind === 'chat' && !myTurns[e.turn] && e.heard) youEl.textContent = e.heard;   // the laptop heard him
+      turnText[e.turn] = '';
+      working = '';
+      renderRail();
+    },
+    sentence: function (e) {
+      var t = act.turns[e.turn]; if (t) t.text = (t.text + ' ' + e.text).trim();
+      if (cancelled[e.turn]) return;
+      turnText[e.turn] = ((turnText[e.turn] || '') + ' ' + e.text).trim();
+      caption(turnText[e.turn], true);
+      spokeIn[e.turn] = 1;
+      if (shouldSpeak(e)) speaker.say(e.text, e.turn);
+      working = ''; renderSteps(); render();
+    },
+    tool: function (e) {
+      var t = act.turns[e.turn]; if (!t) return;
+      var s = null;
+      t.steps.forEach(function (x) { if (x.id === e.tool_id) s = x; });
+      if (s) s.label = e.label || s.label; else t.steps.push({ id: e.tool_id, label: e.label, status: 'running', parent: e.parent });
+      if (!e.parent) working = e.label;
+      if (myTurns[e.turn] && !spokeIn[e.turn] && !filled[e.turn] && !e.parent && !cancelled[e.turn]) {
+        filled[e.turn] = 1; speaker.say(fillerFor(e.label || ''), e.turn, true);    // once per turn, then quiet
+      }
+      renderSteps(); render();
+    },
+    tool_done: function (e) {
+      var t = act.turns[e.turn]; if (!t) return;
+      t.steps.forEach(function (x) { if (x.id === e.tool_id) x.status = e.ok ? 'ok' : 'error'; });
+      renderSteps();
+    },
+    done: function (e) {
+      var t = act.turns[e.turn];
+      if (t) { t.status = e.status === 'ok' ? 'ok' : e.status; t.steps.forEach(function (x) { if (x.status === 'running') x.status = 'ok'; }); }
+      if (pending === e.turn) pending = null;
+      if (e.text && !cancelled[e.turn] && (myTurns[e.turn] || turnKinds[e.turn] === 'announce')) {
+        addHistory('them', e.text, turnKinds[e.turn] === 'announce' ? 'voice · task done' : 'voice · just now');
+      }
+      working = ''; renderSteps(); render();
+    },
+    error: function (e) { if (pending === e.turn) pending = null; fail(e.message || 'Something went wrong.'); },
+    task: function (e) {
+      var t = e.task || {};
+      if (!t.id) return;
+      act.tasks[t.id] = Object.assign(act.tasks[t.id] || {}, t);
+      renderTasks();
+    },
+    panel: function (e) { if (e.panel) { act.panels.push(e.panel); renderPanels(); } },
+    settings: function (e) { if (e.voice) { voiceCfg = e.voice; cachedVoice = undefined; } },
+    ignored: function () { if (!pending) youEl.textContent = ''; }
+  };
+  function connect() {
+    if (!window.EventSource || !canTalk) return;
+    if (es) es.close();
+    es = new EventSource('/voice/api/stream' + (seq !== null ? '?after=' + seq : ''));
+    Object.keys(handlers).forEach(function (type) {
+      es.addEventListener(type, function (m) {
+        var e; try { e = JSON.parse(m.data); } catch (x) { return; }
+        if (typeof e.id === 'number') { if (seq !== null && e.id <= seq) return; seq = e.id; }
+        handlers[type](e);
+      });
+    });
+    es.addEventListener('hello', function (m) { try { var h = JSON.parse(m.data); if (seq === null) seq = h.seq; } catch (x) { /* ignore */ } });
+    es.onerror = function () { /* EventSource reconnects by itself (retry: 2000) with Last-Event-ID */ };
+  }
+  function loadActivity() {
+    return fetch('/voice/api/activity', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+        if (!j) return;
+        if (j.voice) voiceCfg = j.voice;
+        (j.turns || []).forEach(function (t) {
+          act.turns[t.id] = { id: t.id, heard: t.heard, kind: t.kind, origin: t.origin, steps: t.steps || [], status: t.status, text: t.text };
+          act.order.push(t.id); turnKinds[t.id] = t.kind;
+        });
+        (j.tasks || []).forEach(function (t) { act.tasks[t.id] = t; });
+        act.panels = j.panels || [];
+        seq = j.seq;
+        renderRail();
+      }).catch(function () { /* the stream still works */ });
+  }
 
   /* ---- the ring: tap = on/off (and interrupts while speaking); hold Space = push-to-talk ------- */
   function postMute(muted) {     // the laptop's voice loop follows the ring (CSRF-checked)
-    var fd = new FormData(); fd.append('csrf', csrf); fd.append('muted', muted ? '1' : '0');
     bg.muted = muted;
-    return fetch('/voice/api/mute', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-      .catch(function () { /* the tab state still holds */ });
+    return post('/voice/api/mute', { muted: muted ? '1' : '0' }).catch(function () { /* the tab state still holds */ });
   }
   function setOn(on) {
     dismissTip();
     if (on) {
       audioCtx();
+      if (synth) synth.resume();     // unlock speech inside the click
       if (bg.online || bg.muted) postMute(false);
-      ensureMic().then(function () { always = true; vad.on = 0; vad.quiet = 0; local = local === 'error' ? null : local; render(); },
+      ensureMic().then(function () { always = true; vad.armed = 0; vad.speaking = false; local = local === 'error' ? null : local; render(); },
         function (e) { micError(e); render(); });
     } else {
       always = false;
@@ -343,8 +712,8 @@
   }
   ptt.addEventListener('click', function () {
     if (!canTalk) return;
-    if (pttDown) return;                                       // Space on the focused ring is push-to-talk
-    if (src || playQ.length) { stopPlayback(); render(); return; }   // "Speaking — tap to interrupt"
+    if (pttDown) return;                                        // Space on the focused ring is push-to-talk
+    if (speaker.busy() || pending) { interrupt(); render(); return; }   // "Speaking — tap to interrupt"
     setOn(!isOn());
   });
   ptt.addEventListener('contextmenu', function (e) { e.preventDefault(); });
@@ -355,12 +724,12 @@
     ptt.classList.remove('is-down');
     if (rec && recMode === 'ptt') stopRec();
   }
-  function typingIn(el) {
-    if (!el || el === ptt) return false;
-    return /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(el.tagName) || el.isContentEditable;
+  function typingIn(t) {
+    if (!t || t === ptt) return false;
+    return /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(t.tagName) || t.isContentEditable;
   }
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { if (drawerOpen()) setDrawer(false); else if (menu && menu.open) menu.open = false; else if (rec && recMode === 'ptt') stopRec(true); else stopPlayback(); render(); return; }
+    if (e.key === 'Escape') { if (drawerOpen()) setDrawer(false); else if (menu && menu.open) menu.open = false; else if (rec && recMode === 'ptt') stopRec(true); else interrupt(); render(); return; }
     if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target) || !canTalk) return;
     if (document.querySelector('dialog[open]')) return;
     e.preventDefault();
@@ -406,31 +775,15 @@
   });
   if (location.hash === '#history' || location.hash === '#talk') setDrawer(true);
 
-  /* ---- the laptop's voice loop --------------------------------------------------------------- */
-  var lastHeard = null, lastSaid = null, lastEvent = null;
+  /* ---- the laptop's voice loop (its state pill; its words arrive on the stream) -------------- */
   function pollStatus() {
     if (document.hidden) return;
-    var url = '/voice/api/status' + (lastEvent !== null ? '?after=' + lastEvent : '');
-    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-      .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
-        if (!j) return;
-        bg = j;
-        (j.events || []).forEach(function (e) {    // a background task finished: say what it found
-          caption(e.text || '');
-          addHistory('them', e.text || '', 'voice · task done');
-          if (e.audio && !rec) enqueue(e.audio, null);
-        });
-        if (typeof j.event_id === 'number') lastEvent = j.event_id;
-        if (lastHeard !== null && !local) {        // captions for what the laptop loop heard and said
-          if (j.heard && j.heard !== lastHeard) youEl.textContent = j.heard;
-          if (j.said && j.said !== lastSaid) caption(j.said);
-        }
-        lastHeard = j.heard || ''; lastSaid = j.said || '';
-        render();
-      }).catch(function () { /* offline: next tick */ });
+    fetch('/voice/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { if (j) { bg = j; render(); } })
+      .catch(function () { /* offline: next tick */ });
   }
   pollStatus();
-  setInterval(pollStatus, 1500);
+  setInterval(pollStatus, 4000);
 
   /* ---- the core ------------------------------------------------------------------------------ */
   var g = canvas.getContext('2d');
@@ -569,4 +922,7 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) { pollStatus(); schedule(); } });
   render();
   schedule();
+  window.__jarvis = { ask: ask, sanitize: window.__sanitizePanel };   // debugging / page tests
+  loadActivity().then(connect, connect);
+  if (synth) { pickVoice(); setTimeout(reportVoices, 1500); }
 })();

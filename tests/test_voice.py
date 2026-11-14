@@ -149,15 +149,15 @@ def test_full_cycle_wake_think_speak_followup_idle():
 
 
 def test_followup_needs_no_wake_word():
-    a, clock, ex, tts, ctl, _ = make("first question", "and the second")
+    a, clock, ex, tts, ctl, _ = make("first question", "and the second one please")
     run(a, clock, WAKE)
     say_utterance(a, clock)
     ex.calls[0][1].set_result("Answer.")
     run(a, clock, QUIET, 6)
     assert a.state == va.FOLLOWUP
     run(a, clock, LOUD, 5)
-    run(a, clock, QUIET, 25)   # "and the second" ends on a joining word? no: "second" -> sent
-    assert [c[0] for c in ex.calls] == ["first question", "and the second"]
+    run(a, clock, QUIET, 25)   # ends on a real word -> sent
+    assert [c[0] for c in ex.calls] == ["first question", "and the second one please"]
 
 
 def test_fast_answer_gets_no_filler():
@@ -419,35 +419,128 @@ def _talk(c, csrf, data, **headers):
                   headers={"Accept": "application/json", **headers})
 
 
-def test_browser_talk_transcribes_runs_turn_and_returns_audio(talk):
-    import time as _time
-
+def test_browser_talk_is_speech_to_text_only(talk):
     c, stt, web = talk
     csrf = _csrf_of(c)
     r = _talk(c, csrf, _wav())
     assert r.status_code == 200, r.text
     j = r.json()
-    assert j["ok"] and j["heard"] == "what is on today" and j["job"]
-    for _ in range(200):
-        job = c.get(f"/dashboard/chat/job/{j['job']}").json()
-        if job["done"]:
-            break
-        _time.sleep(0.02)
-    assert job["ok"] and job["reply"] and job["audio"].startswith("/voice/api/audio/")
-    audio_r = c.get(job["audio"])
-    assert audio_r.status_code == 200 and audio_r.headers["content-type"] == "audio/wav"
-    assert audio_r.content[:4] == b"RIFF"
-    assert c.get("/voice/api/audio/" + "0" * 32).status_code == 404
-    assert c.get("/voice/api/audio/..%2Fx").status_code == 404
-    msgs = store.list_messages(10, channel="voice")
-    assert {m.direction for m in msgs} == {"in", "out"} and any(m.body == "what is on today" for m in msgs)
-    # local command: no assistant turn
+    assert j["ok"] and j["heard"] == "what is on today" and "job" not in j and "turn" not in j
+    assert not store.list_messages(10, channel="voice")        # nothing asked yet: the page asks next
     stt.text = "stop listening"
     assert _talk(c, csrf, _wav()).json()["command"] == "mute"
-    # noise and too-short clips
     stt.text = "Thank you."
-    assert _talk(c, csrf, _wav()).json()["error"] == "no_speech"
+    j = _talk(c, csrf, _wav()).json()
+    assert j["error"] == "no_speech" and j["quiet"]
     assert _talk(c, csrf, _wav(0.1)).json()["error"] == "too_short"
+
+
+def _sse(c, after=0, **headers):
+    import json as _json
+
+    r = c.get(f"/voice/api/stream?after={after}&once=1", headers=headers)
+    out = []
+    for block in r.text.split("\n\n"):
+        lines = dict(ln.split(": ", 1) for ln in block.splitlines() if ": " in ln and not ln.startswith(":"))
+        if "event" in lines:
+            out.append((lines["event"], _json.loads(lines["data"])))
+    return r, out
+
+
+def test_ask_streams_the_turn_over_sse(talk):
+    from assistant import brain
+
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    r = c.post("/voice/api/ask", data={"csrf": csrf, "text": "what is on today"}, headers={"Accept": "application/json"})
+    assert r.status_code == 200, r.text
+    tid = r.json()["turn"]
+    for _ in range(300):
+        if any(e[0] == "done" for e in _sse(c)[1]):
+            break
+        import time as _t
+
+        _t.sleep(0.02)
+    resp, evs = _sse(c)
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert evs[0][0] == "hello" and "seq" in evs[0][1]
+    kinds = [k for k, _ in evs]
+    assert kinds.index("turn") < kinds.index("sentence") < kinds.index("done")
+    turn = next(d for k, d in evs if k == "turn")
+    assert turn["turn"] == tid and turn["origin"] == "browser" and turn["kind"] == "chat"
+    sent = next(d for k, d in evs if k == "sentence")
+    assert sent["turn"] == tid and sent["text"] and isinstance(sent["id"], int) and "ts" in sent
+    done = next(d for k, d in evs if k == "done")
+    assert done["status"] == "ok" and done["text"]
+    last = evs[-1][1]["id"]
+    assert [k for k, _ in _sse(c, after=last)[1]] == ["hello"]               # resumes after the last seen id
+    act = c.get("/voice/api/activity").json()
+    assert act["turns"][-1]["id"] == tid and act["voice"]["web_tts"] == "browser"
+    # noise / fillers get no reply at all
+    r = c.post("/voice/api/ask", data={"csrf": csrf, "text": "Maybe, um."}, headers={"Accept": "application/json"})
+    assert r.json() == {"ok": False, "error": "no_speech", "quiet": True, "reason": "filler"}
+    assert sum(1 for k, _ in _sse(c)[1] if k == "turn") == 1
+    assert any(k == "ignored" for k, _ in _sse(c)[1])
+    assert brain.get_brain().connects == 1
+
+
+def test_sse_and_ask_need_auth(talk, monkeypatch):
+    import config
+
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    assert c.post("/voice/api/ask", data={"text": "hi"}, headers={"Accept": "application/json"}).status_code == 403
+    assert c.post("/voice/api/interrupt", data={"csrf": "x"}, headers={"Accept": "application/json"}).status_code == 403
+    assert c.post("/voice/api/interrupt", data={"csrf": csrf}, headers={"Accept": "application/json"}).json()["ok"]
+    monkeypatch.setenv("DASHBOARD_TOKEN", "tok")
+    config.reset_settings()
+    assert c.get("/voice/api/stream?once=1").status_code == 401
+    assert c.get("/voice/api/activity").status_code == 401
+    assert c.get("/voice/api/stream?once=1", headers={"Authorization": "Bearer tok"}).status_code == 200
+
+
+def test_voice_process_asks_with_its_local_key_and_streams_sentences(talk):
+    import json as _json
+
+    c, stt, web = talk
+    key = web.local_key()
+    r = c.post("/voice/api/ask", data={"text": "what is on today", "origin": "voice"},
+               headers={"X-Voice-Key": key, "Accept": "application/x-ndjson"})
+    assert r.status_code == 200
+    lines = [_json.loads(x) for x in r.text.splitlines() if x.strip()]
+    assert lines[0]["sentence"] and lines[-1]["done"] and lines[-1]["status"] == "ok"
+    assert c.post("/voice/api/ask", data={"text": "hi"}, headers={"X-Voice-Key": "wrong",
+                                                                   "Accept": "application/json"}).status_code == 403
+    from voice import agent as vagent
+
+    class Resp:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_lines(self):
+            yield from r.text.splitlines()
+
+    heard = []
+    out = vagent.remote_reply("what is on today", heard.append, post=lambda **kw: Resp())
+    assert heard == [x["sentence"] for x in lines if "sentence" in x] and out["status"] == "ok"
+
+
+def test_page_tts_endpoint_and_voice_list(talk):
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    r = c.post("/voice/api/tts", data={"csrf": csrf, "text": "Good evening, sir."})
+    assert r.status_code == 200 and r.content[:4] == b"RIFF" and r.headers["x-voice"] == "fake"
+    web.set_engines(stt=stt, tts=None)
+    assert c.post("/voice/api/tts", data={"csrf": csrf, "text": "Hello."}).status_code == 503
+    r = c.post("/voice/api/voices", data={"csrf": csrf, "voices": '["Google UK English Male", "Daniel"]'})
+    from assistant import live_settings
+
+    assert r.json()["count"] == 2 and live_settings.browser_voices() == ["Google UK English Male", "Daniel"]
 
 
 def test_browser_talk_guards_csrf_size_and_bad_audio(talk, monkeypatch):
@@ -482,6 +575,7 @@ def test_jarvis_home_renders_with_and_without_voice_process(talk):
     assert 'data-jv-ptt aria-pressed="false"' in html and "Tap to talk" in html
     assert "data-jv-always" not in html and "data-jv-mute" not in html and "Always listen" not in html
     assert "data-jv-menu" in html and "data-jv-history" in html and "data-jv-tip" in html
+    assert "data-jv-rail" in html and "data-jv-steps" in html and "data-jv-tasks" in html and "data-jv-panels" in html
     assert c.get("/voice/api/status").json()["state"] == "offline"
     control.Control().publish("speaking", heard="hi", said="Good evening, sir.")
     st = c.get("/voice/api/status").json()
@@ -555,23 +649,33 @@ def test_announcer_speaks_finished_tasks_when_idle():
     assert tts.said == ["Sir, the report is done."]
 
 
-def test_browser_streams_parts_and_task_events(talk):
-    import time as _time
+def test_laptop_voice_reloads_when_the_voice_setting_changes():
+    a, clock, ex, tts, ctl, _ = make()
+    new = FakeTTS()
+    new.name = "kokoro:bm_lewis"
+    calls = []
+    a.tts_reloader = lambda: (calls.append(1), new if len(calls) == 2 else None)[1]
+    run(a, clock, QUIET, 200)              # ~16 s of ticks: the reloader is polled every few seconds
+    assert len(calls) >= 3 and a.tts is new
 
-    from assistant import voice_front
 
-    c, stt, web = talk
-    j = _talk(c, _csrf_of(c), _wav()).json()
-    for _ in range(200):
-        job = c.get(f"/dashboard/chat/job/{j['job']}").json()
-        if job["done"]:
-            break
-        _time.sleep(0.02)
-    assert job["parts"] and job["parts"][0]["audio"].startswith("/voice/api/audio/")
-    first = c.get("/voice/api/status").json()
-    assert first["events"] == [] and "tasks" in first
-    store.add_message("out", "voice", "Sir, the logs are clean.", kind="task_done",
-                      meta={"origin": "browser", "task_id": "t1"})
-    ev = c.get(f"/voice/api/status?after={first['event_id']}").json()["events"]
-    assert ev[0]["text"] == "Sir, the logs are clean." and ev[0]["audio"].startswith("/voice/api/audio/")
-    assert voice_front.latest_event_id() == ev[0]["id"]
+def test_laptop_voice_ignores_fillers_and_the_reload_reads_config(tmp_path, monkeypatch):
+    a, clock, ex, tts, ctl, _ = make("Maybe, um.")
+    run(a, clock, WAKE)
+    say_utterance(a, clock)
+    assert ex.calls == [] and a.diag.dropped == 1
+    import config
+    from voice import settings as vs
+
+    cfg = tmp_path / "config.env"
+    cfg.write_text("VOICE_TTS_VOICE=bm_george\n", encoding="utf-8")
+    monkeypatch.setenv("CLIPAGENT_CONFIG_FILE", str(cfg))
+    config.reset_settings()
+    vs.reset_voice_settings()
+    monkeypatch.setattr(vs, "_file_mtime", None)
+    assert vs.reload_if_changed() is None                 # first look: remembers the file
+    import os
+
+    cfg.write_text("VOICE_TTS_VOICE=bm_lewis\n", encoding="utf-8")
+    os.utime(cfg, (1e9, 2e9))
+    assert vs.reload_if_changed().tts_voice == "bm_lewis"

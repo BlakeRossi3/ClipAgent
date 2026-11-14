@@ -12,13 +12,13 @@ HEARTBEAT.md poisoning taught us:
 * **Cheap first.** :func:`tick` computes plain-code facts (failed uploads, approval ages, plan
   usage, eval regressions, errors...) and hashes them with the checklist. Unchanged and nothing
   time-due ("each morning", "at 9am", "hourly") -> no model call, no tokens.
-* **One fast call otherwise** (voice_front's model/client; assistant budget), with the checklist
+* **One fast call otherwise** (``assistant/quick.py``: ASSISTANT_QUICK_MODEL; assistant budget), with the checklist
   and the status snapshot wrapped as untrusted data. It answers JSON:
   ``{"notify": [{"text", "urgency": "low|normal|urgent"}], "tasks": [{"task", "why"}], "nothing": bool}``.
 * **Notifications** go through ``tools.send_to_owner`` (daily cap; quiet hours: urgent only),
   never the same point twice within :data:`DEDUP_HOURS`, and are spoken by the voice process and
-  the Jarvis page (a ``task_done`` voice message with origin ``any``).
-* **Tasks** go to the full agent in the background exactly like ``voice_front.delegate``: one at a
+  the Jarvis page (``tasks.say``: a ``task_done`` voice message with origin ``any`` + a live event).
+* **Tasks** go to a background worker session exactly like the brain's ``start_task`` (``assistant/tasks.py``): one at a
   time, at most ``HEARTBEAT_MAX_TASKS_PER_DAY``; when the Claude plan is tight they are queued with
   ``usage.should_defer`` instead. Approval rules apply to them as to everything else.
 """
@@ -241,9 +241,9 @@ def facts() -> dict[str, Any]:
     part("pipeline_paused", spend)
 
     def tasks() -> int:
-        from assistant import voice_front
+        from assistant import tasks
 
-        return len(voice_front.running_tasks())
+        return len(tasks.running_tasks())
 
     part("tasks_running", tasks)
     return out
@@ -289,10 +289,10 @@ def tasks_today() -> int:
 
 def current_task() -> dict[str, Any] | None:
     """The heartbeat's background task while it runs (a stale 'running' row is ignored)."""
-    from assistant import voice_front
+    from assistant import tasks
 
     tid = db.kv_get(KV_TASK)
-    t = voice_front.get_task(tid) if tid else None
+    t = tasks.get_task(tid) if tid else None
     if t and t.get("status") == "running" and db.parse_iso(t["started"]) > db.utcnow() - STALE_TASK:
         return t
     return None
@@ -334,7 +334,7 @@ def build_request(checklist: str, snapshot: str, due: list[tuple[str, str]], rec
             + runtime.wrap_untrusted("status", snapshot) + "\n\n"
             + f"<due_now>\n{persona.escape_untrusted(due_txt)}\n</due_now>\n\n"
             + f"<already_told_him>\n{persona.escape_untrusted(told)}\n</already_told_him>")
-    return runtime.ModelRequest(AGENT, s.voice_front_model, system, [{"role": "user", "content": user}], [],
+    return runtime.ModelRequest(AGENT, s.quick_model, system, [{"role": "user", "content": user}], [],
                                 MAX_TOKENS, "low")
 
 
@@ -344,7 +344,7 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     status: disabled | stopped | deferred | unchanged | quiet | nothing | acted | budget | error.
     """
     import notify
-    from assistant import runtime, store, usage, voice_front
+    from assistant import quick, runtime, status as status_mod, usage
 
     s = get_assistant_settings()
     result: dict[str, Any] = {"status": "", "notified": 0, "tasks": 0, "cost_usd": 0.0, "due": 0}
@@ -376,16 +376,16 @@ def tick(*, force: bool = False) -> dict[str, Any]:
         return done("unchanged")
 
     try:
-        snapshot = voice_front.status_snapshot()
+        snapshot = status_mod.status_snapshot()
     except Exception as exc:
         snapshot = f"(status unavailable: {type(exc).__name__})"
     recent = _recent_sent()
     req = build_request(checklist, snapshot, due, recent, quiet=quiet)
-    backend = voice_front.get_backend()
+    backend = quick.get_backend()
     try:
         runtime.check_budget(runtime.estimate_cost(req), runtime._TurnBudget(s.max_turn_usd), s)
-        reply = voice_front._call(backend, req, lambda _d: None)
-        result["cost_usd"] = round(voice_front._record(reply, bool(getattr(backend, "fake", False))), 6)
+        reply = quick.call(backend, req)
+        result["cost_usd"] = round(quick.record(AGENT, reply, bool(getattr(backend, "fake", False))), 6)
     except runtime.AssistantBudgetExceeded as exc:
         return done("budget", reason=exc.reason)
     except Exception as exc:
@@ -412,8 +412,9 @@ def tick(*, force: bool = False) -> dict[str, Any]:
         except tools.ToolError as exc:
             db.log_event(AGENT, "heartbeat note not sent", level="warning", data={"error": str(exc)[:200]})
             continue
-        store.add_message("out", "voice", n["text"], kind="task_done", agent=AGENT,
-                          meta={"origin": "any", "task": "heartbeat", "urgency": n["urgency"]})
+        from assistant import tasks
+
+        tasks.say(n["text"], origin="any", task="heartbeat", urgency=n["urgency"])
         entry = {"text": n["text"], "at": db.now_iso()}
         sent[_key(n["text"])] = entry
         recent[_key(n["text"])] = entry
@@ -436,8 +437,8 @@ def tick(*, force: bool = False) -> dict[str, Any]:
 
 
 def _start_task(t: dict[str, str], s: Any) -> str | None:
-    """Delegate one task like voice_front.delegate. None = not started (busy, cap, deferred)."""
-    from assistant import usage, voice_front
+    """Start one background task (assistant.tasks). None = not started (busy, cap, deferred)."""
+    from assistant import tasks, usage
 
     if current_task() is not None:
         db.log_event(AGENT, "heartbeat task skipped: one already running", data={"task": t["task"][:200]})
@@ -453,7 +454,7 @@ def _start_task(t: dict[str, str], s: Any) -> str | None:
         db.log_event(AGENT, "heartbeat task deferred until the plan resets", data={"task": t["task"][:200]})
         return None
     db.kv_incr(KV_TASKS_DAY.format(day=db.local_today().isoformat()))
-    tid = voice_front.delegate(brief, heard=f"Heartbeat check: {t['why'] or t['task']}"[:300], origin="any")
+    tid = tasks.start(brief, heard=f"Heartbeat check: {t['why'] or t['task']}"[:300], origin="any")
     db.kv_set(KV_TASK, tid)
     return tid
 

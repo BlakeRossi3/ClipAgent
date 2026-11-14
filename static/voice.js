@@ -27,6 +27,40 @@
     poll();
     setInterval(poll, 3000);
   }
+  // Settings: the Jarvis page's browser voice picker (the browser's own voices; British male first).
+  var pick = document.querySelector("[data-web-voices]"), synth = window.speechSynthesis;
+  function score(v) {
+    var n = v.name.toLowerCase(), s = 0;
+    if (/ryan.*(online|natural)/.test(n)) s += 130; else if (/thomas.*(online|natural)/.test(n)) s += 115;
+    else if (/microsoft george/.test(n)) s += 95; else if (n.indexOf("google uk english male") >= 0) s += 90;
+    else if (/^daniel/.test(n)) s += 88;
+    if (/en[-_]gb/i.test(v.lang)) s += 25;
+    return s;
+  }
+  function fillVoices() {
+    if (!pick || !synth) return;
+    var cur = pick.dataset.current || "", list = synth.getVoices().filter(function (v) { return /^en/i.test(v.lang); });
+    if (!list.length) return;
+    list.sort(function (a, b) { return score(b) - score(a) || a.name.localeCompare(b.name); });
+    while (pick.options.length > 1) pick.remove(1);
+    list.forEach(function (v) {
+      var o = document.createElement("option");
+      o.value = v.name; o.textContent = v.name + (v.localService ? "" : " (online)");
+      if (v.name === cur) o.selected = true;
+      pick.appendChild(o);
+    });
+  }
+  if (pick && synth) { fillVoices(); synth.addEventListener("voiceschanged", fillVoices); }
+  var hear = document.querySelector("[data-web-voice-test]");
+  if (hear && synth) hear.addEventListener("click", function () {
+    synth.cancel(); synth.resume();
+    var u = new SpeechSynthesisUtterance("Good evening, sir. This is how I will sound on the Jarvis page.");
+    var name = pick && pick.value, all = synth.getVoices();
+    var v = all.filter(function (x) { return x.name === name; })[0] ||
+      all.filter(function (x) { return /^en/i.test(x.lang); }).sort(function (a, b) { return score(b) - score(a); })[0];
+    if (v) { u.voice = v; u.lang = v.lang; }
+    synth.speak(u);
+  });
   var test = document.querySelector("[data-voice-test]");
   if (test) {
     var meter = document.querySelector("[data-voice-meter]"), note = document.querySelector("[data-voice-test-note]");

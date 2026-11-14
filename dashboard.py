@@ -553,7 +553,7 @@ def _env():
 
 def _security_headers(resp: Response) -> Response:
     resp.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+        "default-src 'self'; img-src 'self' data: https: http:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
         "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
     resp.headers["X-Content-Type-Options"] = "nosniff"
     # "same-origin", not "no-referrer": with no-referrer browsers send ``Origin: null`` on same-origin

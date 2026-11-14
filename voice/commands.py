@@ -115,3 +115,39 @@ def looks_unfinished(text: str) -> bool:
     """"Remind me to call..." trailing off on a joining word: wait a moment longer for the rest."""
     t = (text or "").strip()
     return bool(t) and (t.endswith((",", ";", ":", "-", "...")) or bool(_CONTINUES.search(norm(t))))
+
+
+# Words that carry no request on their own (hesitations, hedges, back-channel noises).
+FILLER_WORDS = frozenset(("um", "umm", "uh", "uhh", "er", "erm", "ah", "ahh", "eh", "hmm", "hm", "mm", "mmm", "mhm",
+                          "uh-huh", "maybe", "like", "so", "well", "oh", "huh", "and", "but", "or", "the", "a", "i",
+                          "you", "know", "just", "kind", "of", "sort", "actually", "basically", "anyway", "yeah",
+                          "hmmm", "ooh", "wow", "okay", "ok", "right", "alright", "sir"))
+# One word that IS a complete answer or command when he says it on its own.
+COMPLETE_ALONE = frozenset(("yes", "no", "yep", "nope", "sure", "thanks", "stop", "wait", "continue", "go", "cancel",
+                            "hello", "hi", "hey", "please", "done", "pause", "resume", "again", "repeat", "louder",
+                            "quieter", "morning", "evening", "goodnight", "both", "neither", "correct", "exactly"))
+_COMMAND_START = re.compile(r"^(?:open|show|play|stop|start|switch|change|turn|set|check|find|search|tell|read|"
+                            r"call|text|send|remind|add|log|put|make|run|fix|write|go|give|list|what|who|why|how|"
+                            r"when|where|which|is|are|can|could|would|will|do|does|did)\b")
+
+
+def is_filler_utterance(text: str) -> bool:
+    """"Maybe, um." / "uh" / "so like": nothing was asked, so wait instead of replying.
+
+    True when, after dropping hesitations and hedges, fewer than two real words remain and the
+    utterance is neither a question nor a command nor a word that is complete on its own ("yes",
+    "stop", "thanks"). A rule of thumb from adewaskar/jarvis ``voice.ts`` (an utterance of one or two
+    words is usually the start of something, not the whole of it), applied to transcripts."""
+    raw = (text or "").strip()
+    n = norm(raw)
+    if not n or n in HALLUCINATIONS:
+        return True
+    words = n.split()
+    real = [w for w in words if w not in FILLER_WORDS]
+    if len(real) >= 2:
+        return False
+    if raw.rstrip().endswith("?") and real:
+        return False
+    if any(w in COMPLETE_ALONE for w in words) or (real and _COMMAND_START.match(" ".join(real))):
+        return False
+    return True

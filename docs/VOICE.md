@@ -14,34 +14,32 @@ wake word, voice, barge-in mode and a "Test my mic" meter.
 - After the wake word (or within 8 s of a reply: follow-up mode), what you say is turned into text
   by faster-whisper on this laptop (the GPU when it works, otherwise the CPU). Only that **text**
   goes to Claude. Audio is never sent.
-- Replies are spoken by Kokoro (a free local voice, `bm_george`). Windows' own voices are the
-  fallback. ElevenLabs is used only if you choose it and add a key; then the reply **text** goes to ElevenLabs.
+- On the Jarvis page replies are spoken by the browser's own voice by default (instant; the best British
+  male voice installed: "Microsoft Ryan Online (Natural)" in Edge, "Google UK English Male" in Chrome).
+  Settings -> Power & privacy -> Voice picks another browser voice, Kokoro (`bm_george`, `bm_lewis`,
+  `bm_fable`, `bm_daniel`; on this laptop) or ElevenLabs (voice `JBFqnCBsd6RMkjVDRZzb`, as in
+  adewaskar/jarvis; needs `ELEVENLABS_API_KEY`; then the reply **text** goes to ElevenLabs). The laptop
+  voice process has no browser: it uses Kokoro, Windows (SAPI) voices or ElevenLabs.
+- Say "switch to Lewis" (or "use the browser voice", "use Ryan"): Sterling changes it himself and the
+  next sentence is in the new voice. A change in Settings also applies at once (no restart).
 - Every exchange is saved in the chat history (channel "voice"). Answers are spoken, never "see the dashboard".
 
-## Two layers: a fast voice, a slow worker (`assistant/voice_front.py`)
-Modelled on adewaskar/jarvis (MIT), which keeps a quick conversational loop apart from the Claude Code worker.
-- **Fast front.** Each utterance is one streaming Anthropic API call on `VOICE_FRONT_MODEL` (default
-  `claude-haiku-5-5`; `claude-sonnet-5-5` also works). It runs at low effort with at most 300 output tokens,
-  using the saved `ANTHROPIC_API_KEY`, which must have credit. Its costs count against
-  `ASSISTANT_DAILY_BUDGET_USD`. The context is kept small: the persona, a plain-code status snapshot (background
-  tasks, approvals, today's check-ins, money this week, Shorts, plan usage, recent events) and the last ten
-  voice exchanges. It may call only quick tools: memory_search, ledger_summary, usage_status, open_url,
-  desktop_mode_run, status_snapshot and `delegate_task`. Sentence one goes to the voice while the rest is still
-  being generated. "What's going on" is answered straight from the snapshot. A filler line ("One moment, sir.")
-  plays only if nothing has been said after `VOICE_FILLER_DELAY_SEC`.
-- **Slow worker.** Real work (code, files, research, the browser, self-edits) is handled in three steps:
-  1. The front says "Right away, sir." and calls `delegate_task`.
-  2. The full agent then runs in the background (`run_turn(channel="voice-task")`). Each task gets a fresh
-     Claude Code session and a short brief, plus the status context.
-  3. When it finishes, the front model turns the result into one to three sentences and speaks them. The
-     browser picks this up from `/voice/api/status`; the laptop voice process announces it when idle. The full
-     text goes to History.
-
-  While a task runs, the Jarvis status line reads "Working on: ...". If you ask "how's that going?", the
-  answer comes from the snapshot.
-- **No API key saved** (and not in fake mode): the front falls back to Claude Code with model `haiku`, no
-  tools, no resume and one turn. That costs a process start (a few seconds), but it is still far faster than
-  the full agent. Delegation still works.
+## One brain (`assistant/brain.py`)
+Modelled on adewaskar/jarvis (MIT): one warm Claude Agent SDK session in the server does the talking
+and the work, with every power and the whole day's conversation (details in docs/ASSISTANT.md).
+- The page streams everything live from `GET /voice/api/stream` (server-sent events): the text, each
+  finished sentence (spoken as soon as it completes), tool steps ("Reading home.py", "Running tests"),
+  background tasks with elapsed time and result, and panels Sterling draws with `display`. The
+  **activity rail** beside the ring shows them.
+- Long work: "That'll take a few minutes, sir. I'll tell you when it's done." It runs in a parallel
+  session; when it finishes Sterling says so once, on the page or laptop that asked.
+- Barge-in: speaking over him pauses him at once; if it was a real request he stops (and the answer in
+  flight is cancelled), if it was noise or his own echo he carries on. A filler line ("Running the
+  tests.") plays only when the first tool starts and nothing has been said yet.
+- Fillers and noise ("um", "maybe, um", "thank you" from Whisper's imagination) get no reply; a sentence
+  that trails off ("remind me to...") waits a moment for the rest.
+- The laptop voice process asks the same brain over `POST /voice/api/ask` (loopback, a local key from
+  the database) and speaks the sentences as they stream; if the server is down it runs its own.
 
 ## Local commands (no Claude involved)
 | Say | Does |

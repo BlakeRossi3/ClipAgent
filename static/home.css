@@ -358,6 +358,68 @@ body.section-home .brand-px { fill: #e2f4f7; }
 .jv-meta span + span::before { content: "\00b7"; margin-right: 10px; }
 .jv-warn { color: #ffb4a6; }
 
+/* --- the stage + the activity rail (what Sterling is doing, live) --- */
+.jv-body { width: 100%; max-width: 1240px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.jv-stage { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; }
+.jv-rail { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 10px; text-align: left; min-width: 0; }
+@media (min-width: 1000px) {
+  .jv-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); align-items: center; gap: 22px; }
+  .jv-rail { max-height: min(72vh, 680px); overflow: auto; align-self: center; padding-right: 4px; }
+}
+.rail-sec { border: 1px solid color-mix(in srgb, var(--jv) 22%, transparent); border-radius: 10px; padding: 10px 12px;
+  background: rgba(2, 16, 24, .62); backdrop-filter: blur(4px); }
+.rail-sec[hidden] { display: none; }
+.rail-h { margin: 0 0 6px; font: 600 0.66rem/1.2 var(--mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--jv-dim);
+  display: flex; align-items: center; gap: 8px; }
+.rail-live { color: #1a1306; background: var(--jv); border-radius: 999px; padding: 2px 7px; letter-spacing: 0.12em; font-size: 0.58rem; }
+.rail-live[hidden] { display: none; }
+.rail-steps, .rail-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 0.86rem; }
+.rail-empty { color: var(--jv-dim); font-size: 0.82rem; }
+.rail-step { display: flex; align-items: baseline; gap: 8px; color: var(--jv-ink); min-width: 0; }
+.rail-step span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-step.is-sub { padding-left: 16px; color: var(--jv-dim); font-size: 0.8rem; }
+.rail-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--jv); box-shadow: 0 0 8px var(--jv); }
+.rail-step.is-running .rail-dot { animation: rail-pulse 1s ease-in-out infinite; }
+.rail-step.is-ok .rail-dot { background: #4fd18b; box-shadow: none; }
+.rail-step.is-error .rail-dot { background: #ff5c48; box-shadow: none; }
+.rail-heard { color: var(--jv-dim); font-size: 0.8rem; margin: 0 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-task { border-left: 2px solid var(--jv); padding: 2px 0 2px 9px; min-width: 0; }
+.rail-task.is-done { border-color: #4fd18b; } .rail-task.is-error, .rail-task.is-budget { border-color: #ff5c48; }
+.rail-task b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-task small { display: block; color: var(--jv-dim); font: 0.74rem var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes rail-pulse { 50% { opacity: .3; } }
+/* panels from the display tool (adewaskar/jarvis bridge/panels.mjs design system, MIT) */
+.rail-panels { display: flex; flex-direction: column; gap: 10px; padding: 0; border: 0; background: none; backdrop-filter: none; }
+.hud-panel { --acc: var(--jv); border: 1px solid color-mix(in srgb, var(--acc) 45%, transparent); border-radius: 10px; padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(4, 30, 42, .85), rgba(2, 14, 20, .85)); animation: hud-in .35s ease-out; overflow: hidden; }
+.hud-panel[data-accent="amber"] { --acc: #e8b054; } .hud-panel[data-accent="violet"] { --acc: #b28cff; }
+.hud-panel[data-accent="green"] { --acc: #4fd18b; } .hud-panel[data-accent="red"] { --acc: #ff5c48; }
+.hud-title { margin: 0 0 8px; font: 600 0.66rem var(--mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--acc); }
+.hud-body { font-size: 0.88rem; line-height: 1.4; color: var(--jv-ink); overflow-wrap: anywhere; }
+.hud-body table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+.hud-body td, .hud-body th { border-bottom: 1px solid rgba(0, 229, 255, .12); padding: 3px 4px; text-align: left; }
+.hud-body h3, .hud-body h4 { margin: 0 0 6px; font-size: 0.9rem; }
+.hud-rows { display: flex; flex-direction: column; gap: 6px; }
+.hud-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hud-idx { font: 0.72rem var(--mono); color: var(--jv-dim); flex: none; }
+.hud-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.hud-label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hud-sub, .hud-dim, .hud-caption, .hud-unit { color: var(--jv-dim); font-size: 0.78rem; }
+.hud-tag { font: 600 0.64rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--acc); flex: none; }
+.hud-metric { display: block; font: 600 2.4rem/1.05 var(--mono); color: var(--acc); }
+.hud-unit { display: block; letter-spacing: 0.1em; text-transform: uppercase; }
+.hud-note { margin: 0; }
+.hud-hot { color: var(--acc); font-weight: 600; }
+.hud-img, .hud-thumb { display: block; max-width: 100%; border-radius: 6px; }
+.hud-thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; }
+.hud-caption { display: block; margin-top: 4px; }
+.hud-grid, .hud-gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.hud-bar { height: 4px; border-radius: 2px; background: rgba(0, 229, 255, .15); position: relative; margin: 4px 0; }
+.hud-bar::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--v, 0) * 100%); background: var(--acc); border-radius: 2px; }
+@keyframes hud-in { from { opacity: 0; transform: translateY(6px); clip-path: inset(0 0 100% 0); } to { opacity: 1; transform: none; clip-path: inset(0); } }
+@media (max-width: 999px) { .jv-rail { max-height: none; } }
+@media (prefers-reduced-motion: reduce) { .hud-panel, .rail-step.is-running .rail-dot { animation: none; } }
+
 .jv-core-wrap { position: relative; width: min(50vh, 480px, 88vw); aspect-ratio: 1; align-self: center; margin: 4px 0; }
 .jv-core { position: absolute; inset: 0; width: 100%; height: 100%; }
 .jv-ptt { position: absolute; left: 50%; top: 50%; width: 36%; height: 36%; transform: translate(-50%, -50%); border-radius: 50%;

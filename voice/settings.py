@@ -57,6 +57,7 @@ class VoiceSettings:
     hotkey_mute: str = "<ctrl>+<alt>+m"
     tray: bool = True
     rescan_sec: float = 60.0               # look for a new/better microphone this often while idle
+    brain_url: str = "http://127.0.0.1:8000"   # the server holding the warm brain (CLIPAGENT_BRAIN_URL)
     assistant_name: str = "Sterling"
     honorific: str = "sir"
     data_dir: Path = Path("data")
@@ -139,6 +140,7 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         hotkey_mute=s("VOICE_HOTKEY_MUTE", "<ctrl>+<alt>+m"),
         tray=config._bool(env.get("VOICE_TRAY"), True),
         rescan_sec=_float(env.get("VOICE_RESCAN_SEC"), 60.0, 0.0, 3600.0),
+        brain_url=s("CLIPAGENT_BRAIN_URL", "http://127.0.0.1:8000").rstrip("/"),
         assistant_name=name,
         honorific=honorific,
         data_dir=base.data_dir,

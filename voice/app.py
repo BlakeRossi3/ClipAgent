@@ -60,10 +60,31 @@ def start_hotkeys(agent: Any, s: VoiceSettings) -> None:
 
 
 def _announcer() -> Any:
-    """Finished background tasks this process delegated, spoken when idle (assistant.voice_front)."""
-    from assistant import voice_front
+    """Finished background tasks this process asked for, spoken when idle (assistant.tasks)."""
+    from assistant import tasks
 
-    return voice_front.Announcer("voice")
+    return tasks.Announcer("voice")
+
+
+def _tts_reloader() -> Any:
+    """Rebuild the voice when config.env changed and the voice settings with it."""
+    from voice import engines
+    from voice.settings import get_voice_settings, reload_if_changed
+
+    state = {"sig": get_voice_settings().tts_signature()}
+
+    def check() -> Any:
+        s = reload_if_changed()
+        if s is None or s.tts_signature() == state["sig"]:
+            return None
+        state["sig"] = s.tts_signature()
+        problems: list[str] = []
+        tts = engines.build_tts(s, problems)
+        for p in problems:
+            log.warning("%s", p)
+        return tts
+
+    return check
 
 
 def build_agent(s: VoiceSettings) -> Any:
@@ -77,7 +98,7 @@ def build_agent(s: VoiceSettings) -> Any:
         log.warning("%s", p)
     return VoiceAgent(wake=eng["wake"], vad=eng["vad"], stt=eng["stt"], name_stt=eng["name_stt"], tts=eng["tts"],
                       player=eng["player"], brain=assistant_brain, history=store_history, control=Control(),
-                      settings=s, announcer=_announcer())
+                      settings=s, announcer=_announcer(), tts_reloader=_tts_reloader())
 
 
 def run_loop(agent: Any, s: VoiceSettings, *, open_mic: Any = None, sleep: Any = time.sleep) -> None:

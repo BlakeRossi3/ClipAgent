@@ -1176,7 +1176,7 @@ def schedule(host: str, port: int) -> int:
     try:  # the always-on voice loop (VOICE_ENABLED) runs as its own process; see voice/web.py
         from voice import web as voice_web
 
-        voice_web.start_child()
+        voice_web.start_child(port)
     except Exception as exc:
         log.warning("voice not started: %s", exc)
     if __name__ == "__main__":  # `python main.py`: the web pages `import main`, a second module copy

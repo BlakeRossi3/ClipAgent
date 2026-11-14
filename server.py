@@ -72,7 +72,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _install_log_redaction()
     get_settings().ensure_dirs()
     db.init_db()
+    try:  # Sterling's warm brain: connect now so the first question needs no process start
+        from assistant import brain
+
+        brain.warm()
+    except Exception as exc:
+        log.warning("voice brain not warmed: %s", exc)
     yield
+    try:
+        from assistant import brain
+
+        if brain.running():
+            brain.get_brain().stop()
+    except Exception:
+        pass
 
 
 def create_app() -> FastAPI:

@@ -103,6 +103,34 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
 The weekly `engineer` proposal flow (assistant/improve.py) still exists and is the only self-change path
 on the API backend; nightly evals remain the regression check.
 
+## The voice brain: one warm session (assistant/brain.py)
+Talking to Sterling (the Jarvis page and the laptop voice process) goes to one long-lived Claude Agent
+SDK session (`claude_agent_sdk.ClaudeSDKClient`, the `claude-agent-sdk` package) held in the server
+process and connected at start-up. It is the only other place besides `llm.py` and `runtime.py` that
+drives a model SDK. Modelled on adewaskar/jarvis `bridge/server.mjs` (MIT).
+- Same powers as full-power Claude Code turns: `claude_code.permission_settings`, `--agents`, mirrored
+  skills, `--add-dir`, ClipAgent's own Claude Code profile; our tools are an in-process SDK MCP server
+  `clipagent` (every agent's registry tools plus `display`, `start_task`, `task_list`). Model
+  `ASSISTANT_VOICE_MODEL` (default `sonnet`), effort `ASSISTANT_VOICE_EFFORT` (default `low`).
+- One conversation per local day (kv `assistant:cc:session:voice`, resumed across restarts; the usual
+  rollover writes a journal summary). Each turn adds a few context lines (`status.turn_context`: time,
+  running tasks, approvals, a check-in only if due within 5 minutes) and relevant vault notes.
+- Plan limit -> backoff; with an API key saved it reconnects on the key (same conversation, capped by
+  `ASSISTANT_DAILY_BUDGET_USD`) and retries the turn once.
+- Long work: `start_task` -> `assistant/tasks.py` runs a parallel worker session (`brain.run_worker`);
+  its steps stream to the page; when done, `tasks.announce` (exactly once, kv claim) makes the warm
+  session say the result, saved as a `task_done` voice message for the laptop's `Announcer`.
+- Spoken rules in code (`voice/speech.py`): no links/markdown, no plumbing words (channel, front,
+  full self, delegate; "your YouTube channel" is fine), a bare "Understood, sir." is held back and the
+  session nudged once to act, sentences never cut mid-word; fillers ("maybe, um") get no reply.
+- `settings_get` / `settings_set` (`assistant/live_settings.py`): voice, voice engine, speed, wake
+  word, heartbeat minutes, quiet hours, assistant budgets (capped at $10/day, $2/turn). Secrets and
+  everything else are refused. Changes apply live (config.env + cache reload + `settings` event; the
+  server and laptop voices rebuild).
+- Everything is published on `assistant/events.py` and streamed by `GET /voice/api/stream` (SSE).
+- Tests and practice mode: `brain.FakeClient` (scripted, real SDK message types); `brain.set_client_factory`.
+SMS and typed dashboard chat still use `runtime.run_turn`.
+
 ## How memory works
 
 * **Vault** (`assistant/vault.py`): the long-term memory, an Obsidian folder. Notes have YAML
@@ -240,14 +268,14 @@ is built yet. Model ids are settings, so newer models drop in without code chang
   `ASSISTANT_ENABLED`): skipped while stopped or while `usage.constrained()` (plan >= 80%). Plain code
   hashes the checklist + `heartbeat.facts()` (failed uploads, approval age buckets, plan, eval
   regressions, error events, pipeline pause, running tasks). Same hash and nothing timed due -> no model
-  call. Otherwise one call on voice_front's fast model (assistant budget, `assistant.heartbeat` usage)
-  with the checklist and `voice_front.status_snapshot()` wrapped as untrusted; it returns
+  call. Otherwise one call on `ASSISTANT_QUICK_MODEL` (`assistant/quick.py`; assistant budget, `assistant.heartbeat` usage)
+  with the checklist and `status.status_snapshot()` wrapped as untrusted; it returns
   `{"notify": [{"text", "urgency"}], "tasks": [{"task", "why"}], "nothing"}`.
 - **Notes** go through `tools.send_to_owner(kind="heartbeat")` (daily SMS cap), are not repeated
   within 12 h (exact or near-identical), and are spoken by the voice process and the Jarvis page
   (`task_done` voice message, origin `any`). Quiet hours: urgent notes are texted at once, the rest
   (and tasks) are held and re-asked on the first tick after quiet hours; timed items wait too.
-- **Tasks** run like `voice_front.delegate` (origin `any`): one at a time, at most
+- **Tasks** run like the brain's `start_task` (`assistant/tasks.py`, origin `any`): one at a time, at most
   `HEARTBEAT_MAX_TASKS_PER_DAY` (default 6); `usage.should_defer("heartbeat", ...)` queues them when
   the plan is tight. The brief says it came from the heartbeat; approvals apply as always.
 - **Visibility**: `heartbeat_status` tool, "Last heartbeat: 12 min ago — all quiet" in the voice

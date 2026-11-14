@@ -10,7 +10,7 @@ import pytest
 from assistant_fixtures import assistant_env, fake_model  # noqa: F401
 
 import db
-from assistant import heartbeat, selfedit, store, tools, usage, vault, voice_front
+from assistant import heartbeat, selfedit, status, store, tasks, tools, usage, vault
 from assistant import settings as asettings
 
 pytestmark = pytest.mark.usefixtures("assistant_env")
@@ -22,7 +22,7 @@ def hb(monkeypatch, clock, fake_model):  # noqa: F811
     asettings.reset_assistant_settings()
     store.init_store()
     yield fake_model
-    voice_front.set_task_runner(None)
+    tasks.set_task_runner(None)
 
 
 def reply(notify=(), tasks=()):
@@ -54,7 +54,7 @@ def test_unchanged_snapshot_spends_no_tokens(hb, clock):
     second = heartbeat.tick()
     assert second["status"] == "unchanged" and second["cost_usd"] == 0
     assert len(hb_requests(hb)) == 1 and store.assistant_spent_today() == spent
-    assert "Last heartbeat: just now" in voice_front.status_snapshot()
+    assert "Last heartbeat: just now" in status.status_snapshot()
     assert any(e.message == "heartbeat: unchanged" for e in db.list_events(module="heartbeat"))
     # a fact that matters changes -> the model is asked again
     db.add_decision("other", "Approve the new niche")
@@ -73,7 +73,7 @@ def test_due_item_notifies_once_and_dedups(hb, clock):
     assert r["status"] == "acted" and r["notified"] == 1 and r["due"] == 1
     assert "check the weather" in hb_requests(hb)[-1].messages[0]["content"]
     assert len(sms_sent()) == 1
-    spoken = voice_front.task_events(0)
+    spoken = tasks.task_events(0)
     assert spoken and spoken[-1]["origin"] == "any" and "Clear skies" in spoken[-1]["text"]
     assert heartbeat.tick(force=True)["notified"] == 0   # same point within 12 h
     assert heartbeat.tick(force=True)["notified"] == 0   # near-identical wording too
@@ -92,7 +92,7 @@ def test_task_delegated_one_at_a_time_and_capped(hb, monkeypatch):
         gate.wait(5)
         return "Evals fixed.", "ok"
 
-    voice_front.set_task_runner(runner)
+    tasks.set_task_runner(runner)
     task = {"task": "Investigate the eval regression and fix it", "why": "evals regressed"}
     hb.queue_for(heartbeat.AGENT, *[reply(tasks=[task])] * 4)
     assert heartbeat.tick(force=True)["tasks"] == 1
@@ -100,11 +100,11 @@ def test_task_delegated_one_at_a_time_and_capped(hb, monkeypatch):
     assert heartbeat.current_task()["id"] == tid
     assert heartbeat.tick(force=True)["tasks"] == 0      # one already running
     gate.set()
-    assert voice_front.wait(tid, 5)
+    assert tasks.wait(tid, 5)
     assert "came from your heartbeat" in briefs[0] and "request_approval" in briefs[0]
-    assert voice_front.get_task(tid)["origin"] == "any"
+    assert tasks.get_task(tid)["origin"] == "any"
     assert heartbeat.tick(force=True)["tasks"] == 1      # second of two
-    voice_front.wait(db.kv_get(heartbeat.KV_TASK), 5)
+    tasks.wait(db.kv_get(heartbeat.KV_TASK), 5)
     assert heartbeat.tick(force=True)["tasks"] == 0      # daily cap
     assert heartbeat.tasks_today() == 2
     assert any(e.message == "heartbeat task cap reached" for e in db.list_events(module="heartbeat"))
@@ -116,7 +116,7 @@ def test_usage_deferral(hb, monkeypatch):
     monkeypatch.setattr(usage, "constrained", lambda threshold=0.8: (False, None))
     queued = []
     monkeypatch.setattr(usage, "should_defer", lambda kind, prompt, **k: queued.append((kind, prompt)) or 7)
-    voice_front.set_task_runner(lambda b, c: ("x", "ok"))
+    tasks.set_task_runner(lambda b, c: ("x", "ok"))
     hb.queue_for(heartbeat.AGENT, reply(tasks=[{"task": "Deep research on niches", "why": "weekly"}]))
     r = heartbeat.tick()
     assert r["tasks"] == 0 and queued and queued[0][0] == "heartbeat"
@@ -135,7 +135,7 @@ def test_quiet_hours_only_urgent_then_morning_catch_up(hb, clock):
     clock.advance(minutes=30)
     assert heartbeat.tick()["status"] == "unchanged"     # nothing new: no call in the night
     clock.set(datetime(2026, 11, 14, 13, 30, tzinfo=UTC))  # 08:30: the held news is re-asked once
-    voice_front.set_task_runner(lambda b, c: ("Retried.", "ok"))
+    tasks.set_task_runner(lambda b, c: ("Retried.", "ok"))
     hb.queue_for(heartbeat.AGENT, reply([{"text": "Upload 4 failed overnight.", "urgency": "normal"}]))
     r = heartbeat.tick()
     assert r["notified"] == 1 and len(hb_requests(hb)) == 2

@@ -32,6 +32,7 @@ def assistant_env(tmp_path, monkeypatch):
     asettings.reset_assistant_settings()
     store._reset_migration_cache()
     runtime.reset()
+    _reset_live()
     saved = dict(tools.REGISTRY)
     saved_handlers = dict(tools.APPROVAL_HANDLERS)
     yield tmp_path / "vault"
@@ -41,7 +42,24 @@ def assistant_env(tmp_path, monkeypatch):
     tools.APPROVAL_HANDLERS.clear()
     tools.APPROVAL_HANDLERS.update(saved_handlers)
     runtime.reset()
+    _reset_live()
     asettings.reset_assistant_settings()
+
+
+def _reset_live() -> None:
+    """The warm brain, its event bus, background-task runner and the page's voice engine."""
+    from assistant import brain, events, quick, tasks
+
+    brain.reset()
+    events.reset()
+    quick.reset()
+    tasks.set_runner(None)
+    try:
+        from voice import web
+
+        web.set_engines()
+    except Exception:
+        pass
 
 
 @pytest.fixture
