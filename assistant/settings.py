@@ -43,6 +43,7 @@ class AssistantSettings:
     # --- backend: "api" (Anthropic API key, per-token billing) or "claude_code" (the owner's Claude
     # subscription through the Claude Code CLI in headless mode; see assistant/claude_code.py)
     backend: str = "api"
+    voice_front_model: str = "claude-haiku-5-5"   # the fast voice front (assistant/voice_front.py)
     cc_model: str = "opus"                   # Claude Code model alias for the main agent
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
@@ -99,6 +100,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         dry_run=base.dry_run,
         backend=s("ASSISTANT_BACKEND", "api").lower() if s("ASSISTANT_BACKEND", "api").lower() in BACKENDS
         else "api",
+        voice_front_model=s("VOICE_FRONT_MODEL", "claude-haiku-5-5"),
         cc_model=s("ASSISTANT_CC_MODEL", "opus"),
         cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
         cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),

@@ -59,6 +59,13 @@ def start_hotkeys(agent: Any, s: VoiceSettings) -> None:
         log.warning("hotkeys not registered: %s", exc)
 
 
+def _announcer() -> Any:
+    """Finished background tasks this process delegated, spoken when idle (assistant.voice_front)."""
+    from assistant import voice_front
+
+    return voice_front.Announcer("voice")
+
+
 def build_agent(s: VoiceSettings) -> Any:
     from voice import engines, models
     from voice.agent import VoiceAgent, assistant_brain, store_history
@@ -70,7 +77,7 @@ def build_agent(s: VoiceSettings) -> Any:
         log.warning("%s", p)
     return VoiceAgent(wake=eng["wake"], vad=eng["vad"], stt=eng["stt"], name_stt=eng["name_stt"], tts=eng["tts"],
                       player=eng["player"], brain=assistant_brain, history=store_history, control=Control(),
-                      settings=s)
+                      settings=s, announcer=_announcer())
 
 
 def run_loop(agent: Any, s: VoiceSettings, *, open_mic: Any = None, sleep: Any = time.sleep) -> None:

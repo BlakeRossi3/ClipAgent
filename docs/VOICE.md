@@ -13,11 +13,35 @@ wake word, voice, barge-in mode and a "Test my mic" meter.
   local Whisper model (`tiny.en`) run on each short burst of speech. Neither stores the audio.
 - After the wake word (or within 8 s of a reply: follow-up mode), what you say is turned into text
   by faster-whisper on this laptop (the GPU when it works, otherwise the CPU). Only that **text**
-  goes to the assistant (`run_turn(channel="voice")`, so Claude Code on your plan). Audio is never sent.
+  goes to Claude. Audio is never sent.
 - Replies are spoken by Kokoro (a free local voice, `bm_george`). Windows' own voices are the
   fallback. ElevenLabs is used only if you choose it and add a key; then the reply **text** goes to ElevenLabs.
-- Every exchange is saved in the chat history (channel "voice"). Long answers are summarised aloud
-  ("the details are on your dashboard") and saved in full there.
+- Every exchange is saved in the chat history (channel "voice"). Answers are spoken, never "see the dashboard".
+
+## Two layers: a fast voice, a slow worker (`assistant/voice_front.py`)
+Modelled on adewaskar/jarvis (MIT), which keeps a quick conversational loop apart from the Claude Code worker.
+- **Fast front.** Each utterance is one streaming Anthropic API call on `VOICE_FRONT_MODEL` (default
+  `claude-haiku-5-5`; `claude-sonnet-5-5` also works). It runs at low effort with at most 300 output tokens,
+  using the saved `ANTHROPIC_API_KEY`, which must have credit. Its costs count against
+  `ASSISTANT_DAILY_BUDGET_USD`. The context is kept small: the persona, a plain-code status snapshot (background
+  tasks, approvals, today's check-ins, money this week, Shorts, plan usage, recent events) and the last ten
+  voice exchanges. It may call only quick tools: memory_search, ledger_summary, usage_status, open_url,
+  desktop_mode_run, status_snapshot and `delegate_task`. Sentence one goes to the voice while the rest is still
+  being generated. "What's going on" is answered straight from the snapshot. A filler line ("One moment, sir.")
+  plays only if nothing has been said after `VOICE_FILLER_DELAY_SEC`.
+- **Slow worker.** Real work (code, files, research, the browser, self-edits) is handled in three steps:
+  1. The front says "Right away, sir." and calls `delegate_task`.
+  2. The full agent then runs in the background (`run_turn(channel="voice-task")`). Each task gets a fresh
+     Claude Code session and a short brief, plus the status context.
+  3. When it finishes, the front model turns the result into one to three sentences and speaks them. The
+     browser picks this up from `/voice/api/status`; the laptop voice process announces it when idle. The full
+     text goes to History.
+
+  While a task runs, the Jarvis status line reads "Working on: ...". If you ask "how's that going?", the
+  answer comes from the snapshot.
+- **No API key saved** (and not in fake mode): the front falls back to Claude Code with model `haiku`, no
+  tools, no resume and one turn. That costs a process start (a few seconds), but it is still far faster than
+  the full agent. Delegation still works.
 
 ## Local commands (no Claude involved)
 | Say | Does |

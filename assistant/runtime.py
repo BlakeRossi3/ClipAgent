@@ -268,6 +268,14 @@ class FakeBackend:
         return ModelReply(content, text, uses, "tool_use" if uses else "end_turn", usage, req.model,
                           f"fake-{len(self.requests)}")
 
+    def stream(self, req: ModelRequest, on_text: Callable[[str], None]) -> ModelReply:
+        """:meth:`create`, with the text handed to ``on_text`` a few words at a time (as the API streams)."""
+        reply = self.create(req)
+        words = reply.text.split(" ")
+        for i in range(0, len(words), 3):
+            on_text(" ".join(words[i:i + 3]) + (" " if i + 3 < len(words) else ""))
+        return reply
+
 
 class AnthropicBackend:
     """Messages API with client tools, adaptive thinking (model default), effort, prompt caching on
@@ -276,8 +284,9 @@ class AnthropicBackend:
     name = "anthropic"
     fake = False
 
-    def __init__(self, client: Any = None):
+    def __init__(self, client: Any = None, *, timeout: float | None = None, max_retries: int | None = None):
         self._client = client
+        self._timeout, self._max_retries = timeout, max_retries
 
     def client(self) -> Any:
         if self._client is None:
@@ -287,13 +296,22 @@ class AnthropicBackend:
             cs = config.get_settings()
             if not cs.anthropic_api_key:
                 raise RuntimeError("ANTHROPIC_API_KEY is not set (or set FAKE_ASSISTANT=true)")
-            self._client = anthropic.Anthropic(api_key=cs.anthropic_api_key, base_url=cs.anthropic_base_url,
-                                               max_retries=cs.llm_max_retries, timeout=cs.llm_timeout_sec)
+            self._client = anthropic.Anthropic(
+                api_key=cs.anthropic_api_key, base_url=cs.anthropic_base_url,
+                max_retries=cs.llm_max_retries if self._max_retries is None else self._max_retries,
+                timeout=cs.llm_timeout_sec if self._timeout is None else self._timeout)
         return self._client
 
-    def create(self, req: ModelRequest) -> ModelReply:
-        import config
+    def stream(self, req: ModelRequest, on_text: Callable[[str], None]) -> ModelReply:
+        """Streaming Messages call (the voice front): text deltas go to ``on_text`` as they arrive."""
+        with self.client().messages.stream(**self._kwargs(req)) as st:
+            for delta in st.text_stream:
+                if delta:
+                    on_text(delta)
+            resp = st.get_final_message()
+        return self._reply(resp)
 
+    def _kwargs(self, req: ModelRequest) -> dict[str, Any]:
         system = [{"type": "text", "text": b} for b in req.system if b]
         if system:
             system[-1]["cache_control"] = {"type": "ephemeral"}
@@ -304,11 +322,21 @@ class AnthropicBackend:
         all_tools = list(req.tools) + list(req.server_tools)
         if all_tools:
             kwargs["tools"] = all_tools
+        return kwargs
+
+    def create(self, req: ModelRequest) -> ModelReply:
+        import config
+
+        kwargs = self._kwargs(req)
         c = self.client()
         if config.get_settings().llm_server_fallbacks and req.model in _FALLBACK_MODELS:
             resp = c.beta.messages.create(betas=[SERVER_FALLBACK_BETA], fallbacks="default", **kwargs)
         else:
             resp = c.messages.create(**kwargs)
+        return self._reply(resp)
+
+    @staticmethod
+    def _reply(resp: Any) -> ModelReply:
         texts, uses = [], []
         for b in resp.content:
             if b.type == "text":

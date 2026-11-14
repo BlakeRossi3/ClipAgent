@@ -272,7 +272,7 @@ def test_commands_and_speech_helpers():
     spoken, long = speech.prepare_reply("Short answer, sir.", polish=lambda t: t)
     assert spoken == "Short answer, sir." and not long
     spoken, long = speech.prepare_reply("One. Two. Three. Four. Five. Six.", polish=lambda t: t)
-    assert long and spoken.startswith("One. Two.") and "dashboard" in spoken
+    assert long and spoken == "One. Two. Three." and "dashboard" not in spoken
 
 
 def test_choose_device_prefers_setting_then_default_and_skips_loopback():
@@ -506,3 +506,62 @@ def test_mic_falls_back_to_another_windows_audio_api(monkeypatch):
     mic = audio.MicSource(mme).open()
     assert opened == [7]
     assert mic.device.hostapi == "Windows WASAPI"
+
+
+class _StreamExecutor(ManualExecutor):
+    def submit(self, fn, text, *rest):
+        fut: Future = Future()
+        self.calls.append((text, fut, rest))
+        return fut
+
+
+def test_streamed_sentences_are_spoken_before_the_answer_finishes_and_skip_the_filler():
+    a, clock, _, tts, ctl, _ = make("what is on today")
+    ex = _StreamExecutor()
+    a.executor = ex
+    brain = lambda text, on_sentence=None: "unused"  # noqa: E731
+    brain.streams = True
+    a.brain = brain
+    run(a, clock, WAKE)
+    say_utterance(a, clock)
+    text, fut, (put,) = ex.calls[0]
+    put("Quiet morning, sir.")
+    run(a, clock, QUIET)
+    assert a.state == va.SPEAKING and tts.said == ["Quiet morning, sir."]   # first sentence, no filler
+    run(a, clock, QUIET, 20)
+    assert a.state == va.SPEAKING                    # the answer is still being generated
+    put("One approval is waiting.")
+    fut.set_result("Quiet morning, sir. One approval is waiting.")
+    run(a, clock, QUIET, 10)
+    assert tts.said == ["Quiet morning, sir.", "One approval is waiting."]
+    assert a.state == va.FOLLOWUP
+
+
+def test_announcer_speaks_finished_tasks_when_idle():
+    a, clock, ex, tts, ctl, _ = make()
+    pending = [["Sir, the report is done."]]
+    a.announcer = lambda: pending.pop() if pending else []
+    run(a, clock, QUIET, 40)
+    assert tts.said == ["Sir, the report is done."]
+
+
+def test_browser_streams_parts_and_task_events(talk):
+    import time as _time
+
+    from assistant import voice_front
+
+    c, stt, web = talk
+    j = _talk(c, _csrf_of(c), _wav()).json()
+    for _ in range(200):
+        job = c.get(f"/dashboard/chat/job/{j['job']}").json()
+        if job["done"]:
+            break
+        _time.sleep(0.02)
+    assert job["parts"] and job["parts"][0]["audio"].startswith("/voice/api/audio/")
+    first = c.get("/voice/api/status").json()
+    assert first["events"] == [] and "tasks" in first
+    store.add_message("out", "voice", "Sir, the logs are clean.", kind="task_done",
+                      meta={"origin": "browser", "task_id": "t1"})
+    ev = c.get(f"/voice/api/status?after={first['event_id']}").json()["events"]
+    assert ev[0]["text"] == "Sir, the logs are clean." and ev[0]["audio"].startswith("/voice/api/audio/")
+    assert voice_front.latest_event_id() == ev[0]["id"]

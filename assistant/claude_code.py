@@ -862,7 +862,7 @@ def read_calls(path: Path) -> list[Any]:
 def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | None = None,
                effort: str | None = None, web_search: bool = False, max_turns: int | None = None,
                count_turn: bool = True, alert_channel: str = "system", timeout: float | None = None,
-               full: bool = False, channel: str = "system") -> CCResult:
+               full: bool = False, channel: str = "system", model: str | None = None) -> CCResult:
     """One headless Claude Code run (tools via MCP when ``mcp`` is given; Claude Code's own tools,
     his folders and the channel's resumed session too when ``full``). Raises
     ``AssistantBudgetExceeded`` (paused | limit | turns) or :class:`ClaudeCodeError`."""
@@ -884,7 +884,7 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                                                       mcp_tools=list(mcp.allowed) if mcp else None)
     env = base_env(extra={"MCP_TIMEOUT": "30000", "MCP_TOOL_TIMEOUT": str(int(timeout * 1000))})
     try:
-        models = model_candidates(role)
+        models = [model] if model else model_candidates(role)
         i = 0
         while i < len(models):
             alias = models[i]
@@ -925,7 +925,8 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                 res.billed_to_api = on_api
                 if calls_path is not None:
                     res.tool_calls = read_calls(calls_path)
-                _remember_model(role, alias, res.model)
+                if not model:
+                    _remember_model(role, alias, res.model)
                 db.kv_delete(KV_LAST_ERROR)
                 if full:
                     _record_session(channel, res, resumed=resume is not None)

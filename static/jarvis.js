@@ -2,8 +2,11 @@
    - An animated core drawn on a canvas (original art) whose state follows this tab's microphone and
      the laptop's background voice loop (/voice/api/status).
    - In-browser voice: hold the ring (or Space) to talk, or "Always listen in this tab" (energy VAD).
-     The clip goes to POST /voice/api/talk; the answer is polled at /dashboard/chat/job/{id} and its
-     audio (synthesised on the server) is played through Web Audio so the core can pulse with it.
+     The clip goes to POST /voice/api/talk; the answer is polled at /dashboard/chat/job/{id}. The
+     server streams it as sentences (job.parts, each with its own audio), which are queued and played
+     in order through Web Audio while the rest is still being generated, so the core pulses with it.
+     Background tasks: /voice/api/status lists them ("Working on: ...") and carries the spoken
+     summary of each finished one (events), which is captioned, added to History and played.
    - History drawer + mute. Look and feel adapted from adewaskar/jarvis src/ui/Hud.tsx and index.css
      (MIT License, Copyright (c) 2026 Aditya Dewaskar).
    No framework, no external requests. Every user/model string is inserted with textContent. */
@@ -44,6 +47,7 @@
     else if (v === 'thinking') text = 'Thinking…';
     else if (v === 'speaking') text = 'Speaking';
     else if (v === 'muted') text = 'Muted — tap Unmute to talk';
+    else if (bg.tasks && bg.tasks.length) text = 'Working on: ' + bg.tasks[0].task;
     else if (always && stream) text = 'Listening for you in this tab, ' + H;
     else text = 'Standing by, ' + H;
     if (statusEl.textContent !== text) statusEl.textContent = text;
@@ -181,22 +185,35 @@
         youEl.textContent = j.heard;
         addHistory('me', j.heard, 'voice · this tab');
         if (j.command) { command(j.command); return; }
-        poll(j.job, my, 400);
+        streamDone = false;
+        poll(j.job, my, 1200);
       }).catch(function () { if (my === turn) fail('The connection dropped. Try again.'); });
   }
-  function poll(job, my, tries) {
+  function poll(job, my, tries, seen) {
+    seen = seen || 0;
     setTimeout(function () {
       if (my !== turn) return;
       fetch('/dashboard/chat/job/' + job, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
         .then(getJSON).then(function (j) {
           if (my !== turn) return;
-          if (!j.done) { if (tries > 0) poll(job, my, tries - 1); else fail('Still working; the answer will land in History.'); return; }
+          var parts = j.parts || [];
+          for (; seen < parts.length; seen++) {           // streamed sentences: speak each one as it lands
+            if (seen === 0) caption(parts[0].text || '');
+            if (parts[seen].audio) enqueue(parts[seen].audio, my);
+          }
+          if (!j.done) {
+            if (tries > 0) poll(job, my, tries - 1, seen);
+            else { streamDone = true; fail('Still working; the answer will land in History.'); }
+            return;
+          }
+          streamDone = true;
           if (!j.ok) { fail(j.msg || 'That did not go through.'); return; }
           caption(j.reply || '');
           addHistory('them', j.reply || '', 'voice · just now');
-          if (j.audio) play(j.audio, my); else { local = null; render(); }
-        }).catch(function () { if (tries > 0) poll(job, my, tries - 1); });
-    }, 900);
+          if (!seen && j.audio) enqueue(j.audio, my);
+          else if (!playing && !playQ.length && local !== 'speaking') { local = null; render(); }
+        }).catch(function () { if (tries > 0) poll(job, my, tries - 1, seen); });
+    }, 250);
   }
   function command(cmd) {
     if (cmd === 'mute') { setMuted(true); caption('Microphone off, ' + H + '.'); }
@@ -204,24 +221,36 @@
   }
 
   /* ---- playback -------------------------------------------------------------------------- */
-  var src = null;
-  function play(url, my) {
+  var src = null, playQ = [], playing = false, streamDone = true;
+  function enqueue(url, my) {         // fetch + decode now, play in order (sentence 2 decodes while 1 plays)
     var c = audioCtx();
-    if (!c) { local = null; render(); return; }
-    fetch(url, { credentials: 'same-origin' }).then(function (r) { if (!r.ok) throw new Error('audio'); return r.arrayBuffer(); })
-      .then(function (ab) { return new Promise(function (res, rej) { c.decodeAudioData(ab, res, rej); }); })
-      .then(function (buffer) {
-        if (my !== turn) return;
-        stopPlayback();
-        var s = c.createBufferSource();
-        s.buffer = buffer; s.connect(outAnalyser);
-        s.onended = function () { if (src === s) { src = null; if (local === 'speaking') { local = null; render(); } } };
-        src = s; s.start();
-        local = 'speaking'; render();
-      }).catch(function () { if (my === turn) { local = null; render(); } });
+    if (!c || !url) return;
+    var p = fetch(url, { credentials: 'same-origin' }).then(function (r) { if (!r.ok) throw new Error('audio'); return r.arrayBuffer(); })
+      .then(function (ab) { return new Promise(function (res, rej) { c.decodeAudioData(ab, res, rej); }); });
+    playQ.push({ p: p, my: my });
+    if (!playing) playNext();
+  }
+  function playNext() {
+    var item = playQ.shift();
+    if (!item) {
+      playing = false;
+      if (local === 'speaking') { local = streamDone ? null : 'thinking'; render(); }
+      return;
+    }
+    playing = true;
+    item.p.then(function (buffer) {
+      if (item.my !== null && item.my !== turn) { playNext(); return; }
+      var c = audioCtx();
+      var s = c.createBufferSource();
+      s.buffer = buffer; s.connect(outAnalyser);
+      s.onended = function () { if (src === s) { src = null; playNext(); } };
+      src = s; s.start();
+      local = 'speaking'; render();
+    }).catch(function () { playNext(); });
   }
   function stopPlayback() {
-    if (!src) return;
+    playQ = []; playing = false;
+    if (!src) { if (local === 'speaking') local = null; return; }
     var s = src; src = null;
     try { s.stop(); } catch (e) { /* already stopped */ }
     if (local === 'speaking') local = null;
@@ -351,13 +380,20 @@
   if (location.hash === '#history' || location.hash === '#talk') setDrawer(true);
 
   /* ---- the laptop's voice loop --------------------------------------------------------------- */
-  var lastHeard = null, lastSaid = null;
+  var lastHeard = null, lastSaid = null, lastEvent = null;
   function pollStatus() {
     if (document.hidden) return;
-    fetch('/voice/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+    var url = '/voice/api/status' + (lastEvent !== null ? '?after=' + lastEvent : '');
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
         if (!j) return;
         bg = j;
+        (j.events || []).forEach(function (e) {    // a background task finished: say what it found
+          caption(e.text || '');
+          addHistory('them', e.text || '', 'voice · task done');
+          if (e.audio && !rec) enqueue(e.audio, null);
+        });
+        if (typeof j.event_id === 'number') lastEvent = j.event_id;
         if (lastHeard !== null && !local) {        // captions for what the laptop loop heard and said
           if (j.heard && j.heard !== lastHeard) youEl.textContent = j.heard;
           if (j.said && j.said !== lastSaid) caption(j.said);

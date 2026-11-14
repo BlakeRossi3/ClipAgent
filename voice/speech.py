@@ -13,7 +13,7 @@ import random
 import re
 from typing import Callable
 
-# Said as soon as a request goes to the brain (Claude Code takes several seconds).
+# Said only when the fast voice front has not started answering within VOICE_FILLER_DELAY_SEC.
 WORKING = ("One moment, {h}.", "Working on it, {h}.", "Very good, {h}.", "Checking now.", "Right away, {h}.",
            "Looking into it.", "Under way.", "Certainly, {h}. One moment.")
 # Still waiting after STILL_AFTER_SEC more: one more line, then quiet until the answer.
@@ -23,8 +23,8 @@ ATTENTION = ("Yes, {h}?", "{H}?", "At your service, {h}.", "Standing by.", "List
 ACKNOWLEDGE = ("Very good, {h}.", "As you wish, {h}.", "Understood.", "Certainly, {h}.")
 
 STILL_AFTER_SEC = 14.0
-LONG_REPLY_CHARS = 420      # longer than this (or > 4 sentences): speak a summary, point at the dashboard
-SUMMARY_SENTENCES = 2
+LONG_REPLY_CHARS = 420      # longer than this (or > 4 sentences): speak only the first sentences
+SUMMARY_SENTENCES = 3
 MAX_UNSPOKEN = 220
 
 
@@ -90,11 +90,11 @@ def _cut_long(s: str) -> list[str]:
 
 def prepare_reply(text: str, *, honorific: str = "sir",
                   polish: Callable[[str], str] | None = None) -> tuple[str, bool]:
-    """Turn the assistant's answer into what is said aloud -> (spoken text, was_summarised).
+    """Turn the assistant's answer into what is said aloud -> (spoken text, was_shortened).
 
     ``polish`` defaults to ``persona.polish(..., "voice")`` (no markdown, no URLs read aloud,
-    600 characters at most). A long answer becomes its first two sentences plus a pointer to the
-    dashboard, where the full text is saved.
+    600 characters at most). A long answer is cut to its first three sentences: the voice speaks the
+    answer, it never points him at the dashboard (the full text is in the history anyway).
     """
     if polish is None:
         from assistant import persona
@@ -106,6 +106,5 @@ def prepare_reply(text: str, *, honorific: str = "sir",
     sentences = split_sentences(spoken)
     long = len(raw) > LONG_REPLY_CHARS or len(sentences) > 4
     if long:
-        head = " ".join(sentences[:SUMMARY_SENTENCES]) or spoken[:240]
-        spoken = f"{head} The details are on your dashboard, {honorific}."
+        spoken = " ".join(sentences[:SUMMARY_SENTENCES]) or spoken[:240]
     return spoken.strip(), long

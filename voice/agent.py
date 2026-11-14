@@ -12,7 +12,8 @@
 
 Single-threaded and clock-driven so it can be tested frame by frame: the app (or a test) calls
 :meth:`VoiceAgent.feed` with each 80 ms frame and :meth:`VoiceAgent.tick` when no audio arrives.
-Only the brain (Claude Code, several seconds) runs on a worker thread; the tray and hotkey post
+Only the brain (the fast voice front, ``assistant/voice_front.py``; it streams sentences, which are
+spoken while the rest is still being generated) runs on a worker thread; the tray and hotkey post
 requests with :meth:`VoiceAgent.post`, which the loop picks up on its own thread.
 
 Interaction details adapted from adewaskar/jarvis ``src/lib/voice.ts`` (MIT License, Copyright
@@ -47,6 +48,7 @@ HOLD_SEC = 1.6                 # wait this much longer for the rest of an unfini
 BARGE_FRAMES = 3               # 240 ms of loud speech while talking = he is interrupting
 NAME_MAX_SEC = 10.0            # longest burst the name spotter transcribes
 HEARTBEAT_SEC = 5.0
+ANNOUNCE_POLL_SEC = 2.0        # how often finished background tasks are checked for (spoken when idle)
 MUTE_POLL_SEC = 0.5
 
 Brain = Callable[[str], str]
@@ -99,6 +101,8 @@ class Turn:
     started: float
     fillers: int = 0
     cancelled: bool = False
+    parts: "queue.SimpleQueue[str]" = field(default_factory=queue.SimpleQueue)
+    streamed: int = 0
 
 
 @dataclass
@@ -123,11 +127,13 @@ class VoiceAgent:
     def __init__(self, *, wake: Any, vad: Any, stt: Any, tts: Any, player: Any, brain: Brain, control: Control,
                  settings: VoiceSettings, name_stt: Any = None, history: History | None = None,
                  clock: Callable[[], float] = time.monotonic, executor: Executor | None = None,
-                 rng: random.Random | None = None):
+                 rng: random.Random | None = None, announcer: Callable[[], list[str]] | None = None):
         self.wake, self.vad, self.stt, self.tts, self.player = wake, vad, stt, tts, player
         self.name_stt = name_stt if settings.wake_mode in ("both", "name") or name_stt is not None else None
         self.brain, self.control, self.s = brain, control, settings
         self.history = history or (lambda heard, reply: None)
+        self.announcer = announcer
+        self._announce_at = -1e9
         self.clock = clock
         self.executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-brain")
         rng = rng or random.Random()
@@ -194,11 +200,12 @@ class VoiceAgent:
         if self.state == MUTED:
             self._heartbeat(now)
             return
-        if self.turn is not None and self.state == THINKING:
+        if self.turn is not None and self.state in (THINKING, SPEAKING):
             self._thinking_tick(now)
         self._speak_tick(now)
-        if self.state == SPEAKING and not self.speaking:
+        if self.state == SPEAKING and not self.speaking and self.turn is None:
             self._finished_speaking()
+        self._announce_tick(now)
         if self.state in (LISTENING, FOLLOWUP) and not self.rec.started and now > self._deadline \
                 and not self._chime_playing():
             if self._held:
@@ -350,8 +357,27 @@ class VoiceAgent:
         if self._barge_run >= BARGE_FRAMES:
             self._barge()
 
+    def _announce_tick(self, now: float) -> None:
+        """Speak finished background tasks' summaries when nothing else is going on."""
+        if self.announcer is None or now - self._announce_at < ANNOUNCE_POLL_SEC:
+            return
+        if self.turn is not None or self.speaking or self.state not in (IDLE, FOLLOWUP) or self.rec.started:
+            return
+        self._announce_at = now
+        try:
+            texts = [t for t in self.announcer() if t and t.strip()]
+        except Exception as exc:  # a locked DB must never stop the loop
+            log.debug("announcements not read: %s", exc)
+            return
+        if texts:
+            self.diag.last_said = " ".join(texts)
+            self._say(" ".join(texts), "reply", after=FOLLOWUP)
+
     def _barge(self) -> None:
         log.info("barge-in")
+        if self.turn is not None:   # talking over a streamed answer drops the rest of it
+            self.turn.cancelled = True
+            self.turn = None
         self.diag.barge_ins += 1
         self._barge_run = 0
         self._stop_speech()
@@ -406,7 +432,12 @@ class VoiceAgent:
     def _submit(self, text: str) -> None:
         log.info("request: %r", text[:120])
         self._conversing = True
-        self.turn = Turn(text, self.executor.submit(self.brain, text), self.clock())
+        parts: queue.SimpleQueue[str] = queue.SimpleQueue()
+        if getattr(self.brain, "streams", False):  # sentences arrive while the rest is generated
+            fut = self.executor.submit(self.brain, text, parts.put)
+        else:
+            fut = self.executor.submit(self.brain, text)
+        self.turn = Turn(text, fut, self.clock(), parts=parts)
         self.side.reset()
         self._set(THINKING)
 
@@ -449,21 +480,43 @@ class VoiceAgent:
     def _thinking_tick(self, now: float) -> None:
         turn = self.turn
         assert turn is not None
-        if turn.future.done():
+        while True:   # streamed sentences: speak each as soon as it is ready
+            try:
+                part = turn.parts.get_nowait()
+            except queue.Empty:
+                break
+            if turn.cancelled or not part.strip():
+                continue
+            turn.streamed += 1
+            self._queue.append(_Say(part, "reply"))
+            self.diag.last_said = (self.diag.last_said + " " + part).strip() if turn.streamed > 1 else part
+            if self.state == THINKING:
+                self._after = FOLLOWUP
+                self.barge_gate = audio.EnergyGate()
+                self.barge_gate.guard = True
+                self._set(SPEAKING)
+        if turn.future.done() and turn.parts.empty():
             self.turn = None
             try:
                 reply = turn.future.result()
             except Exception as exc:
                 log.exception("brain failed")
-                reply = f"Something went wrong on my side, {self.h}. The details are on your dashboard."
+                reply = f"Something went wrong on my side, {self.h}. I've logged it."
                 self._publish(error=str(exc)[:200])
             if turn.cancelled:
+                return
+            if turn.streamed:
+                self._after = FOLLOWUP
+                if self.state != SPEAKING:
+                    self._set(SPEAKING)
                 return
             if reply:
                 self.diag.last_said = reply
                 self._say(reply, "reply", after=FOLLOWUP)
             else:
                 self._back_to_waiting()
+            return
+        if turn.streamed or self.state != THINKING:
             return
         waited = now - turn.started
         if turn.fillers == 0 and waited >= self.s.filler_delay_sec:
@@ -532,17 +585,22 @@ class VoiceAgent:
 # the real brain and history (ClipAgent's assistant)
 # ---------------------------------------------------------------------------
 
-def assistant_brain(text: str) -> str:
-    """Hand the transcript to the assistant (``run_turn(channel="voice")``, which records both
-    messages) and return what to say. A long answer is also saved in full for the dashboard."""
-    return brain_reply(text)["spoken"]
+def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None) -> str:
+    """Hand the transcript to the fast voice front (which records both messages) and return what to
+    say. ``on_sentence`` receives each sentence as soon as it is ready (streamed speech)."""
+    return brain_reply(text, on_sentence, origin="voice")["spoken"]
 
 
-def brain_reply(text: str) -> dict[str, Any]:
-    """:func:`assistant_brain` with the details: ``{"reply", "spoken", "status", "cost_usd"}``
-    (``reply`` = the full text for captions; ``spoken`` = what is said aloud). Also used by the
-    in-browser voice (voice/web.py)."""
-    from assistant import persona, runtime, store
+assistant_brain.streams = True  # type: ignore[attr-defined]
+
+
+def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
+                origin: str = "voice") -> dict[str, Any]:
+    """:func:`assistant_brain` with the details: ``{"reply", "spoken", "status", "cost_usd", "task",
+    "first_sentence_ms"}``. Used by the background voice process (origin "voice") and the in-browser
+    voice (voice/web.py, origin "browser"). Real work is delegated to the full agent in the
+    background (``task`` = its id); its spoken summary arrives later as a ``task_done`` message."""
+    from assistant import store, voice_front
     from assistant.settings import get_assistant_settings
 
     a = get_assistant_settings()
@@ -550,13 +608,11 @@ def brain_reply(text: str) -> dict[str, Any]:
         reply = f"I'm switched off at the moment, {a.owner_honorific}. You can turn me on in Settings."
         in_id = store.add_message("in", "voice", text)
         store.add_message("out", "voice", reply, kind="reply", reply_to=in_id)
-        return {"reply": reply, "spoken": reply, "status": "off", "cost_usd": 0.0}
-    res = runtime.run_turn(text, channel="voice")
-    spoken, long = speech.prepare_reply(res.raw_text or res.text, honorific=a.owner_honorific)
-    if long and res.status == "ok":
-        store.add_message("out", "dashboard", persona.polish(res.raw_text or res.text, "dashboard"),
-                          kind="voice_detail", agent="main", reply_to=res.message_in_id)
-    return {"reply": res.text, "spoken": spoken or res.text, "status": res.status, "cost_usd": res.cost_usd}
+        return {"reply": reply, "spoken": reply, "status": "off", "cost_usd": 0.0, "task": None,
+                "first_sentence_ms": None}
+    res = voice_front.respond(text, on_sentence=on_sentence, origin=origin)
+    return {"reply": res.text, "spoken": res.text, "status": res.status, "cost_usd": res.cost_usd,
+            "task": res.task_id, "first_sentence_ms": res.first_sentence_ms}
 
 
 def store_history(heard: str, reply: str) -> None:

@@ -32,6 +32,9 @@ CHANNEL_RULES = {
               "to the owner. Be factual and brief.",
 }
 CHANNEL_RULES["call"] = CHANNEL_RULES["voice"]
+CHANNEL_RULES["voice-task"] = ("Channel: a background task he asked for out loud. Do the work, then finish with a short "
+                               "plain-text answer: what you found or did, the key facts first. It is summarised and "
+                               "spoken to him, and the full text is kept in his history.")
 
 _EMOJI = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002B00-\U00002BFF"

@@ -3,10 +3,14 @@ and the in-browser voice (``POST /voice/api/talk``: the home page's push-to-talk
 
 In-browser voice: the page records with getUserMedia and posts the clip here. The server decodes it
 (ffmpeg; a plain WAV is read directly), transcribes it with the voice loop's faster-whisper engine,
-answers the request at once with what it heard, and runs the assistant turn in the background
-(``home.start_background``, polled at ``/dashboard/chat/job/{id}``). The finished job carries the
-reply text and a URL for the reply audio, synthesised here with the voice loop's engine chain
-(Kokoro -> SAPI -> none) and served from memory by ``GET /voice/api/audio/{id}``.
+answers the request at once with what it heard, and runs the fast voice front
+(``assistant/voice_front.py``) in the background (``home.start_background``, polled at
+``/dashboard/chat/job/{id}``). The front streams its answer: each finished sentence is synthesised at
+once (Kokoro -> SAPI -> none) and published in the job's ``parts`` (``{"text", "audio"}``), so the
+page starts speaking sentence one while the rest is generated. Audio is served from memory by
+``GET /voice/api/audio/{id}``. Real work is delegated to the full agent in the background; its
+spoken summary arrives through ``GET /voice/api/status?after=<id>`` (``events``, with audio), and
+``tasks`` lists what is still running ("Working on: ...").
 
 Plus :func:`start_child` / :func:`stop_child`, used by ``main.py schedule`` to run ``python -m voice``
 alongside the web server when VOICE_ENABLED=true.
@@ -49,7 +53,42 @@ def api_status(request: Request) -> Response:
     resp, _ = d._guard(request, api=True)
     if resp is not None:
         return resp
-    return d._json({**control.status(), "enabled": get_voice_settings().enabled})
+    out = {**control.status(), "enabled": get_voice_settings().enabled}
+    try:
+        out.update(task_status(request.query_params.get("after")))
+    except Exception as exc:  # the status pill must still work
+        log.warning("voice task status failed: %s", exc)
+    return d._json(out)
+
+
+_event_audio: OrderedDict[int, str | None] = OrderedDict()
+
+
+def task_status(after: str | None) -> dict[str, Any]:
+    """Running background tasks + finished-task summaries newer than ``after`` (with audio for the
+    ones the browser delegated). No ``after``: just the newest event id, so old ones are not replayed."""
+    from assistant import voice_front
+
+    tasks = [{"id": t["id"], "task": t["task"], "started": t["started"]} for t in voice_front.running_tasks()]
+    if not after or not str(after).isdigit():
+        return {"tasks": tasks, "event_id": voice_front.latest_event_id(), "events": []}
+    events = voice_front.task_events(int(after))
+    for e in events:
+        if e["origin"] == "browser":
+            e["audio"] = _event_audio_url(e["id"], e["text"])
+    return {"tasks": tasks, "event_id": events[-1]["id"] if events else int(after), "events": events}
+
+
+def _event_audio_url(event_id: int, text: str) -> str | None:
+    with _audio_lock:
+        if event_id in _event_audio:
+            return _event_audio[event_id]
+    url = _speak_to_url(text)
+    with _audio_lock:
+        _event_audio[event_id] = url
+        while len(_event_audio) > AUDIO_KEEP:
+            _event_audio.popitem(last=False)
+    return url
 
 
 @router.post("/api/mute", include_in_schema=False)
@@ -120,6 +159,7 @@ class AudioDecodeError(Exception):
 _audio_store: OrderedDict[str, bytes] = OrderedDict()
 _audio_lock = threading.Lock()
 _engine_lock = threading.Lock()
+_tts_lock = threading.Lock()
 _stt_lock = threading.Lock()
 _UNSET: Any = object()
 _engines: dict[str, Any] = {"stt": _UNSET, "tts": _UNSET, "decoder": None}
@@ -217,21 +257,37 @@ def _keep_audio(data: bytes) -> str:
     return aid
 
 
-def voice_turn(text: str) -> dict[str, Any]:
-    """The background half: the assistant's answer (recorded on channel "voice") + its audio."""
+def _speak_to_url(text: str) -> str | None:
+    tts = _tts()
+    if tts is None or not text.strip():
+        return None
+    try:
+        with _tts_lock:
+            samples, rate = tts.synthesize(text)
+        return f"/voice/api/audio/{_keep_audio(encode_wav(samples, rate))}"
+    except Exception as exc:  # the text still shows; nothing is spoken
+        log.warning("browser voice: speech synthesis failed: %s", exc)
+        return None
+
+
+def voice_turn(text: str, update: Callable[..., None] | None = None) -> dict[str, Any]:
+    """The background half: the fast front's answer (recorded on channel "voice"), spoken sentence by
+    sentence: each one is synthesised as soon as it is complete and published through ``update``."""
     from voice.agent import brain_reply
 
-    out = brain_reply(text)
-    url, voice_name = None, None
+    parts: list[dict[str, Any]] = []
+
+    def on_sentence(sentence: str) -> None:
+        parts.append({"text": sentence, "audio": _speak_to_url(sentence)})
+        if update is not None:
+            update(parts=list(parts))
+
+    out = brain_reply(text, on_sentence, origin="browser")
+    if not parts and out.get("spoken"):
+        parts.append({"text": out["spoken"], "audio": _speak_to_url(out["spoken"])})
     tts = _tts()
-    if tts is not None and out.get("spoken"):
-        try:
-            samples, rate = tts.synthesize(out["spoken"])
-            url = f"/voice/api/audio/{_keep_audio(encode_wav(samples, rate))}"
-            voice_name = getattr(tts, "name", None)
-        except Exception as exc:  # the text still shows; nothing is spoken
-            log.warning("browser voice: speech synthesis failed: %s", exc)
-    return {**out, "audio": url, "voice": voice_name}
+    first = next((p["audio"] for p in parts if p.get("audio")), None)
+    return {**out, "parts": parts, "audio": first, "voice": getattr(tts, "name", None) if first else None}
 
 
 def _talk_err(error: str, msg: str, status: int) -> Response:
@@ -299,7 +355,7 @@ async def api_talk(request: Request) -> Response:
     cmd = commands.parse(text, get_voice_settings().assistant_name)
     if cmd in (commands.MUTE, commands.STOP, commands.CANCEL):  # handled in the page, no Claude
         return d._json({"ok": True, "heard": text, "command": cmd, "name": a["name"]})
-    jid = home.start_background(lambda: voice_turn(text), what="voice turn")
+    jid = home.start_background(lambda update: voice_turn(text, update), what="voice turn", progress=True)
     return d._json({"ok": True, "heard": text, "job": jid, "name": a["name"], "fake": a["fake"]})
 
 

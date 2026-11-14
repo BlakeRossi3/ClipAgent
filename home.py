@@ -1044,9 +1044,10 @@ _chat_lock = threading.Lock()
 CHAT_JOB_KEEP = 50
 
 
-def start_background(fn: Callable[[], dict[str, Any]], *, what: str = "chat turn") -> str:
+def start_background(fn: Callable[..., dict[str, Any]], *, what: str = "chat turn", progress: bool = False) -> str:
     """Run ``fn`` in a thread; its dict (plus ``done``/``ok``) is served by ``GET /chat/job/{id}``.
-    Shared by the typed chat and the in-browser voice (voice/web.py)."""
+    Shared by the typed chat and the in-browser voice (voice/web.py). ``progress=True``: ``fn(update)``
+    may call ``update(**fields)`` to publish partial results (e.g. streamed sentences) while running."""
     import uuid
 
     jid = uuid.uuid4().hex
@@ -1055,9 +1056,15 @@ def start_background(fn: Callable[[], dict[str, Any]], *, what: str = "chat turn
         for old in list(_chat_jobs)[:-CHAT_JOB_KEEP]:
             _chat_jobs.pop(old, None)
 
+    def update(**fields: Any) -> None:
+        with _chat_lock:
+            job = _chat_jobs.get(jid)
+            if job is not None and not job.get("done"):
+                job.update(fields)
+
     def work() -> None:
         try:
-            out = {"done": True, "ok": True, **fn()}
+            out = {"done": True, "ok": True, **(fn(update) if progress else fn())}
         except Exception as exc:
             db.log_event("dashboard", f"{what} failed", level="error", data={"error": repr(exc)[:300]})
             out = {"done": True, "ok": False, "msg": "That did not go through. Try again in a moment."}
