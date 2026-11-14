@@ -50,7 +50,7 @@ class VoiceSettings:
     followup_sec: float = 8.0
     filler_delay_sec: float = 0.7
     listen_timeout_sec: float = 6.0
-    end_silence_sec: float = 0.7
+    end_silence_sec: float = 1.2
     max_utterance_sec: float = 30.0
     barge_in: str = "auto"
     hotkey_talk: str = "<ctrl>+<alt>+<space>"
@@ -82,7 +82,7 @@ class VoiceSettings:
         """What the Jarvis page needs to speak (no secrets)."""
         return {"web_tts": self.web_tts, "web_voice": self.web_voice, "tts_engine": self.tts_engine,
                 "tts_voice": self.tts_voice, "kokoro_name": kokoro_name(self.tts_voice),
-                "elevenlabs": bool(self.elevenlabs_api_key)}
+                "elevenlabs": bool(self.elevenlabs_api_key), "end_silence_sec": self.end_silence_sec}
 
 
 def _choice(raw: str, allowed: tuple[str, ...], default: str) -> str:
@@ -133,7 +133,7 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         followup_sec=_float(env.get("VOICE_FOLLOWUP_SEC"), 8.0, 0.0, 60.0),
         filler_delay_sec=_float(env.get("VOICE_FILLER_DELAY_SEC"), 0.7, 0.0, 10.0),
         listen_timeout_sec=_float(env.get("VOICE_LISTEN_TIMEOUT_SEC"), 6.0, 2.0, 30.0),
-        end_silence_sec=_float(env.get("VOICE_END_SILENCE_SEC"), 0.7, 0.3, 3.0),
+        end_silence_sec=_float(env.get("VOICE_END_SILENCE_SEC"), 1.2, 0.3, 3.0),
         max_utterance_sec=_float(env.get("VOICE_MAX_UTTERANCE_SEC"), 30.0, 5.0, 120.0),
         barge_in=_choice(s("VOICE_BARGE_IN", "auto"), BARGE_IN_MODES, "auto"),
         hotkey_talk=s("VOICE_HOTKEY_TALK", "<ctrl>+<alt>+<space>"),

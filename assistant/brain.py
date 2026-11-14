@@ -22,6 +22,13 @@ folders, our MCP tools, sub-agents, skills) and remembers the conversation.
 * **Plan limits**: a "you've hit your limit" result sets Claude Code's backoff; with an Anthropic
   API key saved (and ``ASSISTANT_API_FALLBACK``) the session reconnects on the key, resuming the
   same conversation, capped by the assistant's daily budget, and the turn is retried once.
+* **Never silent**: every wait is bounded. A turn with no output in :data:`FIRST_OUTPUT_SEC`, an
+  interrupted turn that does not settle in :data:`ABANDON_WAIT_SEC`, or the turn ceiling
+  (``ASSISTANT_VOICE_TURN_TIMEOUT_SEC``) resets the client and reconnects, resuming the day's session
+  (event ``brain`` reconnecting/ready, a warning in the log), and he hears :data:`LOST_TRAIN`.
+* **Several breaths, one request**: :func:`ask` stitches an utterance onto the previous one from the
+  same origin while that has not spoken yet (or was asked under :data:`MERGE_WINDOW_SEC` ago): the
+  earlier turn is abandoned and the joined text asked once. Talking over a spoken answer is a barge-in.
 * **Long work**: the ``start_task`` tool runs a parallel worker session (:func:`run_worker`,
   ``assistant/tasks.py``); when it finishes, :func:`announce_task` makes this session say so,
   exactly once.
@@ -54,7 +61,14 @@ log = logging.getLogger(__name__)
 
 CHANNEL = "voice"
 AGENT = "voice"
-TURN_TIMEOUT_SEC = 900.0
+TURN_TIMEOUT_SEC = 900.0          # the longest any caller waits for a turn (ASSISTANT_VOICE_TURN_TIMEOUT_SEC <= this)
+FIRST_OUTPUT_SEC = 25.0           # watchdog: nothing at all from the session this long after a question = wedged
+ABANDON_WAIT_SEC = 4.0            # an interrupted (abandoned) turn gets this long to settle, then the client is reset
+QUERY_TIMEOUT_SEC = 15.0          # sending the question itself
+RECONNECT_TIMEOUT_SEC = 30.0
+MERGE_WINDOW_SEC = 4.0            # a new utterance this soon after the last (or before any speech) is the same turn
+WATCH_TICK_SEC = 0.05
+LOST_TRAIN = "Sorry, {h}, I lost my train of thought. Say that again?"
 ANNOUNCE_MARK = "<task_finished"
 
 VOICE_PROMPT = """# Talking with {owner}, out loud
@@ -132,6 +146,10 @@ class Turn:
     finished: Any = None                     # asyncio.Event inside the brain loop
     stream: Any = None
     steps: dict[str, str] = field(default_factory=dict)
+    activity_at: float | None = None         # first message from the session for this question
+    cancel_at: float | None = None           # when it was abandoned (barge-in or merged into the next utterance)
+    recovered: bool = False                  # the watchdog reset a wedged session during this turn
+    merged_from: str | None = None           # the turn this one replaced (split dictation stitched together)
 
     @property
     def text(self) -> str:
@@ -360,6 +378,9 @@ class Brain:
         self.recorded = False
         self.ready = threading.Event()
         self.last_error = ""
+        self.recoveries = 0
+        self.recovering = False
+        self.last_chat: dict[str, Turn] = {}     # origin -> its latest chat turn (for stitching)
         self._stop = False
 
     # -- lifecycle -----------------------------------------------------------------
@@ -555,7 +576,9 @@ class Brain:
         opts = self.options(mode=want, resume=resume, table=table)
         client = _make_client(opts, table)
         await client.connect()
-        self.client, self.connects, self.recorded = client, self.connects + 1, bool(resume)
+        # "recorded" = the session is the one saved for today (kv); a resume of an id that was never saved
+        # (a reconnect after a wedge before any result) must not read as a day rollover next turn
+        self.client, self.connects, self.recorded = client, self.connects + 1, bool(resume and sid)
         self.session_id = resume
         self.model = getattr(opts, "model", "") or ""
         self.reader = asyncio.ensure_future(self._read(client))
@@ -569,7 +592,7 @@ class Brain:
             self.reader = None
         if c is not None:
             try:
-                await asyncio.wait_for(c.disconnect(), 10)
+                await asyncio.wait_for(c.disconnect(), 5)
             except Exception as exc:
                 log.debug("disconnect: %s", exc)
 
@@ -624,6 +647,11 @@ class Brain:
             r = turn.result
             if turn.cancelled:
                 turn.status = "cancelled"
+                break
+            if turn.recovered:             # never silence: one short line, and the log has the details
+                turn.status = "recovered"
+                self._flush(turn)
+                self._emit(turn, LOST_TRAIN.format(h=h), force=True)
                 break
             if r is None or getattr(r, "is_error", False):
                 text = turn.error_text or str(getattr(r, "result", "") or " ".join(getattr(r, "errors", None) or []))
@@ -698,23 +726,91 @@ class Brain:
         return ""
 
     async def _ask(self, turn: Turn, prompt: str) -> None:
+        """Send one question and wait for its result, with hard limits: nothing at all from the session in
+        :data:`FIRST_OUTPUT_SEC`, an abandoned turn that does not settle in :data:`ABANDON_WAIT_SEC`, or
+        the turn ceiling -> the client is reset (:meth:`_recover`). Never waits without a bound."""
         from voice import speech
 
-        turn.result, turn.error_text = None, ""
+        prev = self.current
+        if prev is not None and prev is not turn and prev.finished is not None:   # unasked output still streaming
+            try:
+                await asyncio.wait_for(prev.finished.wait(), ABANDON_WAIT_SEC)
+            except asyncio.TimeoutError:
+                pass
+        turn.result, turn.error_text, turn.activity_at = None, "", None
         turn.finished = asyncio.Event()
         turn.stream = turn.stream or speech.SentenceStream()
         self.current = turn
+        ceiling = min(TURN_TIMEOUT_SEC, float(get_assistant_settings().voice_turn_timeout_sec))
+        if turn.cancelled:            # abandoned before it was sent: nothing to wait for
+            self.current = None
+            return
         try:
-            await self.client.query(prompt)
-            await asyncio.wait_for(turn.finished.wait(), TURN_TIMEOUT_SEC)
-        except asyncio.TimeoutError:
-            turn.error_text = "the turn took too long"
-            await self._interrupt_client()
+            try:
+                await asyncio.wait_for(self.client.query(prompt), QUERY_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                await self._recover(turn, "the question could not be sent")
+                return
+            t0 = time.monotonic()
+            interrupted_at: float | None = None
+            while not turn.finished.is_set():
+                try:
+                    await asyncio.wait_for(turn.finished.wait(), WATCH_TICK_SEC)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                now = time.monotonic()
+                if turn.cancelled:
+                    if turn.cancel_at is None:
+                        turn.cancel_at = now
+                    if now - turn.cancel_at >= ABANDON_WAIT_SEC:
+                        await self._recover(turn, "an interrupted turn did not settle")
+                        return
+                elif turn.activity_at is None and now - t0 >= FIRST_OUTPUT_SEC:
+                    await self._recover(turn, "no output from the session")
+                    return
+                elif now - t0 >= ceiling:
+                    if interrupted_at is None:
+                        interrupted_at = now
+                        turn.error_text = "the turn took too long"
+                        asyncio.ensure_future(self._interrupt_client())
+                    elif now - interrupted_at >= ABANDON_WAIT_SEC:
+                        await self._recover(turn, "the turn took too long")
+                        return
         except Exception as exc:
             turn.error_text = str(exc)[:300]
             await self._disconnect()
         finally:
+            if self.current is turn:
+                self.current = None
+
+    async def _recover(self, turn: Turn, reason: str) -> None:
+        """The session is wedged: drop the client and reconnect, resuming the day's conversation."""
+        self.recoveries += 1
+        self.recovering = True
+        turn.recovered = True
+        turn.error_text = turn.error_text or reason
+        self.last_error = f"recovered: {reason}"
+        log.warning("voice brain wedged (%s); reconnecting", reason)
+        db.log_event("assistant", "voice brain recovered", level="warning",
+                     data={"reason": reason, "turn": turn.id, "cancelled": turn.cancelled})
+        events.publish("brain", state="reconnecting", reason=reason)
+        if self.current is turn:
             self.current = None
+        try:
+            await self._disconnect()
+            await asyncio.wait_for(self._ensure_client(), RECONNECT_TIMEOUT_SEC)
+        except Exception as exc:   # the next turn tries again
+            log.warning("voice brain reconnect failed: %s", exc)
+            self.client = None
+        finally:
+            self.recovering = False
+            events.publish("brain", state="ready")
+
+    async def _interrupt_turn(self, turn: Turn) -> None:
+        """Interrupt ``turn`` only if it is still the one in flight (never the question after it)."""
+        if self.current is turn and turn.finished is not None and not turn.finished.is_set():
+            await self._interrupt_client()
 
     async def _interrupt_client(self) -> None:
         c = self.client
@@ -750,6 +846,8 @@ class Brain:
             self.current = turn
             events.publish("turn", turn=turn.id, origin=turn.origin, kind=turn.kind, heard="")
             asyncio.ensure_future(self._finish_unasked(turn))
+        if turn.activity_at is None:
+            turn.activity_at = time.monotonic()
         if isinstance(msg, t.StreamEvent):
             if msg.parent_tool_use_id:
                 ev = msg.event or {}
@@ -786,7 +884,10 @@ class Brain:
                 turn.finished.set()
 
     async def _finish_unasked(self, turn: Turn) -> None:
-        await turn.finished.wait()
+        try:
+            await asyncio.wait_for(turn.finished.wait(), max(FIRST_OUTPUT_SEC, 60.0))
+        except asyncio.TimeoutError:
+            log.warning("unasked output never finished; dropped")
         if self.current is turn:
             self.current = None
         self._flush(turn)
@@ -931,18 +1032,38 @@ class Brain:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, turn)
         return turn
 
+    def abandon(self, turn: Turn) -> None:
+        """Stop ``turn`` (queued or in flight); thread-safe. Its wait is bounded by ABANDON_WAIT_SEC."""
+        if turn.cancelled:
+            return
+        turn.cancel_at = time.monotonic()
+        turn.cancelled = True
+        if self.loop is not None and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self._interrupt_turn(turn), self.loop)
+
     def interrupt(self) -> bool:
         cur = self.current
         if cur is None or self.loop is None:
             return False
-        cur.cancelled = True
-        asyncio.run_coroutine_threadsafe(self._interrupt_client(), self.loop)
+        self.abandon(cur)
         return True
+
+    def stitch_target(self, origin: str) -> Turn | None:
+        """The previous chat turn from ``origin`` that a new utterance should be merged into: it has not
+        finished, and it has not spoken yet (or was asked under MERGE_WINDOW_SEC ago). A turn he
+        barged in on is not merged."""
+        prev = self.last_chat.get(origin)
+        if prev is None or prev.cancelled or prev.done.is_set() or prev.kind != "chat":
+            return None
+        if prev.sentences and time.monotonic() - prev.t0 >= MERGE_WINDOW_SEC:
+            return None
+        return prev
 
     def status(self) -> dict[str, Any]:
         return {"running": bool(self.thread and self.thread.is_alive()), "connected": self.client is not None,
                 "session": self.session_id, "mode": self.mode, "model": self.model, "busy": self.current is not None,
-                "connects": self.connects, "last_error": self.last_error}
+                "connects": self.connects, "last_error": self.last_error, "recovering": self.recovering,
+                "recoveries": self.recoveries}
 
 
 def _label(name: str, inp: dict[str, Any]) -> str:
@@ -1013,14 +1134,29 @@ def ask(heard: str, *, origin: str = "browser", on_sentence: Callable[[str], Non
     """Queue one thing he said; returns the :class:`Turn` at once (``turn.wait()`` for the result).
     Speech arrives through ``on_sentence`` and the event bus as it is generated."""
     b = get_brain()
-    in_id = store.add_message("in", "voice", heard, kind="chat", meta={"origin": origin}) if record else None
-    turn = Turn(id="t" + uuid.uuid4().hex[:10], heard=heard, prompt=prompt_for(heard, fresh=b.client is None),
-                origin=origin, on_sentence=on_sentence, in_id=in_id)
+    merged_from = None
+    with _brain_lock:
+        prev = b.stitch_target(origin)
+        if prev is not None:      # he was still talking (several breaths): one request, not a barge-in
+            b.abandon(prev)
+            heard = f"{prev.heard.strip()} {heard.strip()}".strip()
+            merged_from = prev.id
+        turn = Turn(id="t" + uuid.uuid4().hex[:10], heard=heard, prompt="", origin=origin, on_sentence=on_sentence,
+                    merged_from=merged_from)
+        b.last_chat[origin] = turn
+    if merged_from:
+        db.log_event("assistant", "voice: utterances stitched into one request",
+                     data={"merged_from": merged_from, "turn": turn.id, "heard": heard[:200]})
+    turn.in_id = store.add_message("in", "voice", heard, kind="chat",
+                                   meta={"origin": origin, **({"merged_from": merged_from} if merged_from else {})}) \
+        if record else None
+    turn.prompt = prompt_for(heard, fresh=b.client is None)
     return b.submit(turn)
 
 
 def interrupt() -> bool:
-    """Barge-in: stop the answer in flight (the next question waits for it to settle)."""
+    """Barge-in: stop the answer in flight (the next question waits for it to settle, at most
+    ABANDON_WAIT_SEC; then the client is reset)."""
     return _brain.interrupt() if _brain is not None else False
 
 

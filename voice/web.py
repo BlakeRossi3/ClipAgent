@@ -10,7 +10,9 @@ status, mute toggle, microphone list and "test my mic" level.
 * ``POST /voice/api/ask``        ``text`` -> a turn of the warm brain (``assistant/brain.py``). The answer
   streams over ``/stream``; with ``Accept: application/x-ndjson`` (the laptop voice process) this
   request itself streams the turn's sentences.
-* ``POST /voice/api/interrupt``  barge-in: stop the answer in flight.
+  Utterances that arrive before the previous one has been answered aloud are stitched into one request
+  (``merged`` = the turn replaced); see ``brain.ask``.
+* ``POST /voice/api/interrupt``  barge-in: stop the answer in flight (only while he is being spoken to).
 * ``POST /voice/api/tts``        ``text`` -> audio from the server-side voice (Kokoro / ElevenLabs), for the
   page when it is not using the browser's own voice. The engine is rebuilt whenever the voice settings
   change (:func:`reload_tts`; it used to be cached for the life of the process).
@@ -403,7 +405,7 @@ async def api_ask(request: Request) -> Response:
         return d._json({"ok": False, "error": "off", "msg": reason, "reason": reason}, status_code=503)
     if "application/x-ndjson" not in request.headers.get("accept", ""):
         turn = await run_in_threadpool(brain.ask, text, origin=origin)
-        return d._json({"ok": True, "turn": turn.id, "heard": text, "name": a["name"]})
+        return d._json({"ok": True, "turn": turn.id, "heard": turn.heard, "merged": turn.merged_from, "name": a["name"]})
 
     import queue as _q
 

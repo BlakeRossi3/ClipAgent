@@ -679,3 +679,26 @@ def test_laptop_voice_ignores_fillers_and_the_reload_reads_config(tmp_path, monk
     cfg.write_text("VOICE_TTS_VOICE=bm_lewis\n", encoding="utf-8")
     os.utime(cfg, (1e9, 2e9))
     assert vs.reload_if_changed().tts_voice == "bm_lewis"
+
+
+def test_laptop_stitches_a_second_breath_onto_the_turn_in_flight():
+    a, clock, ex, tts, ctl, _ = make("On Monday I worked nine hours. On Wednesday I worked eight.",
+                                     "And Thursday eight as well, please log those.")
+    run(a, clock, WAKE)
+    say_utterance(a, clock)
+    assert a.state == va.THINKING and len(ex.calls) == 1
+    run(a, clock, LOUD, 4)                     # he keeps talking before any answer has started
+    run(a, clock, QUIET, 5)
+    assert [c[0] for c in ex.calls] == ["On Monday I worked nine hours. On Wednesday I worked eight.",
+                                        "And Thursday eight as well, please log those."]   # the server merges
+    ex.calls[0][1].set_result("")             # the replaced turn settles: nothing of it is spoken
+    ex.calls[1][1].set_result("Logged, sir.")
+    run(a, clock, QUIET, 30)
+    assert tts.said == ["Logged, sir."]
+
+
+def test_dangling_clause_holds_the_turn_open():
+    assert commands.looks_unfinished("On Monday, I worked nine hours. On Tuesday, I worked eight hours. On Wednesday.")
+    assert commands.looks_unfinished("I worked eight hours and")
+    assert not commands.looks_unfinished("On Wednesday I worked eight hours.")
+    assert not commands.looks_unfinished("So can you log the rest of those?")

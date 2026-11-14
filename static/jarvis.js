@@ -44,7 +44,7 @@
   var local = null;          // listening | thinking | speaking | error: this tab is busy
   var bg = { state: 'offline', online: false, muted: false };
   var always = false;        // the ring is on: this tab listens continuously
-  var errText = '', errTimer = null, note = '', noteTimer = null, working = '';
+  var errText = '', errTimer = null, note = '', noteTimer = null, working = '', brainState = '';
   var BG = { idle: 'idle', followup: 'listening', listening: 'listening', thinking: 'thinking', speaking: 'speaking',
     muted: 'idle', no_mic: 'idle', starting: 'idle', offline: 'idle', stopped: 'idle' };
   function laptopLive() {
@@ -65,6 +65,7 @@
     root.setAttribute('data-on', on ? '1' : '0');
     if (!canTalk) text = serverStatus;
     else if (v === 'error') text = errText;
+    else if (brainState === 'reconnecting') text = 'Reconnecting…';
     else if (v === 'thinking') text = working || 'Thinking…';
     else if (v === 'speaking') text = 'Speaking — tap to interrupt';
     else if (local === 'listening' || (v === 'listening' && !always && bg.state === 'listening')) text = 'Listening…';
@@ -301,7 +302,10 @@
       isPaused: function () { return paused; }
     };
   })();
-  function onIdle() { /* nothing queued: the ring settles */ if (!pending && local === 'speaking') local = null; render(); }
+  function onIdle() { /* nothing queued: the ring settles; his reply window opens */
+    firstInWindow = true;
+    if (!pending && local === 'speaking') local = null; render();
+  }
 
   /* ---- fillers (adewaskar/jarvis src/lib/fillers.ts: subjectless, short, "sir" final and only sometimes) */
   function picker(pool) { var last = -1; return function () { var i = last; while (pool.length > 1 && i === last) i = Math.floor(Math.random() * pool.length); last = i; return pool[Math.max(0, i)].replace('{h}', H); }; }
@@ -336,12 +340,18 @@
     var hits = content.filter(function (w) { return mine[w]; }).length;
     return hits / content.length >= 0.6;
   }
+  // A clause that dangles even though the transcriber put a full stop after it ("On Wednesday.", "...and.")
+  var LEADS = /^(on|and|so|but|then|also|plus|or|for|at|in|by|with|after|before|until|from)$/i;
   function holdFor(text) {
-    var words = text.trim().split(/\s+/).filter(Boolean);
+    var t = text.trim(), words = t.split(/\s+/).filter(Boolean);
     if (!words.length) return 1600;
-    if (/[.!?]$/.test(text)) return 0;
-    if (/[,;:–—-]$/.test(text.trim())) return 1600;
-    if (CONTINUES.test(words[words.length - 1])) return 1600;
+    var bare = t.replace(/[.!?…]+$/, '').trim();
+    if (/[,;:–—-]$/.test(bare) || /(\.\.\.|…)$/.test(t)) return 1600;
+    var last = (bare.split(/\s+/).pop() || '').replace(/[^a-z']/gi, '');
+    if (CONTINUES.test(last)) return 1600;
+    var tail = bare.split(/[.!?]\s+/).pop().trim().split(/\s+/), lead = (tail[0] || '').replace(/[^a-z']/gi, '');
+    if (tail.length <= 3 && LEADS.test(lead) && !OVERRIDE.test(bare)) return 1600;
+    if (/[.!?]$/.test(t)) return 0;
     return 250;
   }
   var held = '', holdTimer = null, firstAt = 0;
@@ -366,7 +376,10 @@
     youEl.textContent = text;
     pending = 'asking'; render();
     post('/voice/api/ask', { text: text, origin: 'browser' }).then(getJSON).then(function (j) {
-      if (j.ok && j.turn) { myTurns[j.turn] = 1; pending = j.turn; addHistory('me', text, 'voice · this tab'); }
+      if (j.ok && j.turn) {
+        if (j.merged) { cancelled[j.merged] = 1; youEl.textContent = j.heard || text; }   // stitched onto the last breath
+        myTurns[j.turn] = 1; pending = j.turn; addHistory('me', text, 'voice · this tab');
+      }
       else {
         pending = null;
         if (j.quiet) youEl.textContent = '';              // a filler or noise: keep listening, say nothing
@@ -432,7 +445,10 @@
         if (j.command) { speaker.cancel(); interrupt(); command(j.command); return; }
         var heard = j.heard || '';
         if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); return; }   // his own voice
-        if (speaker.busy() || pending) interrupt();                                        // a real barge-in
+        // Only talking over his answer is a barge-in. While he has not answered yet (at most a filler), the server
+        // stitches this onto the last utterance: one request, not a cancelled one and a new one.
+        if (speaker.busy() && pending && pending !== 'asking' && !spokeIn[pending]) speaker.cancel();
+        else if (speaker.busy()) interrupt();
         if (mode === 'ptt') { held = ''; ask(heard); } else assemble(heard, !!rec);
       }).catch(function () { speaker.resume(); fail('The connection dropped. Try again.'); });
   }
@@ -442,7 +458,12 @@
   }
 
   /* ---- always-listen: energy VAD with an adaptive floor (src/lib/vad.ts) -------------------- */
-  var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 };
+  var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 }, firstInWindow = true;
+  function endSilenceMs() {      // longer for the first thing he says after a reply (he draws breath mid-answer)
+    if (speaker.busy()) return 650;
+    var long = Math.round(1000 * (parseFloat(voiceCfg.end_silence_sec) || 1.2));
+    return firstInWindow || (pending && pending !== 'asking' && !spokeIn[pending]) ? Math.max(650, long) : 650;
+  }
   setInterval(function () {
     if (!always || !micAnalyser || recMode === 'ptt' && rec) return;
     var e = rms(micAnalyser), now = performance.now();
@@ -463,7 +484,9 @@
       } else if (vad.armed) { vad.armed = 0; stopRec(true); }
     } else {
       if (vad.smooth > thr * 0.6) vad.lastLoud = now;
-      if (now - vad.lastLoud >= 650 || now - vad.armed >= 20000) { vad.speaking = false; vad.armed = 0; stopRec(); }
+      if (now - vad.lastLoud >= endSilenceMs() || now - vad.armed >= 20000) {
+        vad.speaking = false; vad.armed = 0; firstInWindow = false; stopRec();
+      }
     }
   }, 40);
 
@@ -656,7 +679,8 @@
     },
     panel: function (e) { if (e.panel) { act.panels.push(e.panel); renderPanels(); } },
     settings: function (e) { if (e.voice) { voiceCfg = e.voice; cachedVoice = undefined; } },
-    ignored: function () { if (!pending) youEl.textContent = ''; }
+    ignored: function () { if (!pending) youEl.textContent = ''; },
+    brain: function (e) { brainState = e.state === 'reconnecting' ? 'reconnecting' : ''; render(); }
   };
   function connect() {
     if (!window.EventSource || !canTalk) return;

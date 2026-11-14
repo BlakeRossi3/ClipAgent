@@ -3,7 +3,12 @@
 * Jobs: hourly rate, pay schedule, estimated tax set-aside (``store.as_jobs``).
 * :func:`log_hours` records a week's hours for a job (upsert per job + local Monday) and writes
   the matching ``as_income`` row (source ``job``, ref ``hours:<job_id>:<week>``, dated the week's
-  Monday) so a correction replaces the old figure instead of adding to it.
+  Monday) so a correction replaces the old figure instead of adding to it. :func:`log_days` takes
+  hours per day ("Monday 9, Tuesday 8") for any past week, merges them with days already logged and
+  keeps the week's total = their sum. :func:`parse_week` reads "last week" / "week of November 2"
+  and refuses when the two disagree (ask him once).
+* :func:`sync_job_income` repairs pay on read: every logged week of a job with a rate has its job
+  income row at hours x rate (weeks logged before the rate was known, or before a rate change).
 * Reels: YouTube ``stats.estimated_revenue`` (phase 1) minus all LLM spend (pipeline + assistant)
   = reels profit. Revenue is NULL until the monetary Analytics scope is granted.
 * :func:`summary` - this week, last week, month and year to date, weekly series for charts,
@@ -80,6 +85,8 @@ def set_job(name: str = DEFAULT_JOB_NAME, *, hourly_rate: float | None = None, p
                                               else (cur.est_tax_rate if cur else 0.0)))
     job = store.get_job(jid)
     assert job is not None
+    if hourly_rate is not None and (cur is None or cur.hourly_rate != job.hourly_rate):
+        sync_job_income()          # weeks logged before the rate was known (or at the old rate)
     db.log_event("assistant", f"ledger: job {job.name} set", data={"hourly_rate": job.hourly_rate,
                                                                    "pay_schedule": job.pay_schedule})
     return job
@@ -114,6 +121,75 @@ def _week(week: date | str | None) -> date:
     return store.week_start_of(week)
 
 
+DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_DAY_KEYS = {**{d: i for i, d in enumerate(DAY_NAMES)},
+             **{d: i for i, d in enumerate(("monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+                                            "sunday"))},
+             "tues": 1, "weds": 2, "thur": 3, "thurs": 3}
+_MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                           "nov", "dec"))}
+_ORD = {w: i + 1 for i, w in enumerate(
+    "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth "
+    "fifteenth sixteenth seventeenth eighteenth nineteenth twentieth".split())}
+_ORD.update({f"twenty {w}": 20 + i for w, i in _ORD.items() if i < 10})
+_ORD.update({"thirtieth": 30, "thirty first": 31})
+
+
+def parse_week(week: date | str | None) -> date:
+    """The Monday of the week meant by ``week``: a date or any day in it ("2026-11-02"), "this week",
+    "last week", "2 weeks ago", "week of November 2(nd)". Raises :class:`LedgerError` (a question to
+    ask him once) when the words and the date point at different weeks, or nothing can be read."""
+    if week is None or isinstance(week, date):
+        return _week(week)
+    text = " ".join(re.sub(r"(?<=[a-z])-(?=[a-z])", " ", str(week).lower()).split())
+    if not text:
+        return _week(None)
+    today = db.local_today()
+    this = _week(today)
+    rel: date | None = None
+    if re.search(r"\b(this|current) week\b", text):
+        rel = this
+    elif re.search(r"\b(last|previous|past) week\b|\bweek before this\b", text):
+        rel = this - timedelta(days=7)
+    else:
+        m = re.search(r"\b(\d+|two|three|four) weeks? ago\b", text)
+        if m:
+            n = {"two": 2, "three": 3, "four": 4}.get(m.group(1)) or int(m.group(1))
+            rel = this - timedelta(days=7 * n)
+    explicit: date | None = None
+    m = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if m:
+        try:
+            explicit = date.fromisoformat(m.group(0))
+        except ValueError:
+            raise LedgerError(f"not a date: {m.group(0)!r}") from None
+    else:
+        m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:the\s+)?"
+                      r"(\d{1,2})?(?:st|nd|rd|th)?\s*((?:twenty |thirty )?[a-z]+)?", text)
+        day_n = None
+        if m:
+            day_n = int(m.group(2)) if m.group(2) else _ORD.get((m.group(3) or "").strip()) or next(
+                (v for k, v in _ORD.items() if (m.group(3) or "").startswith(k)), None)
+        if m and day_n:
+            try:
+                explicit = date(today.year, _MONTHS[m.group(1)], day_n)
+            except ValueError:
+                raise LedgerError(f"not a date: {str(week)!r}") from None
+            if explicit > today:
+                explicit = explicit.replace(year=today.year - 1)
+    if explicit is not None and rel is not None and _week(explicit) != rel:
+        raise LedgerError(f"ambiguous week: \"{week}\" - last/this week is the week of {rel.isoformat()} but "
+                          f"{explicit.isoformat()} is in the week of {_week(explicit).isoformat()}. Ask him once "
+                          "which week he means.")
+    found = explicit or rel
+    if found is None:
+        raise LedgerError(f"cannot tell which week {str(week)!r} means; ask him once (e.g. the week of November 2)")
+    ws = _week(found)
+    if ws > this:
+        raise LedgerError(f"the week of {ws.isoformat()} has not started yet")
+    return ws
+
+
 def week_pay(job: store.Job, hours: Any) -> tuple[Decimal, Decimal]:
     """(gross, estimated net) for ``hours`` at ``job``'s rate and tax set-aside."""
     gross = _dec(hours) * _dec(job.hourly_rate)
@@ -135,7 +211,7 @@ def log_hours(hours: float | str | Decimal, *, week: date | str | None = None, j
         raise LedgerError(f"not a number of hours: {hours!r}") from None
     if not (0 <= h <= MAX_WEEK_HOURS):
         raise LedgerError(f"{fmt_hours(h)} hours is outside 0-{MAX_WEEK_HOURS}; please confirm")
-    ws = _week(week)
+    ws = parse_week(week)
     j = resolve_job(job, create=True)
     store.log_hours(j.id, float(h), week_start=ws, source=source, note=note)
     missing: list[str] = []
@@ -156,6 +232,106 @@ def log_hours(hours: float | str | Decimal, *, week: date | str | None = None, j
             "hourly_rate": j.hourly_rate, "gross": None if gross is None else float(gross),
             "net_estimate": None if net is None else float(net), "est_tax_rate": j.est_tax_rate,
             "month_to_date_gross": month["job_gross"], "missing": missing}
+
+
+def log_days(days: dict[str, Any], *, week: date | str | None, job: str | None = None, source: str = "sms",
+             note: str | None = None) -> dict[str, Any]:
+    """Hours per day for one week (``{"mon": 9, "tue": 8}``; keys mon..sun, full names or ISO dates),
+    merged with days already logged for that week (a day given again is replaced). The week's total
+    becomes the sum of its days and pay is recomputed (:func:`log_hours`). ``week`` is required: a
+    list of weekdays without a week is ambiguous, so the caller asks once."""
+    if not days:
+        raise LedgerError("no days given")
+    if week is None or (isinstance(week, str) and not week.strip()):
+        raise LedgerError("which week are these days in? Ask him once (this week, last week, or the week of a date)")
+    ws = parse_week(week)
+    today = db.local_today()
+    parsed: dict[date, Decimal] = {}
+    for k, v in days.items():
+        key = str(k).strip().lower().rstrip(".")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", key):
+            d = date.fromisoformat(key)
+            if _week(d) != ws:
+                raise LedgerError(f"{key} is not in the week of {ws.isoformat()}")
+        elif key in _DAY_KEYS:
+            d = ws + timedelta(days=_DAY_KEYS[key])
+        else:
+            raise LedgerError(f"not a day of the week: {k!r}")
+        try:
+            h = _dec(v)
+        except Exception:
+            raise LedgerError(f"not a number of hours for {k}: {v!r}") from None
+        if not 0 <= h <= 24:
+            raise LedgerError(f"{fmt_hours(h)} hours on {DAY_NAMES[d.weekday()]} is outside 0-24; please confirm")
+        if d > today:
+            raise LedgerError(f"{d.isoformat()} has not happened yet")
+        parsed[d] = h
+    j = resolve_job(job, create=True)
+    before = store.list_work_days(j.id, ws)
+    old_week = store.get_work_log(j.id, ws)
+    for d, h in sorted(parsed.items()):
+        store.set_work_day(j.id, d, float(h), source=source, note=note)
+    rows = store.list_work_days(j.id, ws)
+    total = sum((_dec(r["hours"]) for r in rows), Decimal(0))
+    res = log_hours(total, week=ws, job=j.name, source=source, note=note)
+    res["days"] = {DAY_NAMES[date.fromisoformat(r["day"]).weekday()]: r["hours"] for r in rows}
+    res["already_logged"] = [DAY_NAMES[date.fromisoformat(r["day"]).weekday()] for r in before
+                             if date.fromisoformat(r["day"]) not in parsed]
+    if old_week is not None and not before and float(total) != old_week.hours:
+        res["replaced_week_total"] = old_week.hours    # an earlier total without days: tell him it changed
+    res["confirmation"] = one_line(res)
+    return res
+
+
+def one_line(res: dict[str, Any], honorific: str = "sir") -> str:
+    """One sentence confirming a log: total, the days if known, and pay."""
+    ws = date.fromisoformat(res["week_start"])
+    when = f"the week of {ws.strftime('%B')} {ws.day}"
+    days = res.get("days") or {}
+    detail = (" (" + ", ".join(f"{d.capitalize()} {fmt_hours(h)}" for d, h in days.items()) + ")") if days else ""
+    if res.get("gross") is None:
+        return f"Logged, {honorific}: {fmt_hours(res['hours'])} hours for {when}{detail}; I need your hourly rate for the pay."
+    pay = f"about {fmt_usd(res['gross'])} before tax"
+    if res.get("est_tax_rate"):
+        pay += f" and {fmt_usd(res['net_estimate'])} take-home"
+    return f"Logged, {honorific}: {fmt_hours(res['hours'])} hours for {when}{detail}, {pay}."
+
+
+def sync_job_income() -> int:
+    """Recompute on read (and the backfill): each logged week of a job with an hourly rate gets its job
+    income row at hours x rate. Fixes weeks logged before the rate was known (pay read zero) and
+    weeks logged before a rate change. Returns how many rows were written."""
+    jobs = {j.id: j for j in store.list_jobs(active_only=False)}
+    have = {i.ref: i for i in store.list_income(source="job") if i.ref}
+    n = 0
+    for w in store.list_work_log(limit=100_000):
+        j = jobs.get(w.job_id)
+        if j is None or j.hourly_rate <= 0:
+            continue
+        gross = week_pay(j, w.hours)[0]
+        ref = f"hours:{j.id}:{w.week_start}"
+        cur = have.get(ref)
+        if cur is None or _cents(_dec(cur.amount_usd)) != gross:
+            store.set_income(float(gross), source="job", ref=ref, day=w.week_start,
+                             note=f"{fmt_hours(w.hours)} h x {fmt_usd(j.hourly_rate, whole=False)} ({j.name})")
+            n += 1
+    if n:
+        db.log_event("assistant", f"ledger: job pay recomputed for {n} week(s)")
+    return n
+
+
+def split_rate(text: str) -> tuple[float | None, str]:
+    """("41 hours at $55/h") -> (55.0, "41 hours "): a pay rate stated alongside the hours, and the rest."""
+    t = (text or "").lower()
+    m = _RATE_RE.search(t)
+    if not m:
+        return None, text
+    return float(m.group(1) or m.group(2)), t[:m.start()] + " " + t[m.end():]
+
+
+_RATE_RE = re.compile(r"(?:\bat\s+|@\s*)?\$\s*(\d+(?:\.\d+)?)(?:\s*(?:/\s*h(?:ou)?r?\b|an hour|per hour|a hour|hourly))?"
+                      r"|(?:\bat\s+|@\s*)?(\d+(?:\.\d+)?)\s*(?:dollars?|bucks)?\s*(?:/\s*h(?:ou)?r?\b|an hour|per hour|"
+                      r"a hour|hourly)")
 
 
 def last_week_hours(job: str | None = None, *, before: date | str | None = None) -> float | None:
@@ -312,6 +488,7 @@ def period_totals(start_day: date, end_day: date) -> dict[str, Any]:
 def summary(*, weeks: int = 8) -> dict[str, Any]:
     """The whole money picture as plain data (dashboard, briefs, the ledger agent)."""
     weeks = max(1, min(int(weeks), 104))
+    sync_job_income()
     today = db.local_today()
     this_ws = _week(today)
     last_ws = this_ws - timedelta(days=7)
@@ -391,9 +568,16 @@ def brief_line(s: dict[str, Any] | None = None) -> str:
 def _tool_log_hours(ctx: Any, a: dict[str, Any]) -> Any:
     from assistant.tools import ToolError
 
+    src = getattr(ctx, "source", "assistant") or "assistant"
     try:
-        return log_hours(a["hours"], week=a.get("week") or None, job=a.get("job") or None,
-                         source=getattr(ctx, "source", "assistant") or "assistant", note=a.get("note"))
+        if a.get("days"):
+            return log_days(a["days"], week=a.get("week"), job=a.get("job") or None, source=src, note=a.get("note"))
+        if a.get("hours") is None:
+            raise LedgerError("give hours (the week's total) or days ({\"mon\": 9, ...})")
+        res = log_hours(a["hours"], week=a.get("week") or None, job=a.get("job") or None, source=src,
+                        note=a.get("note"))
+        res["confirmation"] = one_line(res)
+        return res
     except (LedgerError, ValueError) as exc:
         raise ToolError(str(exc)) from None
 
@@ -407,13 +591,17 @@ def register_tools(register: Callable[..., None]) -> None:
     from assistant.tools import Tool, _obj
 
     register(Tool("ledger_log_hours",
-                  "Record the hours the owner worked in a week (upserts; a correction replaces the old figure) and "
-                  "get gross pay, estimated take-home and the month's total back. week: any date in that week "
-                  "(YYYY-MM-DD, default this week). job: job name when he has several. Only log hours he stated "
-                  "or clearly implied.",
+                  "Record the hours the owner worked, for this or any past week, and get gross pay, estimated "
+                  "take-home and a one-sentence 'confirmation' to say back. Either hours = the week's total, or "
+                  "days = hours per day, e.g. {\"mon\": 9, \"tue\": 8}: days merge with days already logged "
+                  "that week (a day given again is replaced) and the total becomes their sum. week: \"this week\", "
+                  "\"last week\" or any date in it (YYYY-MM-DD or \"November 2\"); required with days. If the "
+                  "tool says the week is ambiguous, ask him once. job: when he has several. Only log hours he "
+                  "stated or clearly implied.",
                   _obj({"hours": {"type": "number", "minimum": 0, "maximum": MAX_WEEK_HOURS},
-                        "week": {"type": "string"}, "job": {"type": "string"}, "note": {"type": "string"}},
-                       ["hours"]), _tool_log_hours, owner="assistant.ledger", side_effects=True))
+                        "days": {"type": "object", "properties": {d: {"type": "number"} for d in DAY_NAMES}},
+                        "week": {"type": "string"}, "job": {"type": "string"}, "note": {"type": "string"}}),
+                  _tool_log_hours, owner="assistant.ledger", side_effects=True))
     register(Tool("ledger_summary",
                   "The owner's money picture: this week, last week, month and year to date (job pay, take-home "
                   "estimate, Shorts revenue minus AI costs), weekly series, hours trend, effective hourly rate, "

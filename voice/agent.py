@@ -139,7 +139,8 @@ class VoiceAgent:
         self.tts_reloader = tts_reloader
         self._reload_at = -1e9
         self.clock = clock
-        self.executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-brain")
+        # two workers: a stitched follow-up must reach the server while the turn it replaces is still settling
+        self.executor = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-brain")
         rng = rng or random.Random()
         self.pick_working = speech.Picker(speech.WORKING, rng)
         self.pick_still = speech.Picker(speech.STILL, rng)
@@ -333,14 +334,23 @@ class VoiceAgent:
             self._utterance(self._transcribe(self.stt, self.rec.take()))
 
     def _on_thinking(self, frame: np.ndarray, is_speech: bool) -> None:
-        # Only local commands count while the brain works ("never mind", "stop", "stop listening").
+        # Local commands ("never mind", "stop", "stop listening") act at once. Anything else said before
+        # the answer has started is the rest of what he was saying (another breath): it is sent on, and
+        # the server stitches it onto the turn in flight (brain.ask) instead of answering the half.
         if self.side.push(frame, is_speech):
             text = self._transcribe(self.stt, self.side.take())
-            if not text or self._is_echo(text):
+            if not text or self._is_echo(text) or commands.is_noise(text):
                 return
             cmd = commands.parse(text, self.s.assistant_name)
             if cmd in (commands.STOP, commands.CANCEL, commands.MUTE):
                 self._command(cmd, text)
+            elif self.turn is not None and not self.turn.streamed and not commands.is_filler_utterance(text):
+                old, self.turn = self.turn, None
+                old.cancelled = True
+                self.diag.heard += 1
+                self.diag.last_heard = f"{old.text} {text}".strip()
+                log.info("stitched onto the turn in flight: %r", text[:80])
+                self._submit(text)
             else:
                 self.diag.dropped += 1
                 log.info("ignored while thinking: %r", text[:80])

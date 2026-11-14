@@ -258,3 +258,126 @@ def test_speech_rules():
         assert commands.is_filler_utterance(noise), noise
     for real in ("yes", "stop", "what?", "switch to Lewis", "open YouTube"):
         assert not commands.is_filler_utterance(real), real
+
+
+# ---------------------------------------------------------------------------
+# wedge recovery and turn stitching (Blake: split dictation, then total silence)
+# ---------------------------------------------------------------------------
+
+class WedgeClient(brain.FakeClient):
+    """A real-SDK failure mode: the question streams a little (or nothing), then never finishes, and
+    interrupt() is acknowledged without a result ever arriving."""
+
+    def __init__(self, *a, silent=False, **kw):
+        super().__init__(*a, **kw)
+        self.silent = silent
+
+    async def _produce(self, prompt):
+        import asyncio
+
+        t = brain._sdk()
+        if len(self.history) == 1:
+            self._out.put_nowait(t.SystemMessage(subtype="init", data={"session_id": self.session_id}))
+        if not self.silent:
+            self._out.put_nowait(t.StreamEvent(uuid="x", session_id=self.session_id, event={
+                "type": "content_block_start", "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_w", "name": "mcp__clipagent__ledger_summary",
+                                  "input": {}}}))
+        await asyncio.Event().wait()           # never ends
+
+    async def interrupt(self):
+        self.interrupted += 1                  # acknowledged, but no result follows
+
+    async def disconnect(self):
+        if self._busy is not None:
+            self._busy.cancel()
+        await super().disconnect()
+
+
+def _fast_watchdog(monkeypatch):
+    monkeypatch.setattr(brain, "ABANDON_WAIT_SEC", 0.3)
+    monkeypatch.setattr(brain, "FIRST_OUTPUT_SEC", 0.5)
+    monkeypatch.setattr(brain, "WATCH_TICK_SEC", 0.02)
+
+
+def _factory(first, normal=lambda said, c: ["Here I am, sir."]):
+    import re
+
+    made = []
+
+    def make(options, tools):
+        def script(prompt, client):
+            m = re.search(r"<said>\s*(.*?)\s*</said>", prompt, re.S)
+            return normal(m.group(1) if m else prompt, client)
+        c = first(options, tools, script) if not made else brain.FakeClient(options, tools, script)
+        made.append(c)
+        return c
+
+    brain.set_client_factory(make)
+    return made
+
+
+def test_wedged_interrupted_turn_recovers_and_the_next_question_is_answered(env, monkeypatch):
+    _fast_watchdog(monkeypatch)
+    made = _factory(lambda o, t, s: WedgeClient(o, t, s))
+    t1 = brain.ask("On Monday I worked nine hours.")
+    for _ in range(200):
+        if t1.activity_at is not None:
+            break
+        time.sleep(0.01)
+    assert brain.interrupt()                                  # barge-in on a turn whose stream never ends
+    t2 = brain.ask("Hello?")
+    res2 = t2.wait(10)
+    assert t1.wait(1)["status"] == "cancelled" and made[0].interrupted >= 1 and made[0].disconnected
+    assert res2["reply"] == "Here I am, sir." and t2.merged_from is None
+    assert len(made) == 2 and made[1].options.resume == made[0].session_id   # the day's session resumed
+    assert any(e.message == "voice brain recovered" for e in db.list_events(limit=20))
+    assert [e["state"] for e in events.BUS.since(0, 1000) if e["type"] == "brain"][:2] == ["reconnecting", "ready"]
+    assert brain.ask("And now?").wait(5)["reply"] == "Here I am, sir."           # the queue keeps moving
+
+
+def test_session_with_no_output_is_reset_and_he_hears_one_short_line(env, monkeypatch):
+    _fast_watchdog(monkeypatch)
+    made = _factory(lambda o, t, s: WedgeClient(o, t, s, silent=True))
+    res, heard = say("How many hours did I work?")
+    assert res["status"] == "recovered" and heard == [brain.LOST_TRAIN.format(h="sir")]
+    assert made[0].disconnected and brain.get_brain().status()["recoveries"] == 1
+    assert say("Hello?")[0]["reply"] == "Here I am, sir."
+
+
+def test_split_dictation_is_stitched_into_one_request(env):
+    seen = []
+
+    def reply(said, client):
+        seen.append(said)
+        return ["Logged, sir: forty-one hours."]
+
+    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: reply(
+        p.split("<said>")[-1].split("</said>")[0].strip(), c), delay=0.3))
+    parts = ["On Monday, I worked nine hours. On Tuesday, I worked eight hours. On Wednesday.",
+             "On Wednesday I worked eight hours.",
+             "On Thursday, I worked eight hours and Friday has already been logged. So can you log the rest of those?"]
+    turns = [brain.ask(p) for p in parts]          # each breath arrives before any answer has been spoken
+    res = turns[-1].wait(10)
+    assert [t.wait(2)["status"] for t in turns[:2]] == ["cancelled", "cancelled"]
+    assert turns[1].merged_from == turns[0].id and turns[2].merged_from == turns[1].id
+    assert turns[-1].heard == " ".join(parts) and res["reply"] == "Logged, sir: forty-one hours."
+    assert seen[-1] == " ".join(parts)             # the model saw the whole dictation once, at the end
+    replies = [m for m in store.list_messages(20, channel="voice", direction="out") if m.body]
+    assert [m.body for m in replies] == ["Logged, sir: forty-one hours."]
+
+
+def test_talking_over_a_spoken_answer_is_still_a_barge_in(env, monkeypatch):
+    monkeypatch.setattr(brain, "MERGE_WINDOW_SEC", 0.0)
+    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: (
+        [f"Sentence number {i}." for i in range(200)] if "long story" in p else ["Short answer."]), delay=0.01))
+    t1 = brain.ask("tell me a long story")
+    for _ in range(200):
+        if t1.sentences:
+            break
+        time.sleep(0.01)
+    assert brain.get_brain().stitch_target("browser") is None      # he is being spoken to: not a continuation
+    assert brain.interrupt()
+    t2 = brain.ask("stop, the short version")
+    assert t2.wait(10)["reply"] == "Short answer." and t2.merged_from is None and t2.heard == "stop, the short version"
+    assert t1.wait(1)["status"] == "cancelled" and len(t1.sentences) < 200

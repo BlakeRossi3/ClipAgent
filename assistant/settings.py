@@ -47,6 +47,7 @@ class AssistantSettings:
     # --- the warm voice brain (assistant/brain.py): one Claude Agent SDK session kept open
     voice_model: str = "sonnet"              # Claude Code model alias for conversation (ASSISTANT_VOICE_MODEL)
     voice_effort: str = "low"                # thinking effort for spoken turns
+    voice_turn_timeout_sec: float = 900.0    # hard ceiling for one spoken turn (ASSISTANT_VOICE_TURN_TIMEOUT_SEC)
     cc_model: str = "opus"                   # Claude Code model alias for the main agent
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
@@ -110,6 +111,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         voice_model=s("ASSISTANT_VOICE_MODEL", "sonnet"),
         voice_effort=s("ASSISTANT_VOICE_EFFORT", "low").lower()
         if s("ASSISTANT_VOICE_EFFORT", "low").lower() in ("low", "medium", "high", "xhigh", "max") else "low",
+        voice_turn_timeout_sec=min(900.0, max(60.0, float(s("ASSISTANT_VOICE_TURN_TIMEOUT_SEC", "900") or 900))),
         cc_model=s("ASSISTANT_CC_MODEL", "opus"),
         cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
         cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),

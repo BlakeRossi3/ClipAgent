@@ -13,6 +13,7 @@ as_messages         conversation log with the owner (every inbound/outbound mess
 as_checkins         scheduled questions to the owner and their answers
 as_jobs             the owner's paid jobs (hourly rate, pay schedule, tax estimate)
 as_work_log         hours per job per local week (week_start = Monday), upserted
+as_work_days        hours per job per local day (optional detail; the week's total is their sum)
 as_income           money in: job pay, reels revenue, other; idempotent on (source, ref)
 as_meals            meal suggestions and the owner's feedback
 as_goals            goals with a metric/target/current value
@@ -156,6 +157,13 @@ MIGRATIONS: list[list[str]] = [
         "WHERE id IN (SELECT id FROM _as_v3_links)",
         "DROP TABLE _as_v3_replies",
         "DROP TABLE _as_v3_links",
+    ],
+    [   # v4: hours per day ("Monday 9, Tuesday 8"); the week's as_work_log total is their sum when any exist
+        """CREATE TABLE as_work_days (
+            id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES as_jobs(id) ON DELETE CASCADE,
+            day TEXT NOT NULL, week_start TEXT NOT NULL, hours REAL NOT NULL, source TEXT NOT NULL DEFAULT 'sms',
+            note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (job_id, day))""",
+        "CREATE INDEX idx_as_work_days_week ON as_work_days(job_id, week_start)",
     ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -604,6 +612,30 @@ def list_work_log(*, job_id: int | None = None, since_week: date | str | None = 
     with transaction(conn) as c:
         return _many(c, WorkLog, f"SELECT * FROM as_work_log WHERE {' AND '.join(where)} "
                                  "ORDER BY week_start DESC, job_id LIMIT ?", (*params, limit))
+
+
+def set_work_day(job_id: int, day: date | str, hours: float, *, source: str = "sms", note: str | None = None,
+                 conn: sqlite3.Connection | None = None) -> int:
+    """Upsert the hours worked on one local day (0-24). Returns the row id."""
+    if not 0 <= hours <= 24:
+        raise ValueError(f"hours in a day must be 0-24, got {hours}")
+    d = _day(day)
+    now = db.now_iso()
+    with transaction(conn) as c:
+        c.execute("INSERT INTO as_work_days (job_id, day, week_start, hours, source, note, created_at, updated_at) "
+                  "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (job_id, day) DO UPDATE SET hours = excluded.hours, "
+                  "source = excluded.source, note = excluded.note, updated_at = excluded.updated_at",
+                  (job_id, d, week_start_of(d).isoformat(), float(hours), source, note, now, now))
+        return int(c.execute("SELECT id FROM as_work_days WHERE job_id = ? AND day = ?", (job_id, d)).fetchone()["id"])
+
+
+def list_work_days(job_id: int, week_start: date | str | None = None, *,
+                   conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """The week's per-day hours, oldest day first: ``[{"day", "hours", "source"}]``."""
+    with transaction(conn) as c:
+        rows = c.execute("SELECT day, hours, source FROM as_work_days WHERE job_id = ? AND week_start = ? "
+                         "ORDER BY day", (job_id, week_start_of(week_start).isoformat())).fetchall()
+    return [{"day": r["day"], "hours": float(r["hours"]), "source": r["source"]} for r in rows]
 
 
 def add_income(amount_usd: float, *, source: str, day: date | str | None = None, note: str | None = None,

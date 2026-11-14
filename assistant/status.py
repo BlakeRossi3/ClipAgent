@@ -83,10 +83,7 @@ def status_snapshot() -> str:
         return [f"Check-in today {local_hm(c.scheduled_for)} ({c.status}): {c.question[:100]}" for c in rows[:4]]
 
     def money() -> list[str]:
-        wk = store.week_start_of()
-        total = store.income_total(wk, db.local_today())
-        hours = sum(w.hours for w in store.list_work_log(since_week=wk))
-        return [f"This week (from Monday {wk.isoformat()}): income logged ${total:,.2f}, hours logged {hours:g}"]
+        return work_lines()
 
     def shorts() -> list[str]:
         snap = tools.studio_snapshot(7)
@@ -123,6 +120,31 @@ def status_snapshot() -> str:
 
     lines += _parts([_tasks, _approvals, checkins, money, shorts, plan, heartbeat, events])
     return "\n".join(lines)
+
+
+def work_lines() -> list[str]:
+    """This week's and last week's hours, gross pay and take-home (pay = hours x rate, recomputed on
+    read, so weeks logged before the rate was known are not read as zero), plus other income."""
+    from assistant import ledger
+
+    ledger.sync_job_income()
+    today = db.local_today()
+    wk = store.week_start_of(today)
+    lw = wk - timedelta(days=7)
+    out = []
+    for label, start, end in (("This week", wk, today), ("Last week", lw, lw + timedelta(days=6))):
+        p = ledger.period_totals(start, end)
+        line = (f"{label} (from Monday {start.isoformat()}): {ledger.fmt_hours(p['hours'])} h worked, "
+                f"{ledger.fmt_usd(p['job_gross'], whole=False)} gross pay, "
+                f"{ledger.fmt_usd(p['job_net_estimate'], whole=False)} estimated take-home")
+        if p["other_income"]:
+            line += f", other income {ledger.fmt_usd(p['other_income'], whole=False)}"
+        out.append(line)
+    if not store.list_jobs():
+        out.append("No job or pay rate set yet")
+    else:
+        out += [f"No pay rate set for {j.name}" for j in store.list_jobs() if j.hourly_rate <= 0]
+    return out
 
 
 def due_checkins(window_min: int = CHECKIN_WINDOW_MIN) -> list[str]:

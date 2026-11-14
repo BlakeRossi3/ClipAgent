@@ -111,10 +111,20 @@ _CONTINUES = re.compile(r"\b(and|or|but|so|because|if|when|while|that|which|to|o
                         r"the|a|an|my|your|is|are|was|be|can|could|would|should|will|than|then|as)$")
 
 
+_LEADS = frozenset(("on", "and", "so", "but", "then", "also", "plus", "or", "for", "at", "in", "by", "with", "after",
+                    "before", "until", "from"))
+
+
 def looks_unfinished(text: str) -> bool:
-    """"Remind me to call..." trailing off on a joining word: wait a moment longer for the rest."""
+    """"Remind me to call..." trailing off on a joining word, or a dangling clause the transcriber closed
+    with a full stop ("... On Wednesday."): wait a moment longer for the rest."""
     t = (text or "").strip()
-    return bool(t) and (t.endswith((",", ";", ":", "-", "...")) or bool(_CONTINUES.search(norm(t))))
+    if not t:
+        return False
+    if t.endswith((",", ";", ":", "-", "...", "…")) or _CONTINUES.search(norm(t)):
+        return True
+    tail = re.split(r"[.!?]\s+", t.rstrip(".!?… ").strip())[-1].split()
+    return 0 < len(tail) <= 3 and norm(tail[0]) in _LEADS and not _OVERRIDE.search(norm(t))
 
 
 # Words that carry no request on their own (hesitations, hedges, back-channel noises).

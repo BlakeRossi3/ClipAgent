@@ -681,9 +681,13 @@ def _answer(chk: store.Checkin, text: str, h: str) -> str | None:
     base, _, key = chk.kind.partition(":")
     if base == "weekly_hours":
         week = db.local_date_of(chk.scheduled_for)
-        hours = ledger.parse_hours(text, last_week=ledger.last_week_hours(before=week))
+        rate, rest = ledger.split_rate(text)               # "41 hours at $55 an hour"
+        hours = ledger.parse_hours(rest, last_week=ledger.last_week_hours(before=week))
         if hours is None or len(store.list_jobs()) > 1:
             return None
+        if rate is not None and 1 <= rate <= 1000:
+            jobs = store.list_jobs()
+            ledger.set_job(jobs[0].name if jobs else ledger.DEFAULT_JOB_NAME, hourly_rate=rate)
         res = ledger.log_hours(hours, week=week, source="sms", note=f"his words: {text.strip()[:120]}")
         store.answer_checkin(chk.id, text, {"hours": hours, "gross": res["gross"]})
         _journal(f"Hours for week of {res['week_start']}: {ledger.fmt_hours(hours)}"
