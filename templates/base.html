@@ -57,7 +57,7 @@
 {% block content %}{% endblock %}
 </main>
 <footer class="footer">
-  <span>Times in {{ tz }} · rendered {{ now_local }}</span>
+  <span>Times in {{ tz }} · rendered {{ now_local }}{% if build_id %} · build {{ build_id }}{% endif %}</span>
   {% if token_required and active != "login" %}
   <form method="post" action="/dashboard/logout" class="inline-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">

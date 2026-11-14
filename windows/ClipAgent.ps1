@@ -97,11 +97,25 @@ function Update-App {
     $before = Get-FileHashOrEmpty $reqFile
     if ($upstream) {
         # The assistant's own branch (sterling/self): merge the published branch in, keep its commits.
+        # Unsaved edits (a self-edit still in progress) would block the merge: put them aside first.
+        $dirty = (& $gitExe -C $App status --porcelain 2>$null | Out-String).Trim()
+        if ($dirty) {
+            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'stash', 'push', '--include-untracked', '-m', 'sterling-autosave-before-update')
+            Write-Log 'set aside unsaved assistant edits (git stash) before updating'
+        }
         $code = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'pull', '--no-rebase', '--no-edit', 'origin', $upstream)
         if ($code -ne 0) {
+            # The published version wins: keep the assistant's commits on a dated backup branch (it can
+            # re-apply them later) and move to the published version, so updates can never get stuck.
             $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'merge', '--abort')
-            Write-Log "merging origin/$upstream conflicted with the assistant's changes; kept the local version"
-            return
+            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'branch', "sterling/backup-$stamp")
+            $code = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'reset', '--hard', "origin/$upstream")
+            if ($code -ne 0) {
+                Write-Log "could not move to origin/$upstream; starting the current version"
+                return
+            }
+            Write-Log "update conflicted with the assistant's own edits; saved them as sterling/backup-$stamp and took the published version"
         }
     }
     elseif ((Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'pull', '--ff-only')) -ne 0) {

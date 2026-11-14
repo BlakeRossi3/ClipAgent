@@ -522,6 +522,25 @@ def _is_loopback(request: Request) -> bool:
 # ===========================================================================
 
 @lru_cache(maxsize=1)
+def _build_id() -> str:
+    """Short commit id of the running code (read from .git without running git), shown in the page
+    footer so the owner can see at a glance whether an update came through."""
+    git = Path(__file__).resolve().parent / ".git"
+    try:
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref = head[5:]
+            ref_file = git / ref
+            if ref_file.is_file():
+                head = ref_file.read_text(encoding="utf-8").strip()
+            else:
+                packed = (git / "packed-refs").read_text(encoding="utf-8") if (git / "packed-refs").is_file() else ""
+                head = next((ln.split()[0] for ln in packed.splitlines() if ln.endswith(" " + ref)), "")
+        return head[:7] if len(head) >= 7 and all(c in "0123456789abcdef" for c in head[:7]) else ""
+    except OSError:
+        return ""
+
+
 def _asset_version() -> str:
     """Cache-buster for /dashboard/static URLs: changes whenever a static file changes, so a browser
     never keeps an old stylesheet or script after an update (static files are cached for an hour)."""
@@ -544,6 +563,7 @@ def _env():
         lstrip_blocks=True,
     )
     env.globals["asset_v"] = _asset_version()
+    env.globals["build_id"] = _build_id()
     env.filters.update(
         compact=fmt_compact, int=fmt_int, usd=fmt_usd, pct=fmt_pct, duration=fmt_duration, hours=fmt_hours,
         dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json, ext_url=ext_url,
