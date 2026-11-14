@@ -15,7 +15,9 @@ from typing import Any, Mapping
 import config
 
 WAKE_MODES = ("both", "hey_jarvis", "name")          # openWakeWord "hey jarvis", the assistant's name, or both
-TTS_ENGINES = ("kokoro", "sapi", "elevenlabs")
+TTS_ENGINES = ("kokoro", "sapi", "elevenlabs")       # the laptop voice process (it has no browser)
+WEB_TTS_ENGINES = ("browser", "kokoro", "elevenlabs")  # the Jarvis page: the browser's own voice is instant
+ELEVENLABS_DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"      # adewaskar/jarvis's default ElevenLabs voice ("George")
 BARGE_IN_MODES = ("auto", "wake_only", "off")
 KOKORO_VOICES = {   # the British voices in Kokoro v1.0 (bm_ = British male, bf_ = British female)
     "bm_george": "George - British male, warm and low (default)",
@@ -39,7 +41,9 @@ class VoiceSettings:
     tts_speed: float = 1.0
     sapi_voice: str = ""                   # part of a Windows voice name ("George", "David"); "" = best British male
     elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"   # "George" in the ElevenLabs library
+    elevenlabs_voice_id: str = ELEVENLABS_DEFAULT_VOICE
+    web_tts: str = "browser"               # how the Jarvis page speaks: browser speechSynthesis | kokoro | elevenlabs
+    web_voice: str = ""                    # the browser voice's name ("" = best British male available)
     stt_model: str = "small.en"
     name_model: str = "tiny.en"            # the small model that listens for the assistant's name
     whisper_device: str = "auto"
@@ -67,6 +71,17 @@ class VoiceSettings:
 
     def replace(self, **kw: Any) -> "VoiceSettings":
         return replace(self, **kw)
+
+    def tts_signature(self) -> tuple[Any, ...]:
+        """Everything a server-side voice depends on: when it changes, the voice is rebuilt."""
+        return (self.tts_engine, self.tts_voice, self.tts_speed, self.sapi_voice, bool(self.elevenlabs_api_key),
+                self.elevenlabs_api_key[-6:], self.elevenlabs_voice_id, self.web_tts)
+
+    def public(self) -> dict[str, Any]:
+        """What the Jarvis page needs to speak (no secrets)."""
+        return {"web_tts": self.web_tts, "web_voice": self.web_voice, "tts_engine": self.tts_engine,
+                "tts_voice": self.tts_voice, "kokoro_name": kokoro_name(self.tts_voice),
+                "elevenlabs": bool(self.elevenlabs_api_key)}
 
 
 def _choice(raw: str, allowed: tuple[str, ...], default: str) -> str:
@@ -108,7 +123,9 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         tts_speed=_float(env.get("VOICE_TTS_SPEED"), 1.0, 0.5, 2.0),
         sapi_voice=s("VOICE_SAPI_VOICE"),
         elevenlabs_api_key=s("ELEVENLABS_API_KEY"),
-        elevenlabs_voice_id=s("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb"),
+        elevenlabs_voice_id=s("ELEVENLABS_VOICE_ID", ELEVENLABS_DEFAULT_VOICE),
+        web_tts=_choice(s("VOICE_WEB_TTS", "browser"), WEB_TTS_ENGINES, "browser"),
+        web_voice=s("VOICE_WEB_VOICE"),
         stt_model=s("VOICE_STT_MODEL", base.whisper_model),
         name_model=s("VOICE_NAME_MODEL", "tiny.en"),
         whisper_device=base.whisper_device,
@@ -142,6 +159,38 @@ def get_voice_settings() -> VoiceSettings:
     return _cache[1]
 
 
+def kokoro_name(voice: str) -> str:
+    """'bm_lewis' -> 'Lewis'."""
+    return (voice.split("_", 1)[-1] if "_" in voice else voice).capitalize()
+
+
+_file_mtime: float | None = None
+
+
+def reload_if_changed() -> VoiceSettings | None:
+    """For the separate voice process: re-read settings when config.env changed on disk (the Settings
+    page or Sterling's settings_set tool wrote it). Returns the new settings, or None if unchanged."""
+    global _file_mtime
+    try:
+        m = config.get_settings().config_file.stat().st_mtime
+    except OSError:
+        m = None
+    if _file_mtime is None:
+        _file_mtime = m
+        return None
+    if m == _file_mtime:
+        return None
+    _file_mtime = m
+    config.reset_settings()
+    try:
+        from assistant.settings import reset_assistant_settings
+
+        reset_assistant_settings()
+    except Exception:  # pragma: no cover
+        pass
+    return get_voice_settings()
+
+
 def set_voice_settings(s: VoiceSettings | None) -> None:
     global _override
     _override = s
@@ -161,7 +210,8 @@ def form_values() -> dict[str, Any]:
     return {"voice_enabled": v.enabled, "voice_device": v.input_device, "voice_wake": v.wake_mode,
             "voice_tts": v.tts_engine, "voice_voice": v.tts_voice, "voice_sapi": v.sapi_voice,
             "voice_barge": v.barge_in, "voice_eleven_key_set": bool(v.elevenlabs_api_key),
-            "voice_voices": KOKORO_VOICES, "voice_name": v.assistant_name}
+            "voice_voices": KOKORO_VOICES, "voice_name": v.assistant_name, "voice_web_tts": v.web_tts,
+            "voice_web_voice": v.web_voice}
 
 
 def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
@@ -186,7 +236,8 @@ def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
             changes["VOICE_INPUT_DEVICE"] = dev
     for field, key, allowed in (("voice_wake", "VOICE_WAKE_WORD", WAKE_MODES),
                                 ("voice_tts", "VOICE_TTS", TTS_ENGINES),
-                                ("voice_barge", "VOICE_BARGE_IN", BARGE_IN_MODES)):
+                                ("voice_barge", "VOICE_BARGE_IN", BARGE_IN_MODES),
+                                ("voice_web_tts", "VOICE_WEB_TTS", WEB_TTS_ENGINES)):
         val = get(field)
         if val is None:
             continue
@@ -200,6 +251,12 @@ def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
             errors["voice_voice"] = "Choose one of the voices."
         else:
             changes["VOICE_TTS_VOICE"] = voice
+    web_voice = get("voice_web_voice")
+    if web_voice is not None:
+        if any(c in web_voice for c in "\"'\\\n=#"):
+            errors["voice_web_voice"] = "That voice name has characters I cannot save."
+        else:
+            changes["VOICE_WEB_VOICE"] = web_voice
     sapi = get("voice_sapi")
     if sapi is not None:
         if any(c in sapi for c in "\"'\\\n=#"):
@@ -214,6 +271,9 @@ def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
             changes["ELEVENLABS_API_KEY"] = key
     elif form.get("voice_eleven_clear"):
         changes["ELEVENLABS_API_KEY"] = ""
-    if changes.get("VOICE_TTS") == "elevenlabs" and not (key or get_voice_settings().elevenlabs_api_key):
+    has_key = bool(key or get_voice_settings().elevenlabs_api_key)
+    if changes.get("VOICE_TTS") == "elevenlabs" and not has_key:
         errors["voice_tts"] = "ElevenLabs needs an API key (paste it below), or pick the free local voice."
+    if changes.get("VOICE_WEB_TTS") == "elevenlabs" and not has_key:
+        errors["voice_web_tts"] = "ElevenLabs needs an API key (paste it below), or pick the browser's voice."
     return errors, ({} if errors else changes)

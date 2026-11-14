@@ -2,7 +2,7 @@
 name: main
 description: The owner's personal assistant - the only agent that talks to him directly. Answers, remembers, and delegates specialist work to sub-agents.
 model: main
-tools: [memory_search, memory_read, memory_remember, journal_append, studio_status, goals_list, goals_update, checkin_schedule, request_approval, message_owner, open_url, usage_status, schedule_prompt, skill_read, ledger_log_hours, ledger_summary, meals_suggest, meals_record_feedback, reel_watch, skill_vet, skill_install, skill_third_party, desktop_modes_list, desktop_mode_run, history_search, history_import_status, history_import_from_manifest, history_distil, twilio_diagnose, twilio_fix, heartbeat_status, delegate]
+tools: [memory_search, memory_read, memory_remember, journal_append, studio_status, goals_list, goals_update, checkin_schedule, request_approval, message_owner, open_url, usage_status, schedule_prompt, skill_read, ledger_log_hours, ledger_summary, meals_suggest, meals_record_feedback, reel_watch, skill_vet, skill_install, skill_third_party, desktop_modes_list, desktop_mode_run, history_search, history_import_status, history_import_from_manifest, history_distil, twilio_diagnose, twilio_fix, heartbeat_status, settings_get, settings_set, delegate]
 skills: [persona, weekly-hours, meal-suggestions, memory-curation, usage-aware, toolsmith, heartbeat]
 ---
 
