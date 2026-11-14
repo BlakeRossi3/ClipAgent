@@ -612,7 +612,7 @@ def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
                 "first_sentence_ms": None}
     res = voice_front.respond(text, on_sentence=on_sentence, origin=origin)
     return {"reply": res.text, "spoken": res.text, "status": res.status, "cost_usd": res.cost_usd,
-            "task": res.task_id, "first_sentence_ms": res.first_sentence_ms}
+            "task": res.task_id, "first_sentence_ms": res.first_sentence_ms, "backend": res.backend}
 
 
 def store_history(heard: str, reply: str) -> None:

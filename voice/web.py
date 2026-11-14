@@ -18,6 +18,7 @@ alongside the web server when VOICE_ENABLED=true.
 
 from __future__ import annotations
 
+import time
 import io
 import logging
 import re
@@ -270,24 +271,52 @@ def _speak_to_url(text: str) -> str | None:
         return None
 
 
-def voice_turn(text: str, update: Callable[..., None] | None = None) -> dict[str, Any]:
+def voice_turn(text: str, update: Callable[..., None] | None = None,
+               timing: dict[str, Any] | None = None) -> dict[str, Any]:
     """The background half: the fast front's answer (recorded on channel "voice"), spoken sentence by
     sentence: each one is synthesised as soon as it is complete and published through ``update``."""
     from voice.agent import brain_reply
 
     parts: list[dict[str, Any]] = []
+    timing = dict(timing or {})
+    t0 = time.monotonic()
 
     def on_sentence(sentence: str) -> None:
+        if "first_text_ms" not in timing:
+            timing["first_text_ms"] = round((time.monotonic() - t0) * 1000)
+        t1 = time.monotonic()
         parts.append({"text": sentence, "audio": _speak_to_url(sentence)})
+        timing.setdefault("first_tts_ms", round((time.monotonic() - t1) * 1000))
+        timing.setdefault("first_audio_ms", round((time.monotonic() - t0) * 1000))
         if update is not None:
             update(parts=list(parts))
 
-    out = brain_reply(text, on_sentence, origin="browser")
+    try:
+        out = brain_reply(text, on_sentence, origin="browser")
+    except Exception as exc:
+        timing["error"] = repr(exc)[:200]
+        _log_timing(timing, t0)
+        raise
+    timing["reply_ms"] = round((time.monotonic() - t0) * 1000)
+    timing["route"] = out.get("route") or out.get("backend") or out.get("model")
+    _log_timing(timing, t0)
     if not parts and out.get("spoken"):
         parts.append({"text": out["spoken"], "audio": _speak_to_url(out["spoken"])})
     tts = _tts()
     first = next((p["audio"] for p in parts if p.get("audio")), None)
     return {**out, "parts": parts, "audio": first, "voice": getattr(tts, "name", None) if first else None}
+
+
+def _log_timing(timing: dict[str, Any], t0: float) -> None:
+    """One line per browser voice turn so slowness can be traced to a stage
+    (decode / speech-to-text / first reply text / speech synthesis); also on the dashboard Log."""
+    import db
+
+    log.info("browser voice timing: %s", " ".join(f"{k}={v}" for k, v in timing.items()))
+    try:
+        db.log_event("voice", "voice turn timing", data=timing)
+    except Exception:  # pragma: no cover - logging must never break a turn
+        pass
 
 
 def _talk_err(error: str, msg: str, status: int) -> Response:
@@ -327,12 +356,14 @@ async def api_talk(request: Request) -> Response:
     a = home.assistant_state()
     if not a["can_chat"]:
         return d._json({"ok": False, "error": "off", "msg": a["reason"], "reason": a["reason"]}, status_code=503)
+    t_start = time.monotonic()
     try:
         samples = await run_in_threadpool(decode_audio, data)
     except AudioDecodeError as exc:
         log.warning("browser voice: %s", exc)
         return _talk_err("unreadable", "I could not read that recording. Try again, or type it instead.", 400)
     secs = len(samples) / RATE
+    timing: dict[str, Any] = {"audio_sec": round(secs, 1), "decode_ms": round((time.monotonic() - t_start) * 1000)}
     if secs > TALK_MAX_SEC + 0.5:
         return _talk_err("too_long", "That recording is too long. Keep it under a minute.", 413)
     h = get_voice_settings().honorific
@@ -343,8 +374,10 @@ async def api_talk(request: Request) -> Response:
         with _stt_lock:
             return _stt().transcribe(samples)
 
+    t_stt = time.monotonic()
     try:
         text = (await run_in_threadpool(hear) or "").strip()
+        timing["stt_ms"] = round((time.monotonic() - t_stt) * 1000)
     except Exception as exc:  # faster-whisper missing or the model failed to load
         db_log("speech recognition failed in the browser voice", exc)
         return _talk_err("stt", "Speech recognition is not working on the server; see the log. You can type instead.",
@@ -355,7 +388,7 @@ async def api_talk(request: Request) -> Response:
     cmd = commands.parse(text, get_voice_settings().assistant_name)
     if cmd in (commands.MUTE, commands.STOP, commands.CANCEL):  # handled in the page, no Claude
         return d._json({"ok": True, "heard": text, "command": cmd, "name": a["name"]})
-    jid = home.start_background(lambda update: voice_turn(text, update), what="voice turn", progress=True)
+    jid = home.start_background(lambda update: voice_turn(text, update, timing), what="voice turn", progress=True)
     return d._json({"ok": True, "heard": text, "job": jid, "name": a["name"], "fake": a["fake"]})
 
 
