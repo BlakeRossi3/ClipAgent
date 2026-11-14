@@ -966,7 +966,19 @@ def home_page(request: Request) -> Response:
         return d._security_headers(RedirectResponse("/dashboard/studio?" + urlencode(
             [(k, v) for k, v in request.query_params.multi_items() if k != "token"]), status_code=303))
     data = home_data()
-    return d._render(request, "home.html", {"h": data, "glyph": glyph, "chat_max": CHAT_MAX_CHARS}, nav="home")
+    resp = d._render(request, "home.html", {"h": data, "glyph": glyph, "chat_max": CHAT_MAX_CHARS}, nav="home")
+    return home_csp(resp)
+
+
+def home_csp(resp: Response) -> Response:
+    """The Jarvis page's CSP: remote images only through the guarded proxy (/voice/api/img), and frames only
+    from youtube-nocookie.com (the ``show_media`` YouTube panel). Every other page keeps the default."""
+    csp = resp.headers.get("Content-Security-Policy", "")
+    csp = csp.replace("img-src 'self' data: https: http:", "img-src 'self' data: blob:")
+    if "frame-src" not in csp:
+        csp += "; frame-src https://www.youtube-nocookie.com"
+    resp.headers["Content-Security-Policy"] = csp
+    return resp
 
 
 def api_home(request: Request) -> Response:

@@ -1191,6 +1191,15 @@ async def action(request: Request, action: str) -> Response:
                                            "reload": restarting,
                                            "hint": "" if restarting or not res["updated"]
                                            else "Restart ClipAgent to use the new version."})
+    if action == "selfcheck":
+        from assistant import selfcheck
+
+        rep = await run_in_threadpool(selfcheck.run)
+        return _render(request, "action", {"title": "Self-check: " + ("all clear" if rep.ok else "problems found"),
+                                           "log": [x.text() for x in rep.lines] + [rep.summary()], "ok": rep.ok,
+                                           "reload": False,
+                                           "hint": "Real tool calls on your own data. Every change was undone and "
+                                                   "nothing was sent."})
     if action in ("restart", "stop"):
         if not main.request_shutdown(restart=action == "restart"):
             return _render(request, "action", {"title": "Not available", "ok": False, "log": [], "reload": False,

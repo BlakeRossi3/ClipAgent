@@ -23,6 +23,8 @@
       <summary class="jv-menu-btn" title="More: history, stop, undo" aria-label="More options"><span aria-hidden="true">&middot;&middot;&middot;</span></summary>
       <div class="jv-menu-list">
         <button type="button" class="jv-btn" data-jv-history aria-controls="history" aria-expanded="false" title="Everything said, on every channel; type here too">History</button>
+        <button type="button" class="jv-btn" data-jv-diag-open aria-controls="jv-diag" title="Is it working? Microphone, hearing, brain link, timings, voice">Diagnostics <kbd>D</kbd></button>
+        <button type="button" class="jv-btn" data-jv-selftest title="Speak one line and check that sound actually plays">Audio self-test <kbd>T</kbd></button>
         {% if a.enabled %}
         <form method="post" action="/dashboard/sterling/{{ 'start' if a.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn{{ '' if a.stopped else ' jv-btn-stop' }}" title="{{ 'Let ' ~ a.name ~ ' work again' if a.stopped else 'Kill switch: ' ~ a.name ~ ' stops all work until started again' }}">{{ 'Start ' ~ a.name if a.stopped else 'Stop ' ~ a.name }}</button></form>
         <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="jv-btn" title="Revert {{ a.name }}'s last change to its own code">Undo</button></form>
@@ -31,8 +33,10 @@
     </details>
   </header>
 
+  <div class="jv-fx" aria-hidden="true"></div>
   <div class="jv-body">
   <div class="jv-stage">
+    <div class="jv-blade" data-jv-blade role="dialog" aria-label="Expanded panel" hidden></div>
     <div class="jv-core-wrap">
       <canvas class="jv-core" data-jv-core width="600" height="600" aria-hidden="true"></canvas>
       <button type="button" class="jv-ptt" data-jv-ptt aria-pressed="false" aria-describedby="jv-hint" {% if not a.can_chat %}disabled{% endif %}>
@@ -50,7 +54,7 @@
       <p class="jv-cap-you" data-jv-you></p>
       <p class="jv-cap-them" data-jv-them>{{ h.hello.salute }}</p>
     </div>
-    <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Keyboard: hold <kbd>Space</kbd> to talk{% elif not a.reason %}Voice opens once I am switched on.{% endif %}</p>
+    <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Keyboard: hold <kbd>Space</kbd> to talk · <kbd>D</kbd> diagnostics · <kbd>T</kbd> audio test{% elif not a.reason %}Voice opens once I am switched on.{% endif %}</p>
   </div>
 
   {# --- Activity rail: what Sterling is doing right now, live over /voice/api/stream (static/jarvis.js) --- #}
@@ -66,6 +70,11 @@
     </section>
   </aside>
   </div>
+
+  <aside class="jv-diag" id="jv-diag" data-jv-diag aria-label="Diagnostics" hidden>
+    <header class="diag-head"><b>Diagnostics</b><span><kbd>D</kbd> closes · <kbd>T</kbd> audio self-test</span><button type="button" class="diag-x" data-jv-diag-x aria-label="Close diagnostics">&times;</button></header>
+    <div class="diag-rows" data-jv-diag-rows></div>
+  </aside>
 
   <a class="jv-more" href="#briefing">Briefing <span aria-hidden="true">&darr;</span></a>
 </section>

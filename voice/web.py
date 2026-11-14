@@ -17,6 +17,13 @@ status, mute toggle, microphone list and "test my mic" level.
   page when it is not using the browser's own voice. The engine is rebuilt whenever the voice settings
   change (:func:`reload_tts`; it used to be cached for the life of the process).
 * ``POST /voice/api/voices``     the page reports the browser's voice names (for ``settings_set``).
+* ``GET  /voice/api/img?u=``     the SSRF-guarded image proxy for panels and map tiles (``assistant/hud.py``):
+  OpenStreetMap tiles, YouTube thumbnails, Wikimedia, or an image the model put in a panel; nothing else.
+* ``GET  /voice/api/media?u=``   the same for a video file the model showed; ``/voice/api/clip/<id>`` streams one
+  of his rendered Shorts (``renders_dir`` only).
+* ``GET  /voice/api/diagnostics`` what the ``D`` panel shows from the server side: brain connection, speech
+  settings, his MCP servers (names only), recent timings. ``POST /voice/api/timing``: the page reports how long
+  it took from the end of his speech to the first spoken word (also published as a ``timing`` event).
 
 Auth: the dashboard's (cookie / token / loopback) plus CSRF on POSTs; the laptop voice process uses
 a local key from the shared database (``X-Voice-Key``, loopback only).
@@ -38,6 +45,7 @@ import sys
 import threading
 import time
 import wave
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -478,10 +486,14 @@ async def api_tts(request: Request) -> Response:
 
 
 def activity() -> dict[str, Any]:
-    from assistant import events, tasks
+    from assistant import events, hud, tasks
     from voice.settings import get_voice_settings
 
     snap = events.snapshot()
+    try:
+        snap["ui"] = hud.ui_state()
+    except Exception as exc:  # the rail must still load
+        log.warning("ui state unreadable: %s", exc)
     live = {t["id"]: t for t in snap["tasks"]}
     for t in tasks.list_tasks():   # tasks from before this server started (kv) fill the gaps
         live.setdefault(t["id"], tasks.public(t))
@@ -541,6 +553,133 @@ async def api_stream(request: Request) -> Response:
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# the HUD: image/media proxy, rendered Shorts, diagnostics, timings
+# ---------------------------------------------------------------------------
+
+def _proxy_response(kind: str, request: Request) -> Any:
+    from assistant import hud
+
+    async def go() -> Response:
+        d = _d()
+        resp, _ = d._guard(request, api=True)
+        if resp is not None:
+            return resp
+        url = request.query_params.get("u") or ""
+        try:
+            ctype, body = await run_in_threadpool(hud.fetch_remote, url, kind=kind)
+        except hud.ProxyError as exc:
+            return d._security_headers(Response(str(exc), status_code=exc.status, media_type="text/plain"))
+        r = d._security_headers(Response(body, media_type=ctype))
+        r.headers["Cache-Control"] = "private, max-age=86400"
+        r.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        return r
+    return go()
+
+
+@router.get("/api/img", include_in_schema=False)
+async def api_img(request: Request) -> Response:
+    """Remote images for panels and map tiles, fetched here so the page never talks to the wider web."""
+    return await _proxy_response("image", request)
+
+
+@router.get("/api/media", include_in_schema=False)
+async def api_media(request: Request) -> Response:
+    return await _proxy_response("video", request)
+
+
+@router.get("/api/clip/{clip_id}", include_in_schema=False)
+def api_clip(request: Request, clip_id: int) -> Response:
+    """One of his rendered Shorts, for a ``show_media`` panel (files under renders_dir only)."""
+    import config
+    import db
+    from fastapi.responses import FileResponse
+
+    d = _d()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    c = db.get_clip(clip_id)
+    root = config.get_settings().renders_dir.resolve()
+    try:
+        path = Path(c.render_path).resolve() if c is not None and c.render_path else None
+    except OSError:
+        path = None
+    if path is None or not path.is_file() or root not in path.parents or path.suffix.lower() != ".mp4":
+        return d._json({"error": "not_found"}, status_code=404)
+    return d._security_headers(FileResponse(path, media_type="video/mp4"))
+
+
+TIMINGS: deque[dict[str, Any]] = deque(maxlen=20)
+
+
+@router.post("/api/timing", include_in_schema=False)
+async def api_timing(request: Request) -> Response:
+    """The page: time from the end of his speech to the first spoken word (and how it heard him)."""
+    from assistant import events
+
+    err, form = await _ask_guard(request)
+    if err is not None:
+        return err
+
+    def num(k: str) -> float | None:
+        try:
+            v = float(str(form.get(k) or ""))
+        except ValueError:
+            return None
+        return round(v) if 0 <= v < 600_000 else None
+
+    row = {"turn": str(form.get("turn") or "")[:40], "stt": str(form.get("stt") or "")[:20],
+           "speech_to_first_word_ms": num("first_word_ms"), "stt_ms": num("stt_ms"), "ask_ms": num("ask_ms"),
+           "tts": str(form.get("tts") or "")[:30]}
+    import db
+
+    row["ts"] = db.now_iso()
+    TIMINGS.append(row)
+    events.publish("timing", timing=row)
+    log.info("voice timing: %s", row)
+    return _d()._json({"ok": True})
+
+
+def diagnostics() -> dict[str, Any]:
+    from assistant import brain, events
+    from voice import control
+    from voice.settings import get_voice_settings
+
+    v = get_voice_settings()
+    out: dict[str, Any] = {"voice": v.public(), "stt": v.web_stt, "laptop": control.status(),
+                           "listeners": events.BUS.listeners, "timings": list(TIMINGS)[-5:]}
+    try:
+        st = brain.get_brain().status() if brain.running() else {"running": False, "connected": False}
+        out["brain"] = {k: st.get(k) for k in ("running", "connected", "busy", "mode", "model", "recovering",
+                                               "recoveries", "connects")}
+        out["brain"]["last_error"] = (st.get("last_error") or "")[:160]
+    except Exception as exc:
+        out["brain"] = {"running": False, "error": type(exc).__name__}
+    try:
+        from assistant import claude_code
+
+        out["mcp_servers"] = sorted(claude_code.user_mcp_servers())
+    except Exception:
+        out["mcp_servers"] = []
+    try:
+        from assistant import hud
+
+        out["ui"] = hud.ui_state()
+    except Exception:
+        pass
+    return out
+
+
+@router.get("/api/diagnostics", include_in_schema=False)
+def api_diagnostics(request: Request) -> Response:
+    d = _d()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    return d._json(diagnostics())
 
 
 def db_log(message: str, exc: Exception) -> None:

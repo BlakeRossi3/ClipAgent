@@ -343,6 +343,7 @@ _SETTINGS_SOURCES = ("config.py", "assistant/settings.py", "assistant/toolkit_se
 CHOICES: dict[str, tuple[str, ...]] = {
     "VOICE_TTS": ("kokoro", "sapi", "elevenlabs"),
     "VOICE_WEB_TTS": ("browser", "kokoro", "elevenlabs"),
+    "VOICE_STT": ("auto", "browser", "server"),
     "VOICE_WAKE_WORD": ("both", "hey_jarvis", "name"),
     "VOICE_BARGE_IN": ("auto", "wake_only", "off"),
     "MESSAGING_CHANNEL": ("auto", "sms", "whatsapp"),

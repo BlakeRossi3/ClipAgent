@@ -577,8 +577,87 @@ def working_dirs() -> list[Path]:
     return out
 
 
-def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = None) -> dict[str, Any]:
-    """The ``--settings`` JSON for a full-power run (pure apart from reading settings; tested)."""
+# -- his own Claude Code MCP servers (adewaskar/jarvis bridge/server.mjs configuredServers/allowedServers) --
+
+_claude_json: Path | None = None
+_SERVER_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def set_claude_json(path: Path | None) -> None:
+    """Tests: read MCP servers from this file instead of ``~/.claude.json`` (None = the real one)."""
+    global _claude_json
+    _claude_json = Path(path) if path else None
+
+
+def claude_json_path() -> Path:
+    return _claude_json or (Path.home() / ".claude.json")
+
+
+def _server_spec(spec: Any) -> dict[str, Any] | None:
+    """One ~/.claude.json server entry -> an Agent SDK ``mcp_servers`` entry (stdio | http | sse), or None."""
+    if not isinstance(spec, dict):
+        return None
+    kind = str(spec.get("type") or ("stdio" if spec.get("command") else "")).lower()
+    if kind == "stdio" and isinstance(spec.get("command"), str) and spec["command"].strip():
+        out: dict[str, Any] = {"type": "stdio", "command": spec["command"]}
+        if isinstance(spec.get("args"), list):
+            out["args"] = [str(a) for a in spec["args"]]
+        if isinstance(spec.get("env"), dict):
+            out["env"] = {str(k): str(v) for k, v in spec["env"].items()}
+        return out
+    if kind in ("http", "sse") and isinstance(spec.get("url"), str) and re.match(r"^https?://", spec["url"]):
+        out = {"type": kind, "url": spec["url"]}
+        if isinstance(spec.get("headers"), dict):
+            out["headers"] = {str(k): str(v) for k, v in spec["headers"].items()}
+        return out
+    return None
+
+
+def user_mcp_servers() -> dict[str, dict[str, Any]]:
+    """His MCP servers from Claude Code's own config, filtered by ASSISTANT_MCP_SERVERS (default all).
+
+    The global ``mcpServers`` block plus the home folder's project block (the scope ``claude`` applies when
+    run from home), as adewaskar/jarvis does. Our own server name and Claude in Chrome are skipped (we pass
+    those ourselves). The entries carry his servers' env/headers (they need them to start); callers must
+    never print, log or return them: use the names (:func:`mcp_server_names`)."""
+    s = get_assistant_settings()
+    wanted = s.mcp_servers
+    if wanted == ():
+        return {}
+    try:
+        cfg = json.loads(claude_json_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cfg, dict):
+        return {}
+    merged: dict[str, Any] = {}
+    if isinstance(cfg.get("mcpServers"), dict):
+        merged.update(cfg["mcpServers"])
+    projects = cfg.get("projects") if isinstance(cfg.get("projects"), dict) else {}
+    for key in (str(Path.home()), str(Path.home()).replace("\\", "/")):
+        proj = projects.get(key)
+        if isinstance(proj, dict) and isinstance(proj.get("mcpServers"), dict):
+            merged.update(proj["mcpServers"])
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in merged.items():
+        if not isinstance(name, str) or not _SERVER_NAME.match(name) or name == MCP_SERVER_NAME:
+            continue
+        if name == "claude-in-chrome" or (wanted is not None and name not in wanted):
+            continue
+        entry = _server_spec(spec)
+        if entry is not None:
+            out[name] = entry
+    return out
+
+
+def mcp_server_names() -> list[str]:
+    return sorted(user_mcp_servers())
+
+
+def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = None,
+                        extra_servers: list[str] | None = None) -> dict[str, Any]:
+    """The ``--settings`` JSON for a full-power run (pure apart from reading settings; tested).
+    ``extra_servers``: his own MCP servers passed in (each allowed as ``mcp__<name>__*``)."""
     dirs = working_dirs()
     allow = [t for t in BUILTIN_TOOLS if t not in ("Edit", "Write", "NotebookEdit")]
     for d in dirs:
@@ -587,6 +666,7 @@ def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = N
     allow += [TOOL_PREFIX + n for n in (mcp_tools or [])] + [TOOL_PREFIX + "*"]
     if chrome:
         allow.append(CHROME_TOOLS)
+    allow += [f"mcp__{n}__*" for n in (extra_servers or []) if _SERVER_NAME.match(n)]
     secret = list(SECRET_PATTERNS) + [rule_path(home_dir()) + "/**"]
     deny = [f"Read({p})" for p in secret] + [f"Edit({p})" for p in secret]
     deny += [f"Bash({c})" for c in DENY_COMMANDS] + [f"PowerShell({c})" for c in DENY_POWERSHELL]
@@ -718,10 +798,12 @@ def build_full_argv(exe: str, *, model: str, system: str, mcp_config: str | None
     return argv
 
 
-def prepare_full_run(tag: str, *, chrome: bool, mcp_tools: list[str] | None = None) -> tuple[Path, Path | None]:
+def prepare_full_run(tag: str, *, chrome: bool, mcp_tools: list[str] | None = None,
+                     extra_servers: list[str] | None = None) -> tuple[Path, Path | None]:
     """Write the run's settings and agents files (regenerated every run from the sources)."""
     settings_path = runs_dir() / f"{tag}.settings.json"
-    settings_path.write_text(json.dumps(permission_settings(chrome=chrome, mcp_tools=mcp_tools), indent=1), encoding="utf-8")
+    settings_path.write_text(json.dumps(permission_settings(chrome=chrome, mcp_tools=mcp_tools,
+                                                            extra_servers=extra_servers), indent=1), encoding="utf-8")
     agents_path: Path | None = None
     try:
         sync_native_skills()

@@ -70,3 +70,32 @@ def test_system_blocks():
     assert withp[2].count("</untrusted>") == 1 and "&lt;/untrusted>" in withp[2]
     # stable: no clock-dependent content
     assert persona.system_blocks("sms") == blocks
+
+
+def test_prompt_core_rules_in_lint_and_polish():
+    """Sterling's version of adewaskar/jarvis PROMPT_CORE: no filler, no enthusiasm, no apology, never "yeah",
+    two sentences of conversation out loud (data readouts excepted)."""
+    cases = {("Well, the render is complete.", "voice"): "filler", ("Let me check.", "sms"): "filler",
+             ("Yeah, it's done.", "voice"): "yeah", ("Sorry, sir, the file is missing.", "sms"): "apology",
+             ("My mistake. The hours are fixed.", "sms"): "apology", ("Sure, sir. Done.", "voice"): "gush",
+             ("It is done. It took long. The captions look good.", "voice"): "rambling"}
+    for (text, ch), code in cases.items():
+        assert code in persona.lint(text, ch), (text, persona.lint(text, ch))
+        fixed = persona.polish(text, ch)
+        assert code not in persona.lint(fixed, ch), (text, fixed)
+    # data readouts and ordinary words are left alone
+    readout = "This week: 38 hours. Pay is $912. Tax set-aside is $182. Net is $730."
+    assert persona.lint(readout, "voice") == [] and persona.polish(readout, "voice") == readout
+    for ok in ("So far, three uploads went out.", "Great Britain is on the map, sir.", "Right on schedule.",
+               "I'm afraid the quota is spent, sir.", "Yes, sir."):
+        assert persona.lint(ok, "voice") == [], ok
+    assert persona.polish("Yeah.", "sms") == "Yes."
+    assert "rambling" not in persona.lint("One. Two. Three.", "sms")       # the sentence ceiling is for speech
+    assert "Two sentences at most" in persona.system_blocks("voice")[1]
+
+
+def test_persona_spec_has_the_prompt_core_sections():
+    body = persona.registry.load_skills()["persona"].body
+    for heading in ("## Length", "is positional", "## Reporting", "## Never", "## Register"):
+        assert heading in body, heading
+    assert "never \"yeah\"" in body.lower() and "Two sentences is the ceiling" in body

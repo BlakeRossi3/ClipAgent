@@ -19,7 +19,19 @@
      result, and panels. Panel markup is model-written, so it is rebuilt node by node from a strict allowlist
      (sanitizePanel: the same tags and classes as assistant/panels.py; no scripts, handlers, links or styles
      other than --v; images only from http(s) or data:image).
-   Every user/model string is inserted with textContent or through sanitizePanel. No external requests. */
+   - Hearing (VOICE_STT auto|browser|server; capabilities as in src/lib/capabilities.ts): in Chrome/Edge the
+     browser's own SpeechRecognition transcribes as he speaks and the text goes straight to /voice/api/ask (no
+     upload, no Whisper). A heartbeat restarts it when Chrome throttles it into silence (src/lib/voice.ts
+     startBrowserVoice); interim results drive barge-in; a "network"/"service" error falls back to the server path.
+   - Panels by kind (assistant/hud.py): markup, image, video, YouTube (youtube-nocookie iframe), map (an
+     OpenStreetMap tile mosaic, no map library), data, list. Remote images only through /voice/api/img. Any panel
+     expands to a large "blade" over the ring (src/ui/Blades.tsx, simplified). The ui_* tools restyle the page
+     (accent, ring style/colour/scale/spin, rails, one-off effects) through `ui` events.
+   - D toggles diagnostics (mic permission and level, speech engine and last transcript, brain link, last turn
+     timings, voice and last spoken); T runs a one-line audio self-test (src/ui/Diagnostics.tsx). The time from the
+     end of his speech to the first spoken word is measured here and posted to /voice/api/timing.
+   Every user/model string is inserted with textContent or through sanitizePanel. The page itself makes no
+   external requests except the YouTube embed frame (CSP frame-src youtube-nocookie.com only). */
 (function () {
   'use strict';
   var root = document.querySelector('[data-jarvis]');
@@ -216,17 +228,22 @@
         .catch(function () { return null; });
     }
     function prime(item) { if (item && item.audio === undefined) item.audio = serverAudio(item.text); }
-    function playBuffer(buffer) {
+    function begun(item) {               // the first sound of an item: diagnostics, self-test, turn timing
+      diag.ttsStarted++; diag.spoken = item.text; diag.spokenAt = Date.now();
+      if (item.onstart) { var f = item.onstart; item.onstart = null; try { f(); } catch (e) { /* ignore */ } }
+      firstWord(item.turn);
+    }
+    function playBuffer(buffer, item) {
       return new Promise(function (resolve) {
         var c = audioCtx(), s = c.createBufferSource();
         s.buffer = buffer; s.connect(outAnalyser);
         var done = false;
         function fin() { if (done) return; done = true; if (src === s) src = null; resolve(); }
         s.onended = fin; s.__stop = fin;
-        src = s; s.start();
+        src = s; s.start(); begun(item);
       });
     }
-    function speakNative(text) {
+    function speakNative(text, item) {
       return new Promise(function (resolve) {
         if (!synth) { resolve(false); return; }
         synth.resume();               // Chrome wedges after cancel(); resume() un-wedges it
@@ -235,10 +252,12 @@
         u.lang = (v && v.lang) || 'en-GB'; u.rate = 1.0; u.pitch = 0.95;
         var started = false, done = false, watchdog = null;
         function fin() {
-          if (done) return; done = true; clearTimeout(watchdog); clearInterval(keepalive); keepalive = null; resolve(started);
+          if (done) return; done = true; clearTimeout(watchdog); clearInterval(keepalive); keepalive = null;
+          if (!started) diag.ttsFailures++;
+          resolve(started);
         }
         u.onstart = function () {
-          started = true; clearTimeout(watchdog);
+          started = true; clearTimeout(watchdog); begun(item);
           keepalive = setInterval(function () { if (!paused && synth.speaking) { synth.pause(); synth.resume(); } }, 5000);
         };
         u.onend = fin; u.onerror = fin;
@@ -262,16 +281,17 @@
         setSpeaking(item.text); render();
         Promise.resolve(item.audio).then(function (buffer) {
           if (item.dead) return null;
-          if (buffer) { current = { buffer: true }; return playBuffer(buffer); }
-          return speakNative(item.text);
+          if (buffer) { current = { buffer: true }; diag.tts = voiceCfg.web_tts + ' (server voice)'; return playBuffer(buffer, item); }
+          var nv = pickVoice(); diag.tts = 'browser: ' + (nv ? nv.name : 'default voice');
+          return speakNative(item.text, item);
         }).then(function () { setSpeaking(''); next(); }, function () { setSpeaking(''); next(); });
       })();
     }
     return {
-      say: function (text, turn, front) {
+      say: function (text, turn, front, onstart) {
         var t = shape(text);
         if (!t) return;
-        var item = { text: t, turn: turn };
+        var item = { text: t, turn: turn, onstart: onstart || null };
         if (front) queue.unshift(item); else queue.push(item);
         pump();
       },
@@ -309,7 +329,7 @@
 
   /* ---- fillers (adewaskar/jarvis src/lib/fillers.ts: subjectless, short, "sir" final and only sometimes) */
   function picker(pool) { var last = -1; return function () { var i = last; while (pool.length > 1 && i === last) i = Math.floor(Math.random() * pool.length); last = i; return pool[Math.max(0, i)].replace('{h}', H); }; }
-  var WORKING = picker(['Working on it, {h}.', 'Under way.', 'One moment, {h}.', 'Looking into it.', 'Checking.']);
+  var WORKING = picker(['Working on it, {h}.', 'Under way.', 'Retrieving.', 'Cross-referencing.', 'Checking.']);
   var BY_TOOL = [
     [/test/i, picker(['Running the tests.', 'Testing it now.'])],
     [/^(reading|editing|writing|searching the code)/i, picker(['Looking through the code.', 'Opening the files.'])],
@@ -318,6 +338,8 @@
     [/notes|journal|noting/i, picker(['Checking my notes.', 'Consulting the archive.'])],
     [/voice|setting/i, picker(['Very good, {h}.', 'Directly, {h}.'])],
     [/shorts|books|hours|goals|usage/i, picker(['Pulling the figures.', 'Checking the numbers.'])],
+    [/map|where/i, picker(['Plotting it.', 'Bringing up the map.'])],
+    [/screen|picture|video|showing/i, picker(['Putting it up.', 'On screen shortly.'])],
     [/background task|helper/i, picker(['Setting it going.', 'Under way.'])]
   ];
   function fillerFor(label) {
@@ -372,11 +394,24 @@
 
   /* ---- asking the brain ------------------------------------------------------------------- */
   var myTurns = {}, cancelled = {}, pending = null, turnKinds = {}, spokeIn = {}, filled = {};
+  var timing = {}, speechEndAt = 0, heardBy = '', heardSttMs = 0;
+  function firstWord(turn) {            // end of his speech -> first spoken word, measured here
+    var t = turn && timing[turn];
+    if (!t || t.sent) return;
+    t.sent = true;
+    var ms = Date.now() - t.end;
+    diag.lastTurn = { ms: ms, how: t.how, ask: t.askMs, stt: t.sttMs, at: Date.now() };
+    post('/voice/api/timing', { turn: turn, first_word_ms: ms, stt: t.how, ask_ms: t.askMs, stt_ms: t.sttMs || '',
+      tts: voiceCfg.web_tts || 'browser' }).catch(function () { /* diagnostics only */ });
+  }
   function ask(text) {
     youEl.textContent = text;
     pending = 'asking'; render();
+    var askAt = Date.now(), t0 = { end: speechEndAt || askAt, how: heardBy || 'typed', sttMs: heardSttMs };
+    speechEndAt = 0; heardBy = ''; heardSttMs = 0;
     post('/voice/api/ask', { text: text, origin: 'browser' }).then(getJSON).then(function (j) {
       if (j.ok && j.turn) {
+        t0.askMs = Date.now() - askAt; timing[j.turn] = t0;
         if (j.merged) { cancelled[j.merged] = 1; youEl.textContent = j.heard || text; }   // stitched onto the last breath
         myTurns[j.turn] = 1; pending = j.turn; addHistory('me', text, 'voice · this tab');
       }
@@ -444,6 +479,7 @@
         }
         if (j.command) { speaker.cancel(); interrupt(); command(j.command); return; }
         var heard = j.heard || '';
+        diag.heard = heard; diag.heardAt = Date.now(); heardSttMs = j.stt_ms || 0;
         if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); return; }   // his own voice
         // Only talking over his answer is a barge-in. While he has not answered yet (at most a filler), the server
         // stitches this onto the last utterance: one request, not a cancelled one and a new one.
@@ -457,6 +493,129 @@
     else { local = null; caption('Very good, ' + H + '.'); render(); }
   }
 
+  /* ---- hearing in the browser: SpeechRecognition with a heartbeat ---------------------------------
+     Adapted from adewaskar/jarvis src/lib/voice.ts startBrowserVoice and capabilities.ts (MIT License). Chrome
+     and Edge transcribe as he speaks; the text goes straight to /voice/api/ask. Chrome throttles the engine and
+     it can go silent with no event to catch, so a heartbeat tears it down and builds a fresh one. A "network"
+     or "service-not-allowed" error (no speech service reachable) falls back to Whisper on the server. */
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  var sttBroken = '';
+  var diag = { sttRunning: false, sessions: 0, restarts: 0, heard: '', heardAt: 0, interim: '', sttError: '', idleMs: 0,
+    tts: '', spoken: '', spokenAt: 0, ttsStarted: 0, ttsFailures: 0, lastTurn: null, serverTiming: null,
+    micPerm: 'unknown', selfTest: '' };
+  function sttEngine() {
+    var want = voiceCfg.stt || 'auto';
+    if (want === 'server' || !SR || sttBroken) return 'server';
+    return 'browser';
+  }
+  function sttLabel() {
+    var e = sttEngine();
+    return e === 'browser' ? 'browser speech recognition' : 'Whisper on the server' +
+      (sttBroken ? ' (browser engine failed: ' + sttBroken + ')' : !SR && (voiceCfg.stt || 'auto') !== 'server' ? ' (this browser has none)' : '');
+  }
+  function localCommand(t) {      // the same local commands as voice/commands.py, no Claude involved
+    var n = norm(t).replace(new RegExp('^(?:hey |ok |okay )?(?:' + NAME.toLowerCase() + '|jarvis)\\s*'), '').trim();
+    if (/^(stop listening|mute|mute yourself|go to sleep)$/.test(n)) return 'mute';
+    if (/^(stop|quiet|be quiet|shush|stop talking|enough|that's enough)$/.test(n)) return 'stop';
+    if (/^(never ?mind|cancel|forget it|cancel that)$/.test(n)) return 'cancel';
+    return null;
+  }
+  function heardText(heard, endAt, how, mode) {
+    if (local === 'listening') local = null;
+    var cmd = localCommand(heard);
+    if (cmd) { speaker.cancel(); interrupt(); command(cmd); return; }
+    if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); render(); return; }   // his own voice
+    if (speaker.busy() && pending && pending !== 'asking' && !spokeIn[pending]) speaker.cancel();
+    else if (speaker.busy()) interrupt();
+    speechEndAt = endAt || Date.now(); heardBy = how; heardSttMs = 0;
+    if (mode === 'ptt') { held = ''; ask(heard); } else assemble(heard, false);
+    render();
+  }
+  var bsr = (function () {
+    var rec = null, running = false, wanted = false, settled = '', interim = '', lastAlive = 0, lastResultAt = 0;
+    var silence = null, started = false, health = null;
+    function touch() { lastAlive = Date.now(); }
+    function reset() { clearTimeout(silence); settled = ''; interim = ''; started = false; }
+    function emit() {
+      var text = (settled + ' ' + interim).replace(/\s+/g, ' ').trim(), endAt = lastResultAt;
+      reset();
+      if (!text) { if (local === 'listening') { local = null; render(); } return; }
+      diag.heard = text; diag.heardAt = Date.now();
+      heardText(text, endAt, 'browser', pttDown || pttBrowser ? 'ptt' : 'vad');
+    }
+    function onResult(e) {
+      touch(); lastResultAt = Date.now();
+      var fresh = ''; interim = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) fresh += chunk; else interim += chunk;
+      }
+      settled = (settled + ' ' + fresh).replace(/\s+/g, ' ').trim();
+      var full = (settled + ' ' + interim).replace(/\s+/g, ' ').trim();
+      diag.interim = full;
+      if (!full) return;
+      if (speaker.busy() && isEcho(full, speaker.now())) { settled = ''; interim = ''; return; }
+      if (!started) {
+        if (speaker.busy() && !OVERRIDE.test(full)) {
+          if (Date.now() - speaker.since() < 350) return;          // his own first syllable
+          if (full.split(/\s+/).length < 2) return;               // one word of his own playback is no evidence
+        }
+        started = true;
+        if (speaker.busy()) speaker.pause();                         // barge-in on the interim result
+        local = 'listening'; render();
+      }
+      youEl.textContent = (held ? held + ' ' : '') + full;
+      clearTimeout(silence);
+      silence = setTimeout(emit, pttDown ? 6000 : 900);
+    }
+    function spin() {
+      if (!wanted || running || rec) return;
+      try { rec = new SR(); } catch (e) { broken('unavailable'); return; }
+      rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
+      rec.lang = /^en/i.test(navigator.language || '') ? navigator.language : 'en-US';
+      rec.onstart = function () { running = true; diag.sttRunning = true; diag.sessions++; touch(); };
+      rec.onresult = onResult;
+      rec.onerror = function (ev) {
+        var err = String((ev && ev.error) || '');
+        diag.sttError = err; touch();
+        if (err === 'not-allowed') { wanted = false; micError({ name: 'NotAllowedError' }); }
+        else if (err === 'network' || err === 'service-not-allowed' || err === 'language-not-supported' || err === 'audio-capture') broken(err);
+      };
+      rec.onend = function () {
+        running = false; diag.sttRunning = false; rec = null; touch();
+        if (wanted) setTimeout(spin, 80);
+      };
+      try { rec.start(); } catch (e) { running = false; rec = null; setTimeout(spin, 250); }
+    }
+    function broken(why) {
+      sttBroken = why; diag.sttError = why;
+      stop();
+      if (always) { flash('Browser speech recognition is unavailable; listening through the laptop instead.'); vad.armed = 0; vad.speaking = false; }
+      render();
+    }
+    function start() {
+      if (wanted || !SR) return;
+      wanted = true; touch(); spin();
+      clearInterval(health);
+      health = setInterval(function () {      // the heartbeat
+        if (!wanted) return;
+        var idle = Date.now() - lastAlive; diag.idleMs = idle;
+        if (idle < 15000) return;
+        diag.restarts++;
+        try { if (rec) rec.abort(); } catch (e) { /* already gone */ }
+        rec = null; running = false; diag.sttRunning = false; touch(); spin();
+      }, 5000);
+    }
+    function stop() {
+      wanted = false; clearInterval(health); reset();
+      try { if (rec) rec.abort(); } catch (e) { /* noop */ }
+      rec = null; running = false; diag.sttRunning = false;
+    }
+    return { start: start, stop: stop, flush: function () { clearTimeout(silence); emit(); }, live: function () { return running; },
+      wanted: function () { return wanted; } };
+  })();
+  var pttBrowser = false;
+
   /* ---- always-listen: energy VAD with an adaptive floor (src/lib/vad.ts) -------------------- */
   var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 }, firstInWindow = true;
   function endSilenceMs() {      // longer for the first thing he says after a reply (he draws breath mid-answer)
@@ -465,7 +624,7 @@
     return firstInWindow || (pending && pending !== 'asking' && !spokeIn[pending]) ? Math.max(650, long) : 650;
   }
   setInterval(function () {
-    if (!always || !micAnalyser || recMode === 'ptt' && rec) return;
+    if (!always || !micAnalyser || recMode === 'ptt' && rec || sttEngine() === 'browser') return;
     var e = rms(micAnalyser), now = performance.now();
     vad.smooth += (e - vad.smooth) * 0.5;
     if (!vad.speaking && !vad.armed) {
@@ -485,6 +644,7 @@
     } else {
       if (vad.smooth > thr * 0.6) vad.lastLoud = now;
       if (now - vad.lastLoud >= endSilenceMs() || now - vad.armed >= 20000) {
+        speechEndAt = Date.now() - Math.round(now - vad.lastLoud); heardBy = 'server';
         vad.speaking = false; vad.armed = 0; firstInWindow = false; stopRec();
       }
     }
@@ -546,11 +706,13 @@
       if (tag === 'img') {
         var s = (n.getAttribute('src') || '').trim();
         if (!SRC_OK.test(s)) continue;
-        el.referrerPolicy = 'no-referrer'; el.loading = 'lazy'; el.src = s;
+        el.referrerPolicy = 'no-referrer'; el.loading = 'lazy';
+        el.src = /^https?:/i.test(s) ? proxyImg(s) : s;      // remote images only through the guarded proxy
       } else if (tag !== 'br') copyInto(n, el, depth + 1);
       to.appendChild(el);
     }
   }
+  function proxyImg(u) { return '/voice/api/img?u=' + encodeURIComponent(u); }
   function sanitizePanel(html) {
     var doc = new DOMParser().parseFromString('<!doctype html><body>' + String(html || ''), 'text/html');
     var frag = document.createDocumentFragment();
@@ -602,17 +764,114 @@
       tasksEl.appendChild(li);
     });
   }
+  /* panels by kind (assistant/hud.py); every value is checked again here before it reaches the DOM */
+  var TILE = 256, YT_ID = /^[A-Za-z0-9_-]{11}$/, LOCAL_MEDIA = /^\/voice\/api\/(img|media)\?u=|^\/voice\/api\/clip\/\d+$/;
+  function lonX(lon, z) { return (lon + 180) / 360 * Math.pow(2, z) * TILE; }
+  function latY(lat, z) { var r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z) * TILE; }
+  function drawMap(box, m, zoom) {      // a tile mosaic centred on the place, with pins (no map library)
+    box.textContent = '';
+    var W = Math.max(160, box.clientWidth || 300), Hh = Math.max(120, box.clientHeight || 190), z = Math.max(1, Math.min(18, zoom | 0));
+    var n = Math.pow(2, z), left = lonX(+m.lon, z) - W / 2, top = latY(+m.lat, z) - Hh / 2;
+    for (var ty = Math.floor(top / TILE); ty <= Math.floor((top + Hh) / TILE); ty++) {
+      if (ty < 0 || ty >= n) continue;
+      for (var tx = Math.floor(left / TILE); tx <= Math.floor((left + W) / TILE); tx++) {
+        var img = document.createElement('img'), wx = ((tx % n) + n) % n;
+        img.className = 'hud-tile'; img.alt = ''; img.draggable = false; img.referrerPolicy = 'no-referrer';
+        img.style.left = Math.round(tx * TILE - left) + 'px'; img.style.top = Math.round(ty * TILE - top) + 'px';
+        img.src = proxyImg('https://tile.openstreetmap.org/' + z + '/' + wx + '/' + ty + '.png');
+        box.appendChild(img);
+      }
+    }
+    (m.markers || []).slice(0, 8).forEach(function (mk) {
+      var x = lonX(+mk.lon, z) - left, y = latY(+mk.lat, z) - top;
+      if (!(x >= 0 && x <= W && y >= 0 && y <= Hh)) return;
+      var pin = el('span', 'hud-pin'); pin.style.left = Math.round(x) + 'px'; pin.style.top = Math.round(y) + 'px';
+      if (mk.label) { pin.title = String(mk.label); pin.appendChild(el('span', 'hud-pin-label', String(mk.label).slice(0, 40))); }
+      box.appendChild(pin);
+    });
+    box.appendChild(el('span', 'hud-attrib', '\u00a9 OpenStreetMap contributors'));
+  }
+  function mapView(p, big) {
+    var m = p.map || {}, wrap = el('div', 'hud-mapwrap'), box = el('div', 'hud-map'), zoom = +m.zoom || 14;
+    box.setAttribute('role', 'img'); box.setAttribute('aria-label', 'Map: ' + (m.label || p.title || ''));
+    wrap.appendChild(box);
+    var ctl = el('div', 'hud-mapctl');
+    [['+', 1], ['\u2212', -1]].forEach(function (b) {
+      var btn = el('button', 'hud-mapbtn', b[0]); btn.type = 'button'; btn.setAttribute('aria-label', b[1] > 0 ? 'Zoom in' : 'Zoom out');
+      btn.addEventListener('click', function (e) { e.stopPropagation(); zoom = Math.max(1, Math.min(18, zoom + b[1])); drawMap(box, m, zoom); });
+      ctl.appendChild(btn);
+    });
+    wrap.appendChild(ctl);
+    if (m.label) wrap.appendChild(el('small', 'hud-caption', String(m.label)));
+    requestAnimationFrame(function () { drawMap(box, m, zoom); });
+    return wrap;
+  }
+  function panelBody(p, big) {
+    var body = el('div', 'hud-body'), k = p.kind || 'markup';
+    if (k === 'markup') body.appendChild(sanitizePanel(p.html));
+    else if (k === 'map') body.appendChild(mapView(p, big));
+    else if (k === 'image' && LOCAL_MEDIA.test(p.src || '')) {
+      var im = el('img', 'hud-img'); im.referrerPolicy = 'no-referrer'; im.alt = p.caption || p.title || ''; im.src = p.src;
+      body.appendChild(im);
+    } else if (k === 'video' && LOCAL_MEDIA.test(p.src || '')) {
+      var v = document.createElement('video'); v.className = 'hud-video'; v.controls = true; v.playsInline = true; v.preload = 'metadata'; v.src = p.src;
+      body.appendChild(v);
+    } else if (k === 'youtube' && YT_ID.test(p.video_id || '')) {
+      var f = document.createElement('iframe'); f.className = 'hud-embed';
+      f.src = 'https://www.youtube-nocookie.com/embed/' + p.video_id + '?rel=0&modestbranding=1';
+      f.title = p.caption || p.title || 'Video'; f.allow = 'accelerometer; encrypted-media; picture-in-picture; fullscreen';
+      f.referrerPolicy = 'strict-origin-when-cross-origin'; f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+      f.allowFullscreen = true; f.loading = 'lazy';
+      body.appendChild(f);
+    } else if (k === 'data') {
+      var t = el('table', 'hud-kv');
+      (p.rows || []).slice(0, 16).forEach(function (r) { var tr = el('tr'); tr.appendChild(el('th', '', String(r[0] || ''))); tr.appendChild(el('td', '', String(r[1] || ''))); t.appendChild(tr); });
+      body.appendChild(t);
+    } else if (k === 'list') {
+      var rows = el('div', 'hud-rows');
+      (p.items || []).slice(0, 12).forEach(function (it, i) {
+        var row = el('div', 'hud-row'); row.appendChild(el('span', 'hud-idx', (i < 9 ? '0' : '') + (i + 1)));
+        var main = el('span', 'hud-main'); main.appendChild(el('span', 'hud-label', String(it.label || '')));
+        if (it.sub) main.appendChild(el('span', 'hud-sub', String(it.sub)));
+        row.appendChild(main); if (it.tag) row.appendChild(el('span', 'hud-tag', String(it.tag)));
+        rows.appendChild(row);
+      });
+      body.appendChild(rows);
+    } else body.appendChild(el('p', 'hud-note hud-dim', 'Nothing to show.'));
+    if (p.caption && k !== 'map') body.appendChild(el('small', 'hud-caption', String(p.caption)));
+    if (p.note) body.appendChild(el('p', 'hud-note hud-dim', String(p.note)));
+    return body;
+  }
+  function panelBox(p, big) {
+    var box = el('article', 'hud-panel hud-kind-' + (/^[a-z]+$/.test(p.kind || '') ? p.kind : 'markup') + (big ? ' is-big' : ''));
+    box.setAttribute('data-accent', /^(amber|violet|green|red)$/.test(p.accent) ? p.accent : 'default');
+    var head = el('div', 'hud-head'); head.appendChild(el('h3', 'hud-title', p.title || 'DISPLAY'));
+    if (!big) {
+      var x = el('button', 'hud-expand', '\u2922'); x.type = 'button'; x.title = 'Expand'; x.setAttribute('aria-label', 'Expand ' + (p.title || 'panel'));
+      x.addEventListener('click', function () { openBlade(p); });
+      head.appendChild(x);
+    }
+    box.appendChild(head);
+    box.appendChild(panelBody(p, big));
+    return box;
+  }
   function renderPanels() {
     panelsEl.textContent = '';
     panelsEl.hidden = !act.panels.length;
-    act.panels.slice(-4).reverse().forEach(function (p) {
-      var box = el('article', 'hud-panel');
-      box.setAttribute('data-accent', /^(amber|violet|green|red)$/.test(p.accent) ? p.accent : 'default');
-      box.appendChild(el('h3', 'hud-title', p.title || 'DISPLAY'));
-      var body = el('div', 'hud-body'); body.appendChild(sanitizePanel(p.html)); box.appendChild(body);
-      panelsEl.appendChild(box);
-    });
+    act.panels.slice(-4).reverse().forEach(function (p) { panelsEl.appendChild(panelBox(p, false)); });
+    if (bladeId && !act.panels.some(function (p) { return p.id === bladeId; })) closeBlade();
   }
+  /* the blade: one panel, large, over the ring (Esc or x closes) */
+  var bladeEl = q('[data-jv-blade]'), bladeId = null;
+  function openBlade(p) {
+    if (!bladeEl) return;
+    bladeId = p.id; bladeEl.textContent = '';
+    var x = el('button', 'jv-blade-x', '\u00d7'); x.type = 'button'; x.setAttribute('aria-label', 'Close');
+    x.addEventListener('click', closeBlade);
+    bladeEl.appendChild(x); bladeEl.appendChild(panelBox(p, true));
+    bladeEl.hidden = false; root.classList.add('has-blade');
+  }
+  function closeBlade() { if (!bladeEl) return; bladeId = null; bladeEl.hidden = true; bladeEl.textContent = ''; root.classList.remove('has-blade'); }
   function renderRail() { renderSteps(); renderTasks(); renderPanels(); }
   setInterval(function () {
     if (Object.keys(act.tasks).some(function (k) { return act.tasks[k].status === 'running'; })) renderTasks();
@@ -677,8 +936,18 @@
       act.tasks[t.id] = Object.assign(act.tasks[t.id] || {}, t);
       renderTasks();
     },
-    panel: function (e) { if (e.panel) { act.panels.push(e.panel); renderPanels(); } },
-    settings: function (e) { if (e.voice) { voiceCfg = e.voice; cachedVoice = undefined; } },
+    panel: function (e) {
+      if (!e.panel) return;
+      act.panels.push(e.panel); renderPanels();
+      if (e.panel.size === 'blade') openBlade(e.panel);
+    },
+    settings: function (e) {
+      if (!e.voice) return;
+      voiceCfg = e.voice; cachedVoice = undefined;
+      if (always) { if (sttEngine() === 'browser') bsr.start(); else bsr.stop(); }
+    },
+    ui: function (e) { if (e.ui) applyUi(e.ui); if (e.effect) fireEffect(e.effect); },
+    timing: function (e) { if (e.timing) diag.serverTiming = e.timing; },
     ignored: function () { if (!pending) youEl.textContent = ''; },
     brain: function (e) { brainState = e.state === 'reconnecting' ? 'reconnecting' : ''; render(); }
   };
@@ -707,6 +976,7 @@
         });
         (j.tasks || []).forEach(function (t) { act.tasks[t.id] = t; });
         act.panels = j.panels || [];
+        if (j.ui) applyUi(j.ui);
         seq = j.seq;
         renderRail();
       }).catch(function () { /* the stream still works */ });
@@ -723,10 +993,14 @@
       audioCtx();
       if (synth) synth.resume();     // unlock speech inside the click
       if (bg.online || bg.muted) postMute(false);
-      ensureMic().then(function () { always = true; vad.armed = 0; vad.speaking = false; local = local === 'error' ? null : local; render(); },
-        function (e) { micError(e); render(); });
+      ensureMic().then(function () {
+        always = true; vad.armed = 0; vad.speaking = false; local = local === 'error' ? null : local;
+        if (sttEngine() === 'browser') bsr.start();
+        render();
+      }, function (e) { micError(e); render(); });
     } else {
       always = false;
+      bsr.stop();
       if (rec) stopRec(true);
       if (local === 'listening' || local === 'error') local = null;
       if (bg.online) postMute(true);
@@ -741,11 +1015,24 @@
     setOn(!isOn());
   });
   ptt.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  function press() { if (pttDown) return; pttDown = true; ptt.classList.add('is-down'); dismissTip(); startRec('ptt'); }
+  function press() {
+    if (pttDown) return;
+    pttDown = true; ptt.classList.add('is-down'); dismissTip();
+    if (sttEngine() === 'browser') {      // hold to talk, transcribed in the browser
+      audioCtx(); if (synth) synth.resume();
+      speaker.cancel(); interrupt(); pttBrowser = true; bsr.start(); local = 'listening'; render(); return;
+    }
+    startRec('ptt');
+  }
   function release() {
     if (!pttDown) return;
     setTimeout(function () { pttDown = false; }, 0);
     ptt.classList.remove('is-down');
+    if (pttBrowser) {                     // the last words arrive a moment after the key comes up
+      setTimeout(function () { bsr.flush(); pttBrowser = false; if (!always) bsr.stop(); }, 700);
+      return;
+    }
+    speechEndAt = Date.now(); heardBy = 'server';
     if (rec && recMode === 'ptt') stopRec();
   }
   function typingIn(t) {
@@ -753,13 +1040,92 @@
     return /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(t.tagName) || t.isContentEditable;
   }
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { if (drawerOpen()) setDrawer(false); else if (menu && menu.open) menu.open = false; else if (rec && recMode === 'ptt') stopRec(true); else interrupt(); render(); return; }
+    if (e.key === 'Escape') { if (diagEl && !diagEl.hidden) toggleDiag(false); else if (bladeId) closeBlade(); else if (drawerOpen()) setDrawer(false); else if (menu && menu.open) menu.open = false; else if (rec && recMode === 'ptt') stopRec(true); else interrupt(); render(); return; }
     if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target) || !canTalk) return;
     if (document.querySelector('dialog[open]')) return;
     e.preventDefault();
     if (!e.repeat) press();
   });
   document.addEventListener('keyup', function (e) { if (e.code === 'Space' && pttDown) { e.preventDefault(); release(); } });
+
+  /* ---- "is it working?": D = diagnostics, T = audio self-test (src/ui/Diagnostics.tsx) ---------- */
+  var diagEl = q('[data-jv-diag]'), diagTimer = null, diagServer = null, diagFetchAt = 0;
+  function ago(t) { return t ? ((Date.now() - t) / 1000).toFixed(1) + 's ago' : '—'; }
+  function micPermission() {
+    if (!navigator.permissions || !navigator.permissions.query) { diag.micPerm = stream ? 'granted' : 'unknown'; return; }
+    navigator.permissions.query({ name: 'microphone' }).then(function (r) { diag.micPerm = r.state; }, function () { diag.micPerm = stream ? 'granted' : 'unknown'; });
+  }
+  function diagRows() {
+    var lvl = stream && micAnalyser ? Math.min(1, rms(micAnalyser) * 7) : -1, srv = diagServer || {}, b = srv.brain || {};
+    var link = !es ? 'not connected' : es.readyState === 1 ? 'live' : es.readyState === 0 ? 'connecting' : 'closed';
+    var lt = diag.lastTurn;
+    return [
+      ['Microphone', diag.micPerm + (stream ? ', open' : ', closed'), diag.micPerm === 'denied'],
+      ['Mic level', lvl < 0 ? '—' : (Math.round(lvl * 100) + '%'), false, lvl],
+      ['Hearing', sttLabel() + (sttEngine() === 'browser' ? (diag.sttRunning ? ', running' : ', idle') + ' · ' + diag.sessions + ' sessions, ' + diag.restarts + ' restarts' : ''), !!sttBroken],
+      ['Last heard', diag.heard ? '"' + diag.heard.slice(-80) + '" · ' + ago(diag.heardAt) : (diag.interim ? '… ' + diag.interim.slice(-60) : '—')],
+      ['STT error', diag.sttError || 'none', !!diag.sttError && diag.sttError !== 'no-speech' && diag.sttError !== 'aborted'],
+      ['Brain link', link + (b.connected ? ' · session connected' : b.running ? ' · session starting' : ' · session idle') + (b.model ? ' · ' + b.model : ''), link !== 'live'],
+      ['Last turn', lt ? 'speech end → first word ' + lt.ms + ' ms (' + lt.how + (lt.ask != null ? ', ask ' + lt.ask + ' ms' : '') + (lt.stt ? ', whisper ' + lt.stt + ' ms' : '') + ') · ' + ago(lt.at) : '—', lt && lt.ms > 4000],
+      ['Voice', diag.tts || (voiceCfg.web_tts === 'browser' ? 'browser: ' + ((pickVoice() || {}).name || 'default voice') : voiceCfg.web_tts), diag.ttsFailures > 0],
+      ['Last spoken', diag.spoken ? '"' + diag.spoken.slice(0, 70) + '" · ' + ago(diag.spokenAt) + (diag.ttsFailures ? ' · ' + diag.ttsFailures + ' failed' : '') : '—'],
+      ['Self-test', diag.selfTest || 'press T', /^failed/.test(diag.selfTest)],
+      ['MCP servers', (srv.mcp_servers || []).join(', ') || 'none']
+    ];
+  }
+  function drawDiag() {
+    if (!diagEl || diagEl.hidden) return;
+    if (Date.now() - diagFetchAt > 3000) {
+      diagFetchAt = Date.now();
+      fetch('/voice/api/diagnostics', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { if (j) diagServer = j; }).catch(function () { /* shown as link state */ });
+      micPermission();
+    }
+    var list = diagEl.querySelector('[data-jv-diag-rows]');
+    list.textContent = '';
+    diagRows().forEach(function (r) {
+      var row = el('div', 'diag-row' + (r[2] ? ' is-bad' : ''));
+      row.appendChild(el('span', 'diag-k', r[0]));
+      var v = el('span', 'diag-v', r[1]);
+      if (r[3] != null && r[3] >= 0) { var bar = el('i', 'diag-bar'); bar.style.setProperty('--v', String(r[3])); v.appendChild(bar); }
+      row.appendChild(v); list.appendChild(row);
+    });
+  }
+  function toggleDiag(open) {
+    if (!diagEl) return;
+    var on = open == null ? diagEl.hidden : open;
+    diagEl.hidden = !on;
+    clearInterval(diagTimer);
+    if (on) { diagFetchAt = 0; drawDiag(); diagTimer = setInterval(drawDiag, 300); }
+  }
+  function selfTest() {                  // speak one line; pass when playback actually starts
+    audioCtx(); if (synth) synth.resume();
+    var t0 = Date.now(), ok = false;
+    diag.selfTest = 'running…';
+    speaker.say('Audio check, ' + H + '. One, two, three.', null, true, function () {
+      ok = true; diag.selfTest = 'passed: playback started in ' + (Date.now() - t0) + ' ms (' + (diag.tts || 'voice') + ')';
+      flash('Audio self-test passed.');
+    });
+    setTimeout(function () {
+      if (ok) return;
+      diag.selfTest = 'failed: no playback within 3 s. Check the volume, the output device, and that this tab may play sound.';
+      flash('Audio self-test failed: nothing played.');
+    }, 3000);
+    toggleDiag(true);
+  }
+  if (diagEl) { var dx = diagEl.querySelector('[data-jv-diag-x]'); if (dx) dx.addEventListener('click', function () { toggleDiag(false); }); }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-jv-diag-open]'), function (b) {
+    b.addEventListener('click', function () { if (menu) menu.open = false; toggleDiag(); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-jv-selftest]'), function (b) {
+    b.addEventListener('click', function () { if (menu) menu.open = false; selfTest(); });
+  });
+  document.addEventListener('keydown', function (e) {
+    var tg = e.target, typing = tg && (/^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName) || tg.isContentEditable);
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || typing || document.querySelector('dialog[open]')) return;
+    if (e.key === 'd' || e.key === 'D') { e.preventDefault(); toggleDiag(); }
+    else if (e.key === 't' || e.key === 'T') { e.preventDefault(); selfTest(); }
+  });
 
   /* ---- first visit: one dismissible tip ------------------------------------------------------ */
   var TIP_KEY = 'jv:tip-seen';
@@ -809,6 +1175,28 @@
   pollStatus();
   setInterval(pollStatus, 4000);
 
+  /* ---- the ui_* tools: accent, ring, rails, effects (adewaskar/jarvis bridge/ui.mjs, simplified) ---- */
+  var uiCfg = { accent: null, ring: { style: 'arc', color: null, scale: 1, spin: 1 }, rails: true }, fxTimer = null;
+  var HEX = /^#[0-9a-f]{6}$/i;
+  function hexRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+  function applyUi(u) {
+    var ring = u.ring || {};
+    uiCfg = { accent: HEX.test(u.accent || '') ? u.accent : null,
+      ring: { style: /^(arc|minimal|dense|radar)$/.test(ring.style || '') ? ring.style : 'arc', color: HEX.test(ring.color || '') ? ring.color : null,
+        scale: Math.max(0.5, Math.min(1.5, +ring.scale || 1)), spin: Math.max(0, Math.min(4, ring.spin == null ? 1 : +ring.spin)) },
+      rails: u.rails !== false };
+    if (uiCfg.accent) root.style.setProperty('--jv', uiCfg.accent); else root.style.removeProperty('--jv');
+    root.setAttribute('data-rails', uiCfg.rails ? '1' : '0');
+    root.setAttribute('data-ring', uiCfg.ring.style);
+  }
+  function fireEffect(name) {
+    if (!/^(pulse|scan|glitch|flash)$/.test(name) || reduced) return;
+    ['pulse', 'scan', 'glitch', 'flash'].forEach(function (x) { root.classList.remove('fx-' + x); });
+    void root.offsetWidth;                       // restart the animation
+    root.classList.add('fx-' + name);
+    clearTimeout(fxTimer); fxTimer = setTimeout(function () { root.classList.remove('fx-' + name); }, 1400);
+  }
+
   /* ---- the core ------------------------------------------------------------------------------ */
   var g = canvas.getContext('2d');
   var COLORS = { idle: [0, 214, 240], listening: [120, 245, 255], thinking: [232, 176, 84], speaking: [0, 229, 255],
@@ -831,14 +1219,15 @@
     raf = 0;
     var dt = Math.min(0.1, (now - last) / 1000 || 0.016); last = now;
     var st = root.getAttribute('data-state'), t = reduced ? 0 : now / 1000;
-    var target = COLORS[st] || COLORS.idle;
+    var over = uiCfg.ring.color || uiCfg.accent, style = uiCfg.ring.style;
+    var target = over && st !== 'error' ? hexRgb(over) : (COLORS[st] || COLORS.idle);
     for (var k = 0; k < 3; k++) col[k] += (target[k] - col[k]) * Math.min(1, dt * 4);
     var an = st === 'speaking' && src ? outAnalyser : (st === 'listening' && stream ? micAnalyser : null);
     var want = an ? Math.min(1, rms(an) * 7) : st === 'listening' ? 0.18 + 0.12 * Math.sin(now / 160) : st === 'speaking' ? 0.3 + 0.25 * Math.abs(Math.sin(now / 110)) : 0;
     level += (want - level) * Math.min(1, dt * 12);
     var speed = { idle: 0.06, listening: 0.18, thinking: 1.1, speaking: 0.25, muted: 0.015, error: 0.03 }[st] || 0.06;
-    if (!reduced) spin += dt * speed;
-    var w = canvas.width, cx = w / 2, cy = w / 2, R = w * 0.3;
+    if (!reduced) spin += dt * speed * uiCfg.ring.spin;
+    var w = canvas.width, cx = w / 2, cy = w / 2, R = w * 0.3 * (0.6 + 0.4 * uiCfg.ring.scale);
     var dim = st === 'muted' ? 0.38 : 1;
     if (st === 'error' && !reduced) dim *= 0.75 + 0.25 * Math.abs(Math.sin(now / 70));
     var breathe = st === 'idle' && !reduced ? 0.5 + 0.5 * Math.sin(now / 1000 * 1.2) : 0.5;
@@ -852,12 +1241,19 @@
     haze.addColorStop(1, rgba(col, 0));
     g.fillStyle = haze; g.fillRect(0, 0, w, w);
 
+    var ticks = style === 'dense' ? 240 : 120, minimal = style === 'minimal';
+    if (style === 'radar') {           // a sweeping beam
+      var sw = spin * 1.6, beam = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.36);
+      beam.addColorStop(0, rgba(col, 0.28 * dim)); beam.addColorStop(1, rgba(col, 0));
+      g.fillStyle = beam; g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, R * 1.36, sw, sw + 0.5); g.closePath(); g.fill();
+    }
     // outer tick ring
+    if (!minimal) {
     g.save(); g.translate(cx, cy); g.rotate(spin * 0.35);
     g.strokeStyle = rgba(col, 0.42 * dim); g.lineWidth = Math.max(1, w / 600);
     g.beginPath();
-    for (var i = 0; i < 120; i++) {
-      var a = i / 120 * Math.PI * 2, r1 = R * 1.36, r2 = R * (i % 10 === 0 ? 1.43 : 1.39);
+    for (var i = 0; i < ticks; i++) {
+      var a = i / ticks * Math.PI * 2, r1 = R * 1.36, r2 = R * (i % 10 === 0 ? 1.43 : 1.39);
       g.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); g.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
     }
     g.stroke(); g.restore();
@@ -873,9 +1269,10 @@
       }
       g.restore();
     });
+    }
 
     // audio-reactive spikes around the ring
-    var spec = spectrum(an), bars = 96;
+    var spec = spectrum(an), bars = minimal ? 0 : style === 'dense' ? 192 : 96;
     g.save(); g.translate(cx, cy); g.rotate(-Math.PI / 2);
     g.strokeStyle = rgba(col, 0.75 * dim); g.lineWidth = Math.max(1.5, w / 260);
     g.beginPath();
@@ -896,8 +1293,9 @@
       g.strokeStyle = rgba(col, L[1] * dim * (0.85 + 0.3 * level)); g.lineWidth = R * L[0]; g.stroke();
     });
     g.fillStyle = rgba(col, 0.55 * dim);
-    for (var p = 0; p < 220; p++) {
-      var pa = p / 220 * Math.PI * 2 + spin * 0.2, nz = noise(p, t);
+    var dots = minimal ? 60 : style === 'dense' ? 420 : 220;
+    for (var p = 0; p < dots; p++) {
+      var pa = p / dots * Math.PI * 2 + spin * 0.2, nz = noise(p, t);
       var pr = ringR + R * (0.07 + 0.06 * nz + 0.08 * level * nz);
       var ps = Math.max(1, w / 500) * (0.6 + nz);
       g.globalAlpha = 0.25 + 0.6 * nz;
@@ -946,7 +1344,8 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) { pollStatus(); schedule(); } });
   render();
   schedule();
-  window.__jarvis = { ask: ask, sanitize: window.__sanitizePanel };   // debugging / page tests
+  window.__jarvis = { ask: ask, sanitize: window.__sanitizePanel, diag: diag, stt: sttEngine, toggleDiag: toggleDiag,
+    selfTest: selfTest, openBlade: openBlade, applyUi: applyUi };   // debugging / page tests
   loadActivity().then(connect, connect);
   if (synth) { pickVoice(); setTimeout(reportVoices, 1500); }
 })();

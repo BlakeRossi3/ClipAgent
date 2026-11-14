@@ -515,3 +515,71 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
   html.jv-on .jv-drawer, .jv-ptt, .jv-status, .jv-corner, .jv-id b { transition: none; }
   .jv[data-on="1"] .jv-ptt { animation: none; }
 }
+
+/* ---- HUD panel kinds, blades, ui_* restyling, diagnostics (assistant/hud.py, static/jarvis.js) ---- */
+.hud-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.hud-head .hud-title { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud-expand { flex: none; width: 26px; height: 26px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent);
+  background: transparent; color: var(--acc); cursor: pointer; font-size: 0.85rem; line-height: 1; }
+.hud-expand:hover, .hud-expand:focus-visible { background: color-mix(in srgb, var(--acc) 16%, transparent); outline: none; }
+.hud-mapwrap { position: relative; }
+.hud-map { position: relative; height: 190px; overflow: hidden; border-radius: 6px; background: #0a1418;
+  border: 1px solid color-mix(in srgb, var(--acc) 30%, transparent); }
+.hud-tile { position: absolute; width: 256px; height: 256px; max-width: none; filter: invert(1) hue-rotate(180deg) saturate(.55) brightness(.9);
+  user-select: none; pointer-events: none; }
+.hud-pin { position: absolute; width: 14px; height: 14px; margin: -14px 0 0 -7px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+  background: var(--acc); box-shadow: 0 0 10px var(--acc), 0 0 0 2px rgba(0, 0, 0, .5); }
+.hud-pin-label { position: absolute; left: 14px; top: -6px; transform: rotate(45deg); transform-origin: left top; white-space: nowrap;
+  font: 600 0.66rem var(--mono); color: var(--jv-ink); background: rgba(4, 10, 14, .82); padding: 1px 5px; border-radius: 3px; }
+.hud-attrib { position: absolute; right: 4px; bottom: 3px; font-size: 0.58rem; color: rgba(223, 246, 250, .7); background: rgba(4, 10, 14, .6); padding: 0 4px; border-radius: 3px; }
+.hud-mapctl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px; }
+.hud-mapbtn { width: 24px; height: 24px; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--acc) 45%, transparent); background: rgba(4, 10, 14, .78);
+  color: var(--jv-ink); cursor: pointer; font: 600 0.9rem/1 var(--mono); }
+.hud-video, .hud-embed { display: block; width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 6px; background: #000; }
+.hud-kind-video .hud-video { max-height: 340px; }
+.hud-kv { border-collapse: collapse; width: 100%; }
+.hud-kv th { font-weight: 400; color: var(--jv-dim); text-align: left; padding: 3px 8px 3px 0; }
+.hud-kv td { text-align: right; font: 600 0.86rem var(--mono); color: var(--jv-ink); }
+/* the blade: one panel, large, over the ring */
+.jv-stage { position: relative; }
+.jv-blade { position: absolute; z-index: 6; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6px;
+  background: color-mix(in srgb, #03080b 70%, transparent); backdrop-filter: blur(3px); text-align: left; }
+.jv-blade[hidden] { display: none; }
+.jv-blade .hud-panel { width: min(100%, 860px); max-height: 100%; overflow: auto; background: rgba(4, 12, 16, .94); }
+.jv-blade .hud-map { height: min(56vh, 520px); }
+.jv-blade .hud-video { max-height: 60vh; }
+.jv-blade-x { position: absolute; top: 8px; right: 10px; z-index: 1; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--jv) 45%, transparent); background: rgba(4, 10, 14, .85); color: var(--jv-ink); font-size: 1.1rem; }
+.jv.has-blade .jv-ptt { visibility: hidden; }
+/* rails hidden (ui_rails) */
+.jv[data-rails="0"] .jv-rail { display: none; }
+@media (min-width: 1000px) { .jv[data-rails="0"] .jv-body { grid-template-columns: minmax(0, 1fr); } }
+/* one-off effects (ui_effect) */
+.jv-fx { position: absolute; inset: 0; pointer-events: none; z-index: 4; opacity: 0; }
+.jv.fx-flash .jv-fx { background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--jv) 55%, #fff), transparent 70%); animation: fx-flash .8s ease-out; }
+.jv.fx-scan .jv-fx { background: linear-gradient(180deg, transparent 0, color-mix(in srgb, var(--jv) 45%, transparent) 50%, transparent 100%);
+  background-size: 100% 18%; background-repeat: no-repeat; animation: fx-scan 1.2s linear; }
+.jv.fx-pulse .jv-core-wrap { animation: fx-pulse .9s ease-in-out 2; }
+.jv.fx-glitch .jv-body { animation: fx-glitch .45s steps(3) 2; }
+@keyframes fx-flash { 0% { opacity: .9; } 100% { opacity: 0; } }
+@keyframes fx-scan { 0% { opacity: 1; background-position: 0 -20%; } 100% { opacity: 1; background-position: 0 120%; } }
+@keyframes fx-pulse { 50% { transform: scale(1.06); filter: brightness(1.4); } }
+@keyframes fx-glitch { 0% { transform: translate(0); } 33% { transform: translate(-3px, 1px); filter: hue-rotate(40deg); } 66% { transform: translate(3px, -1px); } 100% { transform: translate(0); } }
+/* diagnostics (D) */
+.jv-diag { position: fixed; z-index: 40; left: 16px; bottom: 16px; max-height: calc(100vh - 32px); overflow: auto; width: min(460px, calc(100% - 32px)); text-align: left;
+  background: rgba(3, 9, 12, .94); border: 1px solid color-mix(in srgb, var(--jv) 40%, transparent); border-radius: 10px; padding: 10px 12px;
+  font: 0.76rem/1.35 var(--mono); color: var(--jv-ink); box-shadow: 0 10px 40px rgba(0, 0, 0, .5); }
+.jv-diag[hidden] { display: none; }
+.diag-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: var(--jv-dim); }
+.diag-head b { color: var(--jv); letter-spacing: .18em; text-transform: uppercase; font-size: .7rem; }
+.diag-head span { flex: 1; font-size: .68rem; }
+.diag-head kbd { border: 1px solid rgba(0, 229, 255, .3); border-radius: 3px; padding: 0 4px; }
+.diag-x { background: none; border: 0; color: var(--jv-dim); font-size: 1.1rem; cursor: pointer; }
+.diag-row { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; padding: 3px 0; border-top: 1px solid rgba(0, 229, 255, .08); }
+.diag-k { color: var(--jv-dim); }
+.diag-v { overflow-wrap: anywhere; }
+.diag-row.is-bad .diag-v { color: #ff8a78; }
+.diag-bar { display: inline-block; vertical-align: middle; margin-left: 8px; width: 110px; height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--jv) calc(var(--v, 0) * 100%), rgba(0, 229, 255, .12) 0); }
+.jv-menu-list kbd { font: 600 0.66rem var(--mono); border: 1px solid rgba(0, 229, 255, .3); border-radius: 3px; padding: 0 4px; margin-left: 6px; }
+@media (prefers-reduced-motion: reduce) { .jv-fx, .jv.fx-pulse .jv-core-wrap, .jv.fx-glitch .jv-body { animation: none !important; } }

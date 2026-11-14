@@ -381,3 +381,40 @@ def test_talking_over_a_spoken_answer_is_still_a_barge_in(env, monkeypatch):
     t2 = brain.ask("stop, the short version")
     assert t2.wait(10)["reply"] == "Short answer." and t2.merged_from is None and t2.heard == "stop, the short version"
     assert t1.wait(1)["status"] == "cancelled" and len(t1.sentences) < 200
+
+
+def test_his_mcp_servers_join_the_brain_and_their_keys_never_leak(env, tmp_path, monkeypatch):
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    secret = "fake-" + "s" * 10 + "-value"           # built at runtime, never a realistic key literal
+    p = tmp_path / "claude.json"
+    p.write_text(_json.dumps({"mcpServers": {"gmail": {"command": "npx", "env": {"GMAIL_TOKEN": secret}},
+                                             "notion": {"type": "http", "url": "https://n.example/mcp",
+                                                        "headers": {"Authorization": "Bearer " + secret}}}}),
+                 encoding="utf-8")
+    claude_code.set_claude_json(p)
+    s = asettings.get_assistant_settings()
+    b = brain.Brain()
+    # practice mode: nothing of his is started
+    assert "gmail" not in (b.options(mode="plan", resume=None).mcp_servers or {})
+    asettings.set_assistant_settings(s.replace(fake=False))
+    opts = b.options(mode="plan", resume=None)
+    assert set(opts.mcp_servers) == {"gmail", "notion", "clipagent"}
+    assert opts.mcp_servers["gmail"]["env"]["GMAIL_TOKEN"] == secret       # the server needs it to start...
+    rules = _json.loads(open(opts.settings, encoding="utf-8").read())
+    assert {"mcp__gmail__*", "mcp__notion__*"} <= set(rules["permissions"]["allow"])
+    assert "gmail, notion" in opts.system_prompt["append"]
+    # ...but it is never shown: not in the prompt, the settings file, diagnostics or the event log
+    assert secret not in opts.system_prompt["append"] and secret not in open(opts.settings, encoding="utf-8").read()
+    import server
+
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1:8000")
+    d = c.get("/voice/api/diagnostics")
+    assert d.json()["mcp_servers"] == ["gmail", "notion"] and secret not in d.text
+    monkeypatch.setenv("ASSISTANT_MCP_SERVERS", "notion")
+    asettings.reset_assistant_settings()
+    asettings.set_assistant_settings(asettings.get_assistant_settings().replace(fake=False))
+    assert set(b.options(mode="plan", resume=None).mcp_servers) == {"notion", "clipagent"}
+    assert all(secret not in str(e.data) for e in db.list_events(limit=200))

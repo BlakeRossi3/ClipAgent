@@ -152,7 +152,36 @@ drives a model SDK. Modelled on adewaskar/jarvis `bridge/server.mjs` (MIT).
   server and laptop voices rebuild).
 - Everything is published on `assistant/events.py` and streamed by `GET /voice/api/stream` (SSE).
 - Tests and practice mode: `brain.FakeClient` (scripted, real SDK message types); `brain.set_client_factory`.
+- His own Claude Code MCP servers join the session (adewaskar/jarvis `configuredServers`): the global
+  `mcpServers` block of `~/.claude.json` plus his home folder's project block, filtered by
+  `ASSISTANT_MCP_SERVERS` (`all` default, `none`, or names). Each is allowed as `mcp__<name>__*`; the
+  system prompt, diagnostics and the event log carry the **names only**, never their env/headers.
 SMS and typed dashboard chat still use `runtime.run_turn`.
+
+### The HUD (assistant/hud.py): things Sterling can throw on the Jarvis screen
+- `display` (model markup, `assistant/panels.py`), `show_map` (Nominatim geocoding with User-Agent
+  "ClipAgent/1.0 (personal assistant)", one request a second, answers cached in kv; OpenStreetMap tiles
+  drawn as a mosaic with pins, no map library), `show_media` (image or video URL from a tool result, a
+  YouTube link played through youtube-nocookie, or `clip_id` = one of his rendered Shorts), `show_data`
+  (figures or a short list). Panels stack in the rail; any one expands to a large blade over the ring
+  (`size: "blade"` opens it at once).
+- Remote images and video go only through `GET /voice/api/img?u=` / `/voice/api/media?u=`: an SSRF gate
+  (http(s), default ports, no credentials, every DNS answer and IP literal must be public, redirects
+  re-checked per hop, image/video content types only, no SVG, size caps) in front of a host allowlist
+  (`tile.openstreetmap.org`, `i.ytimg.com`, `upload.wikimedia.org`) plus URLs the model itself put in a
+  panel. The Jarvis page's CSP drops remote `img-src` and allows frames only from youtube-nocookie.com.
+- `ui_theme`, `ui_ring` (style arc|minimal|dense|radar, colour, scale, spin), `ui_rails`, `ui_effect`
+  (pulse|scan|glitch|flash, not persisted), `ui_reset`: persisted in kv `hud:ui`, published as `ui` events.
+- On the page: **D** = diagnostics (mic permission and level, hearing engine and last transcript, brain
+  link, last turn timing, voice and last spoken, his MCP server names), **T** = one-line audio self-test.
+
+### Self-check (assistant/selfcheck.py)
+`python main.py assistant selfcheck`, Settings -> Maintenance -> "Run self-check", or ask Sterling (tool
+`selfcheck_run`). Real tool calls on his real data: log hours for a past week and undo, read this week's
+pay, rename a staff member and back, switch voice and back, read a past conversation, search memory,
+resolve a URL (nothing opens), show a map panel, studio status, render two seconds of a clip to a temp
+file, build a DRY_RUN upload request, Twilio diagnose, plan usage. Every change goes through
+`assistant.admin` and is undone; the last line verifies nothing was sent and nothing is left un-undone.
 
 ## How memory works
 
@@ -190,9 +219,13 @@ inline it into that agent's system prompt, or let agents with `skill_read` load 
 ## Change the persona
 
 `skills/persona/SKILL.md` is the character (placeholders `{{assistant_name}}`, `{{owner_name}}`,
-`{{honorific}}`); `ASSISTANT_NAME` / `OWNER_HONORIFIC` rename. Hard rules are code in
-`assistant/persona.py` (`lint`/`polish`: SMS <= 320 chars, plain text, no emoji or exclamation
-marks, honorific at most once, no "As an AI", no URLs read aloud) and are applied to every reply.
+`{{honorific}}`); `ASSISTANT_NAME` / `OWNER_HONORIFIC` rename. It is written as a precise spec, Sterling's
+version of adewaskar/jarvis PROMPT_CORE (MIT): two sentences of conversation at most (median under twelve
+words; data readouts excepted), positional "sir", impersonal success reports, failures as facts about the
+world, no filler, enthusiasm or apology, never "yeah", act-then-report, never refuse twice. Hard rules are
+code in `assistant/persona.py` (`lint`/`polish`: SMS <= 320 chars, plain text, no emoji or exclamation
+marks, honorific at most once, no "As an AI", no URLs read aloud, codes `filler`, `yeah`, `apology`,
+`rambling` for spoken replies over two sentences without figures) and are applied to every reply.
 `skills/persona/examples.md` holds golden replies and counter-examples; tests (and later evals)
 check every golden reply passes and every counter-example is caught and fixed.
 

@@ -13,7 +13,14 @@ wake word, voice, barge-in mode and a "Test my mic" meter.
   local Whisper model (`tiny.en`) run on each short burst of speech. Neither stores the audio.
 - After the wake word (or within 8 s of a reply: follow-up mode), what you say is turned into text
   by faster-whisper on this laptop (the GPU when it works, otherwise the CPU). Only that **text**
-  goes to Claude. Audio is never sent.
+  goes to Claude; the laptop voice process never sends audio anywhere.
+- **The Jarvis page hears you faster in Chrome/Edge** (`VOICE_STT=auto`, the default): the browser's own
+  speech recognition transcribes as you speak and sends the text straight to Sterling, skipping the
+  record, upload, decode and Whisper steps. Those browsers do this by sending the audio to Google's or
+  Microsoft's speech service. For fully local hearing choose `server` (Whisper on this laptop) under
+  Settings -> Power & privacy -> Voice -> "Jarvis page listening". If the browser engine fails (no
+  network, blocked service) the page falls back to Whisper by itself. A heartbeat restarts the browser
+  engine whenever Chrome silently throttles it; interim words already pause Sterling (barge-in).
 - On the Jarvis page replies are spoken by the browser's own voice by default (instant; the best British
   male voice installed: "Microsoft Ryan Online (Natural)" in Edge, "Google UK English Male" in Chrome).
   Settings -> Power & privacy -> Voice picks another browser voice, Kokoro (`bm_george`, `bm_lewis`,
@@ -40,6 +47,21 @@ and the work, with every power and the whole day's conversation (details in docs
   that trails off ("remind me to...") waits a moment for the rest.
 - The laptop voice process asks the same brain over `POST /voice/api/ask` (loopback, a local key from
   the database) and speaks the sentences as they stream; if the server is down it runs its own.
+
+## "Is it working?"
+- **D** on the Jarvis page toggles diagnostics: microphone permission and level, which engine is hearing
+  you and the last transcript, the link to the brain, the last turn's time from the end of your speech to
+  Sterling's first word, the voice and the last thing spoken, and your MCP servers (names only). Also in
+  the "..." menu. The timings are posted to `/voice/api/timing` and kept with the server's diagnostics.
+- **T** runs an audio self-test: Sterling says one line and the panel shows whether playback really started.
+- Settings -> Maintenance -> **Run self-check** (or `python main.py assistant selfcheck`, or ask him) tries
+  every capability on your real data, undoes every change and sends nothing.
+
+## The screen is his too
+Ask "where is ..." and he draws a map; ask to see a picture, a video, a YouTube clip or one of the
+Shorts and it goes on screen; figures go up as a small table. Any panel expands to a large blade over the
+ring (the arrow button; Esc closes). Ask him to change the colour, the ring, hide the side panels or put
+it all back. Images reach the page only through a guarded proxy on this server.
 
 ## Local commands (no Claude involved)
 | Say | Does |

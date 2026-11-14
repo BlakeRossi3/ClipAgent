@@ -11,6 +11,11 @@ Allowed: the tags in :data:`ALLOWED_TAGS`, the classes in :data:`ALLOWED_CLASSES
 ``--v:<number>`` (the progress bar), ``src`` only on ``<img>`` and only ``https://``, ``http://`` or
 ``data:image/...``. Everything else (scripts, styles, event handlers, links, forms, iframes, SVG,
 other URLs, unknown classes) is removed; the text inside a removed harmless tag is kept.
+
+Remote images in a panel are never loaded by the page directly: their URLs are registered with
+``assistant.hud.allow_url`` and the page rewrites each http(s) ``src`` to the SSRF-guarded proxy
+``/voice/api/img?u=`` (as adewaskar/jarvis does with its ``/img`` endpoint). Other panel kinds (maps,
+media, data, lists) are built by ``assistant/hud.py`` and rendered by the page with its own code.
 """
 
 from __future__ import annotations
@@ -73,6 +78,8 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["title",
                          "description": "default cyan; amber pending; violet generated; green healthy; red failure."},
               "hold": {"type": "string", "enum": list(HOLDS),
                        "description": "turn = cleared when he next speaks (default); sticky = stays until replaced."},
+              "size": {"type": "string", "enum": ["card", "blade"],
+                       "description": "card = beside the ring (default); blade = large, over the ring, for reading."},
           }}
 
 _seq = itertools.count(1)
@@ -173,9 +180,14 @@ def make_panel(args: dict[str, Any], *, turn: str | None = None) -> dict[str, An
     accent = str(args.get("accent") or "default")
     hold = str(args.get("hold") or "turn")
     title = " ".join(str(args.get("title") or "").split())[:MAX_TITLE] or "DISPLAY"
-    return {"id": f"p{int(time.time() * 1000):x}-{next(_seq)}", "title": title, "html": body,
+    size = str(args.get("size") or "card")
+    from assistant import hud
+
+    for src in re.findall(r'<img [^>]*src="(https?://[^"]+)"', body):
+        hud.allow_url(html.unescape(src))
+    return {"id": f"p{int(time.time() * 1000):x}-{next(_seq)}", "kind": "markup", "title": title, "html": body,
             "accent": accent if accent in ACCENTS else "default", "hold": hold if hold in HOLDS else "turn",
-            "turn": turn}
+            "size": size if size in ("card", "blade") else "card", "turn": turn}
 
 
 def display(args: dict[str, Any], *, turn: str | None = None) -> str:

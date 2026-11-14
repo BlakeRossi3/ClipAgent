@@ -64,11 +64,18 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from assistant import selfedit
 
     selfedit.set_app_dir(tmp_path / "no-repo")
+    # never his real ~/.claude.json (MCP servers pass-through), never the network for maps/images
+    from assistant import claude_code, hud
+
+    claude_code.set_claude_json(tmp_path / "no-claude.json")
+    hud.reset()
     config.reset_settings()
     llm.reset()
     config.get_settings().ensure_dirs()
     yield
     selfedit.set_app_dir(None)
+    claude_code.set_claude_json(None)
+    hud.reset()
     llm.reset()
     config.reset_settings()
 

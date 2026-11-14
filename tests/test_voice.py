@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 from concurrent.futures import Future
 
 import numpy as np
@@ -702,3 +703,37 @@ def test_dangling_clause_holds_the_turn_open():
     assert commands.looks_unfinished("I worked eight hours and")
     assert not commands.looks_unfinished("On Wednesday I worked eight hours.")
     assert not commands.looks_unfinished("So can you log the rest of those?")
+
+
+def test_browser_speech_recognition_path_asks_with_text_and_reports_timing(talk, monkeypatch):
+    """VOICE_STT: in Chrome/Edge the page transcribes itself and sends text to /ask (no upload, no Whisper)."""
+    from assistant import events
+
+    c, stt, _web = talk
+    a = c.get("/voice/api/activity").json()
+    assert a["voice"]["stt"] == "auto"
+    csrf = _csrf_of(c)
+    r = c.post("/voice/api/ask", data={"csrf": csrf, "text": "show me where Big Ben is", "origin": "browser"},
+               headers={"Accept": "application/json"})
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["turn"]
+    assert stt.calls == 0                                            # no server speech-to-text involved
+    after = events.BUS.seq
+    r = c.post("/voice/api/timing", data={"csrf": csrf, "turn": r.json()["turn"], "first_word_ms": "640",
+                                         "stt": "browser"}, headers={"Accept": "application/json"})
+    assert r.json()["ok"] and events.BUS.since(after, 10)[-1]["timing"]["speech_to_first_word_ms"] == 640
+    js = (Path(__file__).resolve().parent.parent / "static" / "jarvis.js").read_text(encoding="utf-8")
+    for needle in ("window.SpeechRecognition || window.webkitSpeechRecognition", "rec.interimResults = true",
+                   "if (idle < 15000) return;", "diag.restarts++", "err === 'network'", "/voice/api/timing",
+                   "if (speaker.busy()) speaker.pause();"):
+        assert needle in js, needle
+
+
+def test_voice_stt_setting(monkeypatch, tmp_path):
+    from voice import settings as vs
+
+    for raw, want in (("browser", "browser"), ("SERVER", "server"), ("nonsense", "auto"), ("", "auto")):
+        assert vs.load_voice_settings({"VOICE_STT": raw, "CLIPAGENT_CONFIG_FILE": str(tmp_path / "none.env"),
+                                       "CLIPAGENT_DATA_DIR": str(tmp_path)}).web_stt == want
+    errors, changes = vs.parse_form({"voice_stt": "server"})
+    assert not errors and changes == {"VOICE_STT": "server"}
+    assert vs.parse_form({"voice_stt": "lasers"})[0]

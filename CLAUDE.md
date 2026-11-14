@@ -560,3 +560,12 @@ allow/deny rules; secrets and destructive commands denied), our MCP tools, `--ag
 (SMS STOP/START STERLING, UNDO). Plan usage + deferred queue: `assistant/usage.py` (`as_deferred`, store v2;
 tools `usage_status`, `schedule_prompt`; `usage.should_defer(kind, prompt)` for non-urgent jobs). `open_url` opens his
 browser. Chat images: `home.save_upload` -> paths passed to the turn (`runtime.run_turn(attachments=)`). Details: docs/ASSISTANT.md.
+
+### Jarvis HUD, hearing, self-check
+`assistant/hud.py`: panel kinds (markup/image/video/youtube/map/data/list), tools `show_map` (Nominatim, kv cache,
+1 req/s), `show_media`, `show_data`, `ui_theme|ui_ring|ui_rails|ui_effect|ui_reset` (kv `hud:ui`, `ui` events),
+`fetch_remote` = the SSRF-guarded proxy behind `/voice/api/img` and `/voice/api/media` (tests: `hud.set_http`,
+`hud.set_resolver`; conftest resets). `claude_code.user_mcp_servers()` passes his `~/.claude.json` MCP servers into
+the brain (`ASSISTANT_MCP_SERVERS`; names only anywhere visible; tests: `claude_code.set_claude_json`).
+`VOICE_STT=auto|browser|server` (page speech recognition vs Whisper). `assistant/selfcheck.py` (`main.py assistant
+selfcheck`, Settings button, tool `selfcheck_run`): real tool calls, every change undone via `admin.app_undo`.

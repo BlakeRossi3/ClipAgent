@@ -260,7 +260,14 @@ def tool_label(name: str, inp: Mapping[str, Any] | None = None) -> str:
               "usage_status": lambda: "Checking plan usage", "desktop_mode_run": lambda: "Switching desktop mode",
               "start_task": lambda: "Starting a background task", "task_list": lambda: "Checking background tasks",
               "request_approval": lambda: "Asking for your approval", "message_owner": lambda: "Texting you",
-              "goals_list": lambda: "Checking your goals", "heartbeat_status": lambda: "Checking the heartbeat"}
+              "goals_list": lambda: "Checking your goals", "heartbeat_status": lambda: "Checking the heartbeat",
+              "show_map": lambda: f"Drawing a map of {str(inp.get('query'))[:40]}" if inp.get("query") else "Drawing a map",
+              "show_media": lambda: "Putting a video on screen" if inp.get("kind") in ("video", "youtube") or
+              inp.get("clip_id") else "Putting a picture on screen",
+              "show_data": lambda: "Putting the figures on screen", "selfcheck_run": lambda: "Running the self-check",
+              "ui_theme": lambda: "Changing the screen", "ui_ring": lambda: "Changing the ring",
+              "ui_rails": lambda: "Changing the screen", "ui_effect": lambda: "Changing the screen",
+              "ui_reset": lambda: "Resetting the screen"}
     if tool in labels:
         return labels[tool]()
     return tool.replace("_", " ").strip().capitalize() or "Working"

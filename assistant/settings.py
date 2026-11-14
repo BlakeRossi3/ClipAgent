@@ -60,6 +60,7 @@ class AssistantSettings:
     cc_full: bool = True                     # built-in tools on (files, shell, web, skills, sub-agents)
     user_dirs: tuple[str, ...] = ()          # extra folders it may read/edit (empty = Desktop, Documents...)
     chrome: bool = False                     # pass --chrome (Claude in Chrome extension; one-time setup)
+    mcp_servers: tuple[str, ...] | None = None   # his ~/.claude.json MCP servers for the brain (None = all)
     cc_task_timeout_sec: int = 900           # one full-power run (long tasks, test runs)
     cc_max_turns: int = 40                   # tool round trips per full-power run
     session_max_turns: int = 30              # resume one session per channel; roll over after this many
@@ -123,6 +124,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         api_fallback=config._bool(env.get("ASSISTANT_API_FALLBACK"), True),
         user_dirs=tuple(d.strip() for d in s("ASSISTANT_USER_DIRS", "").split(";") if d.strip()),
         chrome=config._bool(env.get("ASSISTANT_CHROME"), False),
+        mcp_servers=_server_list(s("ASSISTANT_MCP_SERVERS", "all")),
         cc_task_timeout_sec=max(60, int(s("ASSISTANT_CC_TASK_TIMEOUT_SEC", "900"))),
         cc_max_turns=max(2, int(s("ASSISTANT_CC_MAX_TURNS", "40"))),
         session_max_turns=max(1, int(s("ASSISTANT_SESSION_MAX_TURNS", "30"))),
@@ -133,6 +135,16 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         heartbeat_minutes=max(0, int(s("HEARTBEAT_MINUTES", "30"))),
         heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),
     )
+
+
+def _server_list(raw: str) -> tuple[str, ...] | None:
+    """ASSISTANT_MCP_SERVERS: "all" -> None (every server), "none" -> (), else the names listed."""
+    v = raw.strip()
+    if v.lower() in ("all", "*", ""):
+        return None
+    if v.lower() in ("none", "off", "false", "0"):
+        return ()
+    return tuple(x.strip() for x in v.split(",") if x.strip())
 
 
 _cache: tuple[config.Settings, AssistantSettings] | None = None

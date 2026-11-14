@@ -239,3 +239,51 @@ def test_plan_limit_falls_back_to_api_key(cc, monkeypatch, clock):
     claude_code.clear_backoff()                           # plan back: full Claude Code again
     assert not claude_code.api_fallback_active()
     assert isinstance(runtime.get_backend(), claude_code.ClaudeCodeBackend)
+
+
+# ---------------------------------------------------------------------------
+# his own Claude Code MCP servers, passed into the brain (ASSISTANT_MCP_SERVERS)
+# ---------------------------------------------------------------------------
+
+def _claude_json(tmp_path, monkeypatch):
+    import json as _json
+    from pathlib import Path as _P
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(_P, "home", classmethod(lambda cls: home))
+    secret = "fake-" + "k" * 8 + "-value"          # built at runtime: never a realistic secret literal
+    cfg = {"mcpServers": {
+        "gmail": {"type": "stdio", "command": "npx", "args": ["-y", "gmail-mcp"], "env": {"GMAIL_TOKEN": secret}},
+        "notion": {"type": "http", "url": "https://mcp.notion.example/mcp", "headers": {"Authorization": "Bearer " + secret}},
+        "clipagent": {"command": "evil"},                         # ours: never overridden
+        "claude-in-chrome": {"command": "chrome-mcp"},
+        "bad name!": {"command": "x"}, "broken": {"type": "stdio"}, "ftp": {"type": "http", "url": "ftp://x"}},
+        "projects": {str(home): {"mcpServers": {"homeassistant": {"command": "hass-mcp"}}},
+                     "/elsewhere": {"mcpServers": {"other": {"command": "nope"}}}}}
+    p = tmp_path / "claude.json"
+    p.write_text(_json.dumps(cfg), encoding="utf-8")
+    claude_code.set_claude_json(p)
+    return secret
+
+
+def test_user_mcp_servers_reads_global_and_home_scope_with_an_allowlist(tmp_path, monkeypatch):
+    _claude_json(tmp_path, monkeypatch)
+    servers = claude_code.user_mcp_servers()
+    assert sorted(servers) == ["gmail", "homeassistant", "notion"]
+    assert servers["gmail"] == {"type": "stdio", "command": "npx", "args": ["-y", "gmail-mcp"],
+                                "env": {"GMAIL_TOKEN": servers["gmail"]["env"]["GMAIL_TOKEN"]}}
+    assert servers["homeassistant"]["type"] == "stdio" and servers["notion"]["type"] == "http"
+    for raw, want in (("gmail, notion", ["gmail", "notion"]), ("none", []), ("all", ["gmail", "homeassistant", "notion"]),
+                      ("homeassistant", ["homeassistant"])):
+        monkeypatch.setenv("ASSISTANT_MCP_SERVERS", raw)
+        asettings.reset_assistant_settings()
+        assert claude_code.mcp_server_names() == want, raw
+    claude_code.set_claude_json(tmp_path / "missing.json")
+    assert claude_code.user_mcp_servers() == {}
+
+
+def test_permission_rules_allow_each_passed_server():
+    rules = claude_code.permission_settings(mcp_tools=["memory_search"], extra_servers=["gmail", "bad name"])
+    allow = rules["permissions"]["allow"]
+    assert "mcp__gmail__*" in allow and not any("bad name" in a for a in allow)

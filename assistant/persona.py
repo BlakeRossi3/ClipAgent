@@ -6,7 +6,9 @@
 * :func:`lint` / :func:`polish` enforce the hard rules in plain code AFTER the model, so the
   tone never depends on the model alone: length per channel, no emoji, no exclamation marks,
   no markdown or URLs where they do not belong, the honorific at most once, no "As an AI",
-  no gushing stock phrases.
+  no gushing stock phrases, no filler openers ("Well,", "Okay,", "Let me check"), never "yeah",
+  no apologies, and (spoken channels) at most two sentences of conversation. The spec is
+  skills/persona/SKILL.md, Sterling's version of adewaskar/jarvis PROMPT_CORE (MIT License).
 
 Golden examples for tests and evals live in ``skills/persona/examples.md``.
 """
@@ -25,8 +27,9 @@ EXAMPLES_PATH = registry.SKILLS_DIR / "persona" / "examples.md"
 
 CHANNEL_RULES = {
     "sms": "Channel: SMS. Plain text only, at most 320 characters, one or two sentences. No markdown, lists or links.",
-    "voice": "Channel: phone call. Short speakable sentences. Say numbers as words a person would say. "
-             "No URLs, symbols, lists or markdown.",
+    "voice": "Channel: spoken aloud. Two sentences at most in conversation, median under twelve words; only data "
+             "he asked for licenses more. Say numbers, dates and times as words a person would say. No URLs, "
+             "symbols, lists or markdown. Act, then report; never restate an order.",
     "dashboard": "Channel: dashboard. Brief; short paragraphs, a compact list or a small table only when it helps.",
     "system": "Channel: internal. You are producing a draft or findings for the main assistant, not a message "
               "to the owner. Be factual and brief.",
@@ -49,15 +52,32 @@ GUSH_PHRASES = (
     "great question", "excellent question", "absolutely", "i'd be happy to", "i would be happy to",
     "i'd be glad to", "i hope this helps", "happy to help", "no problem at all", "amazing",
     "i apologize for any inconvenience", "i'm so sorry", "so sorry for", "fantastic",
-    "certainly", "of course", "you're welcome", "feel free to",
+    "certainly", "of course", "you're welcome", "feel free to", "sure thing", "awesome",
 )
+# Filler that opens a line ("Well, ...", "Okay so ...", "Let me check ...") and the word "yeah".
+_FILLER_OPENER = re.compile(
+    r"(?:(?<=^)|(?<=[.?]\s))(?:(?:um+|uh+|erm)\b[,.]?\s+|(?:well|so|okay|ok|right|alright)[,.]\s+|"
+    r"(?:let me (?:just )?(?:check|see|look)(?: that| into (?:it|that))?|one moment|just a moment|"
+    r"bear with me|give me a (?:second|moment))(?:,?\s*{h}\b)?(?:[,.]+\s*|$))", re.I)
+_YEAH = re.compile(r"\b(?:yeah|yep|yup)\b", re.I)
+# Apology and self-deprecation (failures are stated as facts about the world).
+_APOLOGY = re.compile(
+    r"(?:\b(?:i'?m|i am) (?:so |very |terribly |really )?sorry\b[^.?]*[.?]?\s*|\bsorry\b,?\s*(?:{h}\b,?\s*)?|"
+    r"\bmy apologies\b[,.]?\s*|\bi apologi[sz]e\b[^.?]*[.?]?\s*|\bapologies\b[,.]?\s*|"
+    r"\bmy (?:mistake|bad)\b[,.]?\s*)", re.I)
+SPOKEN_CHANNELS = ("voice", "call")
+MAX_SPOKEN_SENTENCES = 2
+_SENTENCE_END = re.compile(r"[.?](?=\s+[A-Z\"']|$)")
 # Phrases removed by polish when they open a sentence (with trailing punctuation / honorific).
 _GUSH_OPENER_WORDS = (r"great question|excellent question|absolutely|certainly|of course|"
                       r"i'd be happy to help|i would be happy to help|happy to help|no problem at all")
+# One-word enthusiasm that only counts as an opener when punctuated: "Sure, sir." / "Great."
+_ENTHUSIASM_OPENER_WORDS = r"no problem|sure thing|sure|great|perfect|awesome|cool|okey dokey"
 
 
 def _gush_openers(h: str) -> re.Pattern[str]:
-    return re.compile(rf"(?:(?<=^)|(?<=[.?]\s))(?:{_GUSH_OPENER_WORDS})(?:,?\s*{re.escape(h)}\b)?[,.!]*\s*", re.I)
+    return re.compile(rf"(?:(?<=^)|(?<=[.?]\s))(?:(?:{_GUSH_OPENER_WORDS})\b(?:,?\s*{re.escape(h)}\b)?[,.!]*\s*|"
+                      rf"(?:{_ENTHUSIASM_OPENER_WORDS})(?:,?\s*{re.escape(h)}\b)?[,.!]+\s*)", re.I)
 
 
 def _honorific_re(h: str) -> re.Pattern[str]:
@@ -76,7 +96,7 @@ def lint(text: str, channel: str, *, settings: AssistantSettings | None = None) 
     """Hard-rule violations in ``text`` for ``channel`` (empty list = on brand).
 
     Codes: empty, too_long, emoji, exclamation, markdown, url_in_voice, honorific_overuse,
-    as_an_ai, gush.
+    as_an_ai, gush, filler, yeah, apology, rambling (spoken channels: over two sentences, no figures).
     """
     s = _settings(settings)
     out: list[str] = []
@@ -98,9 +118,38 @@ def lint(text: str, channel: str, *, settings: AssistantSettings | None = None) 
     if _AS_AN_AI.search(t):
         out.append("as_an_ai")
     low = t.lower()
-    if any(p in low for p in GUSH_PHRASES):
+    if any(p in low for p in GUSH_PHRASES) or _gush_openers(s.owner_honorific).search(t.strip()):
         out.append("gush")
+    if _filler_re(s.owner_honorific).search(t.strip()):
+        out.append("filler")
+    if _YEAH.search(t):
+        out.append("yeah")
+    if _apology_re(s.owner_honorific).search(t):
+        out.append("apology")
+    if channel in SPOKEN_CHANNELS and rambles(t):
+        out.append("rambling")
     return out
+
+
+def _filler_re(h: str) -> re.Pattern[str]:
+    return re.compile(_FILLER_OPENER.pattern.replace("{h}", re.escape(h)), re.I)
+
+
+def _apology_re(h: str) -> re.Pattern[str]:
+    return re.compile(_APOLOGY.pattern.replace("{h}", re.escape(h)), re.I)
+
+
+def sentence_count(text: str) -> int:
+    t = (text or "").strip()
+    if not t:
+        return 0
+    return len(_SENTENCE_END.findall(t)) + (0 if re.search(r"[.?]$", t) else 1)
+
+
+def rambles(text: str) -> bool:
+    """More than two sentences of conversation. A data readout (it carries figures) is exempt:
+    length is licensed only for data he asked to hear."""
+    return sentence_count(text) > MAX_SPOKEN_SENTENCES and not re.search(r"\d", text or "")
 
 
 def _strip_markdown(t: str) -> str:
@@ -166,6 +215,13 @@ def polish(text: str, channel: str, *, settings: AssistantSettings | None = None
         t = t2
     for p in ("I hope this helps.", "I hope this helps", "Feel free to ask.", "Happy to help."):
         t = re.sub(re.escape(p), "", t, flags=re.I)
+    for _ in range(3):
+        t2 = _filler_re(s.owner_honorific).sub("", t.strip())
+        t2 = _apology_re(s.owner_honorific).sub("", t2)
+        if t2 == t.strip():
+            break
+        t = t2
+    t = _YEAH.sub(lambda m: "Yes" if m.group(0)[0].isupper() else "yes", t)
     t = _dedupe_honorific(t, s.owner_honorific)
     if channel in ("sms", "voice", "call"):
         t = re.sub(r"\s+", " ", t)
@@ -174,6 +230,10 @@ def polish(text: str, channel: str, *, settings: AssistantSettings | None = None
         t = re.sub(r"\n{3,}", "\n\n", t)
     t = re.sub(r"\s+([.,?;:])", r"\1", t).strip()
     t = re.sub(r"(^|[.?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), t)
+    if channel in SPOKEN_CHANNELS and rambles(t):   # two sentences of conversation, no more
+        ends = [m.end() for m in _SENTENCE_END.finditer(t)]
+        if len(ends) >= MAX_SPOKEN_SENTENCES:
+            t = t[:ends[MAX_SPOKEN_SENTENCES - 1]].strip()
     t = _truncate(t, CHANNEL_LIMITS.get(channel, 4000))
     return t
 

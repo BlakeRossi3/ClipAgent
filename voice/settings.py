@@ -17,6 +17,7 @@ import config
 WAKE_MODES = ("both", "hey_jarvis", "name")          # openWakeWord "hey jarvis", the assistant's name, or both
 TTS_ENGINES = ("kokoro", "sapi", "elevenlabs")       # the laptop voice process (it has no browser)
 WEB_TTS_ENGINES = ("browser", "kokoro", "elevenlabs")  # the Jarvis page: the browser's own voice is instant
+WEB_STT_MODES = ("auto", "browser", "server")   # the Jarvis page: Chrome/Edge speech recognition or Whisper here
 ELEVENLABS_DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"      # adewaskar/jarvis's default ElevenLabs voice ("George")
 BARGE_IN_MODES = ("auto", "wake_only", "off")
 KOKORO_VOICES = {   # the British voices in Kokoro v1.0 (bm_ = British male, bf_ = British female)
@@ -44,6 +45,7 @@ class VoiceSettings:
     elevenlabs_voice_id: str = ELEVENLABS_DEFAULT_VOICE
     web_tts: str = "browser"               # how the Jarvis page speaks: browser speechSynthesis | kokoro | elevenlabs
     web_voice: str = ""                    # the browser voice's name ("" = best British male available)
+    web_stt: str = "auto"                  # how the Jarvis page hears him: auto | browser | server (VOICE_STT)
     stt_model: str = "small.en"
     name_model: str = "tiny.en"            # the small model that listens for the assistant's name
     whisper_device: str = "auto"
@@ -82,7 +84,8 @@ class VoiceSettings:
         """What the Jarvis page needs to speak (no secrets)."""
         return {"web_tts": self.web_tts, "web_voice": self.web_voice, "tts_engine": self.tts_engine,
                 "tts_voice": self.tts_voice, "kokoro_name": kokoro_name(self.tts_voice),
-                "elevenlabs": bool(self.elevenlabs_api_key), "end_silence_sec": self.end_silence_sec}
+                "elevenlabs": bool(self.elevenlabs_api_key), "end_silence_sec": self.end_silence_sec,
+                "stt": self.web_stt}
 
 
 def _choice(raw: str, allowed: tuple[str, ...], default: str) -> str:
@@ -127,6 +130,7 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         elevenlabs_voice_id=s("ELEVENLABS_VOICE_ID", ELEVENLABS_DEFAULT_VOICE),
         web_tts=_choice(s("VOICE_WEB_TTS", "browser"), WEB_TTS_ENGINES, "browser"),
         web_voice=s("VOICE_WEB_VOICE"),
+        web_stt=_choice(s("VOICE_STT", "auto"), WEB_STT_MODES, "auto"),
         stt_model=s("VOICE_STT_MODEL", base.whisper_model),
         name_model=s("VOICE_NAME_MODEL", "tiny.en"),
         whisper_device=base.whisper_device,
@@ -213,7 +217,7 @@ def form_values() -> dict[str, Any]:
             "voice_tts": v.tts_engine, "voice_voice": v.tts_voice, "voice_sapi": v.sapi_voice,
             "voice_barge": v.barge_in, "voice_eleven_key_set": bool(v.elevenlabs_api_key),
             "voice_voices": KOKORO_VOICES, "voice_name": v.assistant_name, "voice_web_tts": v.web_tts,
-            "voice_web_voice": v.web_voice}
+            "voice_web_voice": v.web_voice, "voice_stt": v.web_stt}
 
 
 def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
@@ -239,7 +243,8 @@ def parse_form(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
     for field, key, allowed in (("voice_wake", "VOICE_WAKE_WORD", WAKE_MODES),
                                 ("voice_tts", "VOICE_TTS", TTS_ENGINES),
                                 ("voice_barge", "VOICE_BARGE_IN", BARGE_IN_MODES),
-                                ("voice_web_tts", "VOICE_WEB_TTS", WEB_TTS_ENGINES)):
+                                ("voice_web_tts", "VOICE_WEB_TTS", WEB_TTS_ENGINES),
+                                ("voice_stt", "VOICE_STT", WEB_STT_MODES)):
         val = get(field)
         if val is None:
             continue
