@@ -1,4 +1,4 @@
-"""The ``display`` tool: Sterling composes a small HUD panel for the Jarvis page's activity rail.
+"""The ``display`` tool: Cecil composes a small HUD panel for the Jarvis page's activity rail.
 
 Ported from adewaskar/jarvis ``bridge/panels.mjs`` and ``src/ui/sanitise.ts`` (MIT License,
 Copyright (c) 2026 Aditya Dewaskar). The model writes the markup itself, from a fixed design system

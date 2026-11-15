@@ -1,10 +1,10 @@
-"""The heartbeat: Sterling looks around every N minutes and acts on the owner's checklist unprompted.
+"""The heartbeat: Cecil looks around every N minutes and acts on the owner's checklist unprompted.
 
 OpenClaw's best-loved feature (docs/JARVIS_RESEARCH.md section 3), with the guardrails its
 HEARTBEAT.md poisoning taught us:
 
 * **The checklist is the owner's.** ``Agent/Heartbeat.md`` in the vault (shipped from
-  ``vault_template/``, never overwritten) lists what to watch. Sterling cannot write it: the vault
+  ``vault_template/``, never overwritten) lists what to watch. Cecil cannot write it: the vault
   refuses writes to :data:`assistant.vault.PROTECTED_NOTES` unless ``owner=True``, Claude Code gets
   Edit/Write deny rules for it, and the self-edit guard restores it after every full-power turn.
   Changes are proposed with ``request_approval`` (handler ``heartbeat_checklist``) and written only
@@ -77,11 +77,11 @@ QUIET_NOTE = "- It is his quiet hours: only urgent notifications will be sent an
 
 
 # ---------------------------------------------------------------------------
-# the checklist (his note; read-only for Sterling)
+# the checklist (his note; read-only for Cecil)
 # ---------------------------------------------------------------------------
 
 def protected_paths() -> list[Path]:
-    """Files Sterling must never change: the live checklist and its shipped template."""
+    """Files Cecil must never change: the live checklist and its shipped template."""
     from assistant import selfedit, vault
 
     return [vault.vault_root() / CHECKLIST_NOTE, selfedit.app_dir() / "vault_template" / CHECKLIST_NOTE]

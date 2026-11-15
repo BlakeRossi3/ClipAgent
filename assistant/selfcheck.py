@@ -1,7 +1,7 @@
-"""Sterling's acceptance suite: "is everything working?" answered with real tool calls on real data.
+"""Cecil's acceptance suite: "is everything working?" answered with real tool calls on real data.
 
 Run it from the CLI (``python main.py assistant selfcheck``), the Settings page ("Run self-check")
-or by asking Sterling (the ``selfcheck_run`` tool). Each line is a plain-English pass / warn / fail /
+or by asking Cecil (the ``selfcheck_run`` tool). Each line is a plain-English pass / warn / fail /
 skip about one capability, exercised the way he uses it:
 
     hours      log hours for a past week, then undo it (admin undo)
@@ -97,7 +97,7 @@ class Warn(Exception):
 # ---------------------------------------------------------------------------
 
 def _dispatch(name: str, args: dict[str, Any]) -> Any:
-    """A real tool call through the registry, as Sterling makes it."""
+    """A real tool call through the registry, as Cecil makes it."""
     from assistant import tools
 
     tools.load_extensions()
@@ -183,7 +183,7 @@ def check_staff() -> str:
 
     staff = [x["name"] for x in admin.staff_list()["staff"] if x["name"] != "main"]
     if not staff:
-        raise Skip("There is no staff member besides Sterling to rename.")
+        raise Skip("There is no staff member besides Cecil to rename.")
     old = staff[0]
     new = f"{old}-check"
     agents_dir = admin._agents_dir()

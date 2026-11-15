@@ -1,4 +1,4 @@
-"""Sterling's tools as a stdio MCP server, for the Claude Code backend (assistant/claude_code.py).
+"""Cecil's tools as a stdio MCP server, for the Claude Code backend (assistant/claude_code.py).
 
 Run as ``python -m assistant.mcp_server`` by Claude Code (``--mcp-config``); one process per
 agent run. Minimal JSON-RPC 2.0 over newline-delimited stdin/stdout (MCP stdio transport):

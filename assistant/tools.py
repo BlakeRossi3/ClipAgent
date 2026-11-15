@@ -126,13 +126,14 @@ PLANNED_TOOLS: dict[str, str] = {
     **{name: "assistant.hud" for name in (
         "show_map", "show_media", "show_data", "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset")},
     "selfcheck_run": "assistant.selfcheck",
+    "fast_search": "assistant.fast_search",
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
 EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve", "assistant.usage",
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
-                     "assistant.hud", "assistant.selfcheck")
+                     "assistant.hud", "assistant.selfcheck", "assistant.fast_search")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 
 

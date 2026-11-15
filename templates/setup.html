@@ -26,6 +26,12 @@
 </label>
 {% if saved %}<label class="f-check"><input type="checkbox" name="{{ clear_name }}" value="1"> Remove the saved one</label>{% endif %}
 {% endmacro %}
+{% macro fold(title, summary="", icon="spark", open=False, id="") %}
+<details class="fold"{% if open %} open{% endif %}{% if id %} id="{{ id }}"{% endif %}>
+  <summary><span class="fold-ico" aria-hidden="true">{{ glyph(icon) | safe }}</span><span class="fold-title">{{ title }}</span>{% if summary %}<span class="fold-sum">{{ summary }}</span>{% endif %}<span class="fold-chev" aria-hidden="true"><svg viewBox="0 0 10 10" width="10" height="10"><path d="M1.5 3.5L5 7l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span></summary>
+  <div class="fold-body">{{ caller() }}</div>
+</details>
+{% endmacro %}
 {% macro result_box(r) %}
 {% if r %}<div class="s-result {{ 'ok' if r.ok else 'bad' }}" role="status"><strong>{{ r.title }}</strong> {{ r.text }}</div>{% endif %}
 {% endmacro %}
@@ -51,20 +57,26 @@
   <div class="s-butler">{{ butler | safe }}</div>
   <div><p class="s-kicker">Settings</p><h1>Everything you set up, in one place.</h1></div>
 </section>
-<div class="s-grid">
-  {% set sm = summary %}
-  <a class="card s-tile" href="/setup/about"><strong>About you</strong><span>{{ sm.about.owner_name }} · "{{ sm.about.honorific }}" · {{ sm.about.timezone }}</span></a>
-  <a class="card s-tile" href="/setup/brain"><strong>The brain</strong><span>{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}/{{ cc.turns_cap }} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}</span></a>
-  <a class="card s-tile" href="/setup/money"><strong>Job &amp; money</strong><span>{% if sm.money.job_name %}{{ sm.money.job_name }} · ${{ sm.money.rate }}/h{% else %}Not set{% endif %}</span></a>
-  <a class="card s-tile" href="/setup/phone"><strong>Your phone</strong><span>{{ sm.phone.owner_phone or "Not set" }}{% if sm.phone.twilio_sid %} · Twilio set{% endif %}</span></a>
-  <a class="card s-tile" href="/setup/youtube"><strong>YouTube</strong><span>{% if sm.youtube.has_token %}Connected{% elif sm.youtube.has_secret %}Sign-in file saved, not connected{% else %}Not connected{% endif %}</span></a>
-  <a class="card s-tile" href="/setup/memory"><strong>Memory</strong><span>{{ sm.memory.notes }} notes</span></a>
-  <a class="card s-tile" href="/setup/power"><strong>Power &amp; privacy</strong><span>{{ "GPU" if sm.power.whisper_device == "cuda" else "CPU" }} · {{ "Practice (dry run)" if sm.power.dry_run else "Live" }}{% if secrets.dashboard_token %} · phone password set{% endif %}</span></a>
-  <a class="card s-tile" href="/setup/done"><strong>Health check</strong><span>Run the checklist</span></a>
-  <a class="card s-tile" href="/dashboard/modes"><strong>Desktop modes</strong><span>Gaming, Work, Wind down</span></a>
-  <a class="card s-tile" href="/dashboard/history"><strong>Claude history</strong><span>Import your claude.ai chats into memory</span></a>
-  <a class="card s-tile" href="/dashboard/twilio-check"><strong>Twilio check</strong><span>Why texts fail, and the fix</span></a>
-</div>
+{% set sm = summary %}
+{% macro tile(href, title, line, icon) %}<a class="card s-tile" href="{{ href }}"><span class="s-tile-ico" aria-hidden="true">{{ glyph(icon) | safe }}</span><span class="s-tile-text"><strong>{{ title }}</strong><span>{{ line }}</span></span></a>{% endmacro %}
+<section class="s-group" aria-labelledby="g-you"><h2 class="sec-title" id="g-you">You</h2><div class="s-grid">
+  {{ tile("/setup/about", "About you", sm.about.owner_name ~ ' · "' ~ sm.about.honorific ~ '" · ' ~ sm.about.timezone, "flag") }}
+  {{ tile("/setup/money", "Job & money", (sm.money.job_name ~ " · $" ~ sm.money.rate ~ "/h") if sm.money.job_name else "Not set", "coin") }}
+  {{ tile("/setup/memory", "Memory", sm.memory.notes ~ " notes", "book") }}
+</div></section>
+<section class="s-group" aria-labelledby="g-conn"><h2 class="sec-title" id="g-conn">Connections</h2><div class="s-grid">
+  {% set brain_line %}{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}/{{ cc.turns_cap }} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}{% endset %}
+  {{ tile("/setup/brain", "The brain", brain_line, "spark") }}
+  {{ tile("/setup/phone", "Your phone", (sm.phone.owner_phone or "Not set") ~ (" · Twilio set" if sm.phone.twilio_sid else ""), "chat") }}
+  {{ tile("/setup/youtube", "YouTube", "Connected" if sm.youtube.has_token else ("Sign-in file saved, not connected" if sm.youtube.has_secret else "Not connected"), "film") }}
+  {{ tile("/dashboard/twilio-check", "Twilio check", "Why texts fail, and the fix", "bell") }}
+</div></section>
+<section class="s-group" aria-labelledby="g-sys"><h2 class="sec-title" id="g-sys">This computer</h2><div class="s-grid">
+  {{ tile("/setup/power", "Power & privacy", ("GPU" if sm.power.whisper_device == "cuda" else "CPU") ~ " · " ~ ("Practice (dry run)" if sm.power.dry_run else "Live") ~ (" · phone password set" if secrets.dashboard_token else ""), "sun") }}
+  {{ tile("/setup/done", "Health check", "Run the checklist", "scroll") }}
+  {{ tile("/dashboard/modes", "Desktop modes", "Gaming, Work, Wind down", "team") }}
+  {{ tile("/dashboard/history", "Claude history", "Import your claude.ai chats into memory", "book") }}
+</div></section>
 <section class="card s-maint">
   <h2 class="sec-title">Maintenance</h2>
   <div class="s-btnrow">
@@ -72,7 +84,7 @@
     <form method="post" action="/setup/action/restart"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled title="Only when started from the ClipAgent shortcut"{% endif %}>Restart</button></form>
     <form method="post" action="/setup/action/stop"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled{% endif %}>Stop</button></form>
     <a class="hbtn" href="/setup/done">Run health check</a>
-    <form method="post" action="/setup/action/selfcheck"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit" title="Sterling tries every capability on your real data, undoes every change and sends nothing">Run self-check</button></form>
+    <form method="post" action="/setup/action/selfcheck"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit" title="Cecil tries every capability on your real data, undoes every change and sends nothing">Run self-check</button></form>
     {% if windows %}<form method="post" action="/setup/action/open-data"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Open data folder</button></form>{% endif %}
   </div>
   <p class="f-help">Your settings live in <code>{{ s.config_file }}</code>; your data in <code>{{ s.data_dir }}</code>. Updates never touch either.</p>
@@ -171,7 +183,7 @@
     {{ buttons() }}
   </form>
 </section>
-{# ===== Sterling's powers (self-editing assistant; setup_web.sterling_powers) ===== #}
+{# ===== Cecil's powers (self-editing assistant; setup_web.sterling_powers) ===== #}
 {% if powers and not powers.get("error") %}
 <section class="card s-step" id="powers">
   <h2>{{ a.name }}'s powers</h2>
@@ -196,10 +208,10 @@
     <form method="post" action="/dashboard/sterling/undo"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not se.commits %} disabled{% endif %}>Undo last change</button></form>
     <form method="post" action="/dashboard/sterling/{{ 'start' if powers.stopped else 'stop' }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">{{ ('Start ' if powers.stopped else 'Stop ') ~ a.name }}</button></form>
   </div>
-  <p class="f-help">By text: UNDO, STOP STERLING, START STERLING; PAUSE / RESUME stop all AI spending.{% if powers.paused %} Spending is paused now.{% endif %}</p>
+  <p class="f-help">By text: UNDO, STOP CECIL, START CECIL; PAUSE / RESUME stop all AI spending.{% if powers.paused %} Spending is paused now.{% endif %}</p>
 </section>
 {% endif %}
-{# ===== end Sterling's powers ===== #}
+{# ===== end Cecil's powers ===== #}
 
 {% elif step == "money" %}
 <section class="card s-step">
@@ -224,14 +236,19 @@
   <form method="post" action="/setup/phone">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label class="f">Your mobile number<input name="owner_phone" value="{{ values.owner_phone }}" inputmode="tel" autocomplete="tel" placeholder="+1 555 123 4567">{{ err("owner_phone") }}</label>
+    {% call fold("Twilio account", ("Set: " ~ values.twilio_sid[:6] ~ "…") if values.twilio_sid else "Not set yet", "bell", open=not values.twilio_sid or errors|length > 0) %}
+    <div class="f-row">
     <label class="f">Twilio Account SID<input name="twilio_sid" value="{{ values.twilio_sid }}" autocomplete="off" spellcheck="false" placeholder="AC...">{{ err("twilio_sid") }}</label>
     {{ secret_field("twilio_token", "Twilio Auth Token", secrets.twilio_token, "32 letters and numbers", "clear_twilio_token") }}
     <label class="f">Twilio phone number<input name="twilio_from" value="{{ values.twilio_from }}" inputmode="tel" placeholder="+1 555 000 1111">{{ err("twilio_from") }}</label>
+    </div>
     <label class="f">Public web address (for replies and approvals)<input name="public_url" value="{{ values.public_url }}" inputmode="url" spellcheck="false">{{ help("Only needed so Twilio can reach this laptop when you text back. Leave it as is until you set that up.") }}{{ err("public_url") }}</label>
+    {% endcall %}
     {# ===== Texting channel: SMS / WhatsApp (setup_web.texting_values, assistant/messaging.py) ===== #}
     {% set tx = values.texting or {} %}
-    <fieldset class="f" id="texting">
-      <legend><strong>Texting</strong></legend>
+    {% call fold("Texting: SMS and WhatsApp", ("Texts go by " ~ (tx.route or "auto") | upper) if not tx.get("error") else "Choose how texts reach you", "chat", id="texting") %}
+    <fieldset class="f">
+      <legend class="sr-only">Texting</legend>
       {% if not tx.get("error") %}
       <p class="f-help">SMS: <strong>{{ tx.sms_text }}</strong>{% if tx.a2p %} (campaign: {{ tx.a2p | lower | replace("_", " ") }}){% endif %}<br>
         WhatsApp: <strong>{{ tx.wa.text }}</strong>{% if tx.wa.rejoin_by_local %} · sandbox join ends {{ tx.wa.rejoin_by_local }}{% endif %}<br>
@@ -258,6 +275,7 @@
         <button type="submit" name="action" value="test_sms" class="hbtn">Save &amp; send me an SMS test</button>
       </div>
     </fieldset>
+    {% endcall %}
     {# ===== end texting channel ===== #}
     <p class="f-help">Where do I get these? <a href="/setup/help/twilio">The Twilio guide</a> walks through it step by step.{% if s.dry_run %} Practice mode (dry run) is on, so the test text is only recorded - you can switch it off under <a href="/setup/power#dry-run">Power &amp; privacy</a>.{% endif %}</p>
     <div class="s-actions"><button type="submit" name="action" value="test" class="hbtn">Save &amp; send me a test text</button></div>
@@ -315,18 +333,23 @@
   {% endif %}
   <form method="post" action="/setup/power">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <fieldset class="f"><legend>Transcribing speech</legend>
+    {% call fold("Transcribing speech", "CPU or NVIDIA GPU for Whisper", "sun", open=True) %}
+    <fieldset class="f"><legend class="sr-only">Transcribing speech</legend>
       <label class="f-check"><input type="radio" name="whisper_device" value="cpu"{% if values.whisper_device != "cuda" %} checked{% endif %}> Use the processor (recommended, always works)</label>
       <label class="f-check"><input type="radio" name="whisper_device" value="cuda"{% if values.whisper_device == "cuda" %} checked{% endif %}> Use my NVIDIA GPU - faster, needs NVIDIA drivers. If it fails, ClipAgent switches back to the processor by itself.</label>
       {{ err("whisper_device") }}</fieldset>
-    <fieldset class="f" id="dry-run"><legend>Practice mode</legend>
+    {% endcall %}
+    {% call fold("Practice mode", "On: nothing is uploaded, texted or called" if values.dry_run in (true, "true") else "Off: live uploads, texts and calls", "flag", open=True, id="dry-run") %}
+    <fieldset class="f"><legend class="sr-only">Practice mode</legend>
       <label class="f-check"><input type="radio" name="dry_run" value="true"{% if values.dry_run in (true, "true") %} checked{% endif %}> On - nothing is uploaded, texted or called; everything is recorded so you can check it (recommended for the first days)</label>
       <label class="f-check"><input type="radio" name="dry_run" value="false"{% if values.dry_run in (false, "false") %} checked{% endif %}> Off - go live: real uploads, texts and calls</label>
       {{ err("dry_run") }}</fieldset>
+    {% endcall %}
     {# --- voice (voice/ package; docs/VOICE.md) --- #}
-    <fieldset class="f" id="voice"><legend>Voice</legend>
+    {% call fold("Voice", "Wake word, microphone, voices, interruptions", "chat", open=errors|length > 0, id="voice") %}
+    <fieldset class="f f-voice"><legend class="sr-only">Voice</legend>
       <input type="hidden" name="voice_present" value="1">
-      <label class="f-check"><input type="checkbox" name="voice_enabled" value="1"{% if values.voice_enabled %} checked{% endif %}> Talk to {{ values.voice_name or "me" }} out loud: always listening on this laptop for "Hey Jarvis" or "{{ values.voice_name or "Sterling" }}". Everything is heard and spoken locally; only what you say after the wake word goes to the assistant.</label>
+      <label class="f-check"><input type="checkbox" name="voice_enabled" value="1"{% if values.voice_enabled %} checked{% endif %}> Talk to {{ values.voice_name or "me" }} out loud: always listening on this laptop for "Hey Jarvis" or "{{ values.voice_name or "Cecil" }}". Everything is heard and spoken locally; only what you say after the wake word goes to the assistant.</label>
       {% if not wizard %}
       <label>Microphone <input name="voice_device" value="{{ values.voice_device or '' }}" placeholder="Automatic" list="voice-devs" data-voice-devices></label><datalist id="voice-devs"></datalist>{{ err("voice_device") }}
       <p><button type="button" class="hbtn" data-voice-test>Test my mic</button> <meter min="0" max="1" value="0" data-voice-meter></meter> <span data-voice-test-note></span></p>
@@ -343,19 +366,21 @@
       {% endif %}
       <p class="f-help">Say "stop listening" (or press Ctrl+Alt+M) for a hard mute: the microphone closes, so only the dashboard, the tray icon or Ctrl+Alt+M turn it back on. Windows must allow desktop apps to use the microphone (Settings, Privacy &amp; security, Microphone).</p>
     </fieldset>
+    {% endcall %}
     {% if windows %}
     <label class="f-check"><input type="checkbox" name="startup" value="1"{% if values.startup in (true, "1") %} checked{% endif %}> Start ClipAgent when Windows starts (quietly, without opening the browser)</label>{{ err("startup") }}
     {% endif %}
     {{ buttons() }}
   </form>
-  <div class="s-sub">
-    <h2 class="sec-title">Phone password</h2>
+  {% call fold("Phone password", "One is saved" if secrets.dashboard_token else "None yet", "bell") %}
+  <div>
     <p class="f-help">To open this dashboard from your phone later you need a password (DASHBOARD_TOKEN). {% if secrets.dashboard_token %}One is saved.{% else %}None yet.{% endif %}</p>
     <div class="s-btnrow">
       <form method="post" action="/setup/power"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" name="action" value="new_token" class="hbtn">{{ "Make a new password" if secrets.dashboard_token else "Make a password" }}</button></form>
       {% if secrets.dashboard_token %}<form method="post" action="/setup/power"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" name="action" value="clear_token" class="hbtn">Remove it</button></form>{% endif %}
     </div>
   </div>
+  {% endcall %}
 </section>
 
 {% elif step == "done" %}

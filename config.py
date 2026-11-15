@@ -75,6 +75,10 @@ class Settings:
     youtube_api_key: str = ""          # optional API key, only for scout's Data API CC search backend
     youtube_monetary_analytics: bool = False  # collect revenue when the token has the monetary scope
 
+    # --- fast web search for the assistant (assistant/fast_search.py) ------------
+    brave_search_api_key: str = ""     # secret; Brave Search API (preferred when set)
+    exa_api_key: str = ""              # secret; Exa search API (used when Brave is not set)
+
     # --- scout -----------------------------------------------------------------
     scout_cc_backend: str = "ytdlp"    # ytdlp (0 quota) | data_api (100 units per search)
     scout_cc_api_max_searches_per_day: int = 2
@@ -235,6 +239,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         youtube_daily_quota=int(s("YOUTUBE_DAILY_QUOTA", "10000")),
         youtube_api_key=s("YOUTUBE_API_KEY", ""),
         youtube_monetary_analytics=_bool(env.get("YOUTUBE_MONETARY_ANALYTICS"), False),
+        brave_search_api_key=s("BRAVE_SEARCH_API_KEY", ""),
+        exa_api_key=s("EXA_API_KEY", ""),
         scout_cc_backend=s("SCOUT_CC_BACKEND", "ytdlp").lower(),
         scout_cc_api_max_searches_per_day=max(0, int(s("SCOUT_CC_API_MAX_SEARCHES_PER_DAY", "2"))),
         twilio_account_sid=s("TWILIO_ACCOUNT_SID", ""),

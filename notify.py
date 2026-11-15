@@ -715,8 +715,8 @@ def _still_held(row: db.Notification) -> bool:
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 
 HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval, "
-             "STATUS, PAUSE (stop AI spending), RESUME, UNDO (assistant's last code change), STOP STERLING, "
-             "START STERLING, HELP.")
+             "STATUS, PAUSE (stop AI spending), RESUME, UNDO (assistant's last code change), STOP CECIL, "
+             "START CECIL, HELP.")
 
 
 def _xml(twiml: Any) -> Response:
@@ -1110,19 +1110,21 @@ ASSISTANT_HELP = ("Check-ins: SNOOZE [2h], QUIET (rest of today), STOP CHECK-INS
 _COMMAND_WORDS = frozenset({"PAUSE", "RESUME", "UNPAUSE", "STATUS", "HELP"})
 
 
-ASSISTANT_PHRASES = frozenset({"UNDO", "STOP STERLING", "START STERLING"})
+ASSISTANT_PHRASES = frozenset({"UNDO", "STOP CECIL", "START CECIL",
+                               "STOP STERLING", "START STERLING"})   # the old name keeps working
 
 
 def _assistant_command(phrase: str) -> str:
-    """UNDO (revert the assistant's last change to its own code), STOP/START STERLING (kill switch)."""
+    """UNDO (revert the assistant's last change to its own code), STOP/START CECIL (kill switch)."""
     try:
         from assistant import runtime, selfedit
 
         if phrase == "UNDO":
             return selfedit.undo()["message"]
-        runtime.set_stopped(phrase == "STOP STERLING", via="sms")
-        return ("Stopped. Your assistant will not run until you text START STERLING."
-                if phrase == "STOP STERLING" else "Started. Your assistant is back.")
+        stop = phrase.startswith("STOP ")
+        runtime.set_stopped(stop, via="sms")
+        return ("Stopped. Your assistant will not run until you text START CECIL."
+                if stop else "Started. Your assistant is back.")
     except Exception as exc:
         log.exception("assistant command failed")
         return f"That did not work: {type(exc).__name__}. See the dashboard."

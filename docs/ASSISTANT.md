@@ -26,9 +26,9 @@ files, markdown and SQLite, so it can be read, edited, versioned and replaced pi
 
 Scheduled work (briefs, reviews, tidy-ups) calls `runtime.run_task(agent, task, deliver=...)`.
 
-## What Sterling can do: administrator of the whole app
+## What Cecil can do: administrator of the whole app
 
-Blake's rule: Sterling reads and changes **everything** in ClipAgent except secret values.
+Blake's rule: Cecil reads and changes **everything** in ClipAgent except secret values.
 `assistant/admin.py` (skill `skills/app-admin`, tools on `agents/main.md`):
 
 - **Read:** `app_map` (generated live: every table with columns, row counts and purpose; every config key
@@ -68,7 +68,7 @@ Model calls: adaptive thinking (model default), `output_config.effort`, the syst
 (breakpoint on the last stable block; time, history and memory go in the user message), and
 server-side refusal fallbacks (`fallbacks: "default"`, beta) when `LLM_SERVER_FALLBACKS` is on.
 
-## Sterling on the Claude plan: full powers (ASSISTANT_BACKEND=claude_code)
+## Cecil on the Claude plan: full powers (ASSISTANT_BACKEND=claude_code)
 
 With the Claude Code backend the **main agent** (dashboard chat, texts, scheduled main tasks) runs as
 real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=true` by default):
@@ -80,7 +80,7 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   [--resume <session>] [--chrome]`, cwd = the app checkout. `--append-system-prompt` (not `--system-prompt`)
   keeps Claude Code's own tool instructions; the persona and a "your powers" note are appended.
   The repo's CLAUDE.md is not auto-loaded (only ClipAgent's own Claude Code profile is read, which keeps
-  every chat turn small); the system prompt tells Sterling to read CLAUDE.md before editing itself.
+  every chat turn small); the system prompt tells Cecil to read CLAUDE.md before editing itself.
 * **Folders**: its own code (cwd), its data dir, and `ASSISTANT_USER_DIRS` (default Desktop, Documents,
   Downloads, Pictures, Videos, incl. OneDrive copies). Reads anywhere else are allowed by Claude Code,
   edits only inside these folders.
@@ -100,7 +100,7 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   `GET /dashboard/chat/job/<id>`); a run may take `ASSISTANT_CC_TASK_TIMEOUT_SEC` (900) and
   `ASSISTANT_CC_MAX_TURNS` (40) tool rounds. The daily run cap and plan-limit backoff still apply.
 * **Browser**: `open_url` opens any page in his default (signed-in) browser, so pages that need his
-  login work; Sterling is told to do this itself and never to extract cookies or passwords.
+  login work; Cecil is told to do this itself and never to extract cookies or passwords.
   `ASSISTANT_CHROME=true` also passes `--chrome` (Claude in Chrome extension; one-time setup: install
   the extension in Chrome, sign it in to the same Claude account, restart Chrome). Whether `--chrome`
   connects in `-p` mode is not verified; `open_url` works either way.
@@ -127,7 +127,7 @@ The weekly `engineer` proposal flow (assistant/improve.py) still exists and is t
 on the API backend; nightly evals remain the regression check.
 
 ## The voice brain: one warm session (assistant/brain.py)
-Talking to Sterling (the Jarvis page and the laptop voice process) goes to one long-lived Claude Agent
+Talking to Cecil (the Jarvis page and the laptop voice process) goes to one long-lived Claude Agent
 SDK session (`claude_agent_sdk.ClaudeSDKClient`, the `claude-agent-sdk` package) held in the server
 process and connected at start-up. It is the only other place besides `llm.py` and `runtime.py` that
 drives a model SDK. Modelled on adewaskar/jarvis `bridge/server.mjs` (MIT).
@@ -158,7 +158,7 @@ drives a model SDK. Modelled on adewaskar/jarvis `bridge/server.mjs` (MIT).
   system prompt, diagnostics and the event log carry the **names only**, never their env/headers.
 SMS and typed dashboard chat still use `runtime.run_turn`.
 
-### The HUD (assistant/hud.py): things Sterling can throw on the Jarvis screen
+### The HUD (assistant/hud.py): things Cecil can throw on the Jarvis screen
 - `display` (model markup, `assistant/panels.py`), `show_map` (Nominatim geocoding with User-Agent
   "ClipAgent/1.0 (personal assistant)", one request a second, answers cached in kv; OpenStreetMap tiles
   drawn as a mosaic with pins, no map library), `show_media` (image or video URL from a tool result, a
@@ -176,7 +176,7 @@ SMS and typed dashboard chat still use `runtime.run_turn`.
   link, last turn timing, voice and last spoken, his MCP server names), **T** = one-line audio self-test.
 
 ### Self-check (assistant/selfcheck.py)
-`python main.py assistant selfcheck`, Settings -> Maintenance -> "Run self-check", or ask Sterling (tool
+`python main.py assistant selfcheck`, Settings -> Maintenance -> "Run self-check", or ask Cecil (tool
 `selfcheck_run`). Real tool calls on his real data: log hours for a past week and undo, read this week's
 pay, rename a staff member and back, switch voice and back, read a past conversation, search memory,
 resolve a URL (nothing opens), show a map panel, studio status, render two seconds of a clip to a temp
@@ -202,6 +202,32 @@ file, build a DRY_RUN upload request, Twilio diagnose, plan usage. Every change 
 * **Structured facts** (hours, income, meals, goals, check-ins) live in SQLite (`assistant/store.py`),
   because numbers need arithmetic and exactness; the vault holds context and preferences.
 
+## The staff as Invincible characters; the name Cecil
+
+The main agent is **Cecil** (default `ASSISTANT_NAME`; until now it was "Sterling"). On server start-up
+`assistant.settings.migrate_legacy_name()` rewrites `ASSISTANT_NAME=Sterling` in config.env to `Cecil` once
+(kv `assistant:name_migrated`), and only when it is exactly the old default; a name you chose stays. SMS
+`STOP CECIL` / `START CECIL` (the old `... STERLING` still work).
+
+The sub-agents look and are named like characters from *Invincible* (original 16x16 pixel art in
+`home.CHARACTERS`, evoking palette and costume only). **Agent ids never changed**: they are stored in
+`as_agent_runs.agent` / `as_messages.agent` and used by `delegate`, so only `display_name` (+ `character`)
+in each `agents/*.md` changed. `home.agent_display(id)` is the one place names are resolved.
+
+| id | shown as | character | why |
+|---|---|---|---|
+| `main` | Cecil | Cecil Stedman | the director who sees the whole board and sends the right hero |
+| `studio` | Atom Eve | Atom Eve | makes things out of raw material: the Shorts |
+| `ledger` | Debbie | Debbie Grayson | keeps the household's books straight |
+| `quartermaster` | Donald | Donald Ferguson | Cecil's unflappable logistics man: meals, routines, check-ins |
+| `archivist` | The Immortal | The Immortal | remembers everything, across millennia |
+| `researcher` | Allen | Allen the Alien | the Coalition's field evaluator: sizes up every world |
+| `engineer` | Robot | Robot (Rudy) | rebuilds himself to be better: self-improvement |
+| `briefer` | Invincible | Mark Grayson | first on the scene, reports back: briefs and wraps |
+
+`staff_rename` gives an agent a new id and makes the new name the one shown (it also rewrites main.md's
+`- id (Display):` roster line); `staff_update(name, {"display_name": ...})` changes only the name shown.
+
 ## Add a sub-agent
 
 1. Create `agents/<name>.md`: frontmatter `name` (= file stem), `description` (when the main agent
@@ -219,7 +245,7 @@ inline it into that agent's system prompt, or let agents with `skill_read` load 
 ## Change the persona
 
 `skills/persona/SKILL.md` is the character (placeholders `{{assistant_name}}`, `{{owner_name}}`,
-`{{honorific}}`); `ASSISTANT_NAME` / `OWNER_HONORIFIC` rename. It is written as a precise spec, Sterling's
+`{{honorific}}`); `ASSISTANT_NAME` / `OWNER_HONORIFIC` rename. It is written as a precise spec, Cecil's
 version of adewaskar/jarvis PROMPT_CORE (MIT): two sentences of conversation at most (median under twelve
 words; data readouts excepted), positional "sir", impersonal success reports, failures as facts about the
 world, no filler, enthusiasm or apology, never "yeah", act-then-report, never refuse twice. Hard rules are
@@ -318,7 +344,7 @@ is built yet. Model ids are settings, so newer models drop in without code chang
   ("Each morning ...", "At 9pm ...", "Every hour ...", "Every Monday ..."). **Only Blake edits it**:
   `vault.write_note/append_to_note/delete_note` raise `VaultProtected` for `vault.PROTECTED_NOTES`
   (unless `owner=True`), Claude Code gets Edit/Write deny rules for it, and `selfedit.finish` restores
-  it (and its template) after any full-power turn that changed it. Sterling proposes changes with
+  it (and its template) after any full-power turn that changed it. Cecil proposes changes with
   `request_approval` handler `heartbeat_checklist` (`details.text` = the full new note); YES writes it.
 - **Tick** (job `assistant_heartbeat`, every `HEARTBEAT_MINUTES`, default 30, only with
   `ASSISTANT_ENABLED`): skipped while stopped or while `usage.constrained()` (plan >= 80%). Plain code
@@ -339,7 +365,7 @@ is built yet. Model ids are settings, so newer models drop in without code chang
 
 ## Toolkit: reels, skill vetting, desktop modes, Claude history, Twilio doctor
 
-Each is a plain module with `register_tools(register)` (tools reach Sterling in-process and over MCP)
+Each is a plain module with `register_tools(register)` (tools reach Cecil in-process and over MCP)
 and a CLI for Claude Code's shell: `python -m assistant.<module> --help`. Settings: "Assistant
 toolkit" in `config.env.example` (`assistant/toolkit_settings.py`). Pages: Settings -> Desktop modes /
 Claude history / Twilio check (`assistant/toolkit_web.py`, `templates/toolkit.html`).
@@ -348,7 +374,7 @@ Claude history / Twilio check (`assistant/toolkit_web.py`, `templates/toolkit.ht
   `<data_dir>/assistant/reels/<id>/` (optional browser cookies, falls back without), whisper transcript,
   8-12 ffmpeg keyframes (scene cuts + 1 fps fill, ~768 px JPEG), metadata, vault note
   `Inbox/Reels/<date>-<slug>.md`. The model looks at the frames (Read) and follows the skill: improve
-  Sterling (default for AI/tool reels) or content feedback for the channel.
+  Cecil (default for AI/tool reels) or content feedback for the channel.
 * **Skill vetting** (`assistant/skill_vetting.py`, tools `skill_vet`, `skill_install`, `skill_third_party`):
   fetch into quarantine pinned to a commit (never executed), static checks, GitHub reputation, then the
   model's SAFE/CAUTION/UNSAFE verdict. Decision table: trusted repo (anthropics/skills, the official

@@ -1,4 +1,4 @@
-"""Vet a third-party Claude skill before Sterling adds it (the watch-reel -> "add it if it is safe" path).
+"""Vet a third-party Claude skill before Cecil adds it (the watch-reel -> "add it if it is safe" path).
 
 Flow (see skills/watch-reel/SKILL.md, part 2):
 
@@ -11,7 +11,7 @@ Flow (see skills/watch-reel/SKILL.md, part 2):
    hooks, binaries.
 3. Source reputation (GitHub API): age, stars, owner, archived. :data:`TRUSTED_REPOS`
    (``anthropics/skills``, the official Claude plugin marketplace) are trusted; anything else is unknown.
-4. Sterling reads every file and gives a plain-English verdict (what it does, what it can touch,
+4. Cecil reads every file and gives a plain-English verdict (what it does, what it can touch,
    red flags, SAFE / CAUTION / UNSAFE) via :func:`submit_verdict` (tool ``skill_install``).
 5. :func:`decide` (pure decision table):
 
@@ -626,7 +626,7 @@ def _note(rep: VetReport, line: str) -> None:
 
 
 def submit_verdict(vet_id: str, rating: str, summary: str, red_flags: list[str] | None = None) -> dict[str, Any]:
-    """Sterling's verdict after reading the files -> install / ask / refuse (the decision table)."""
+    """Cecil's verdict after reading the files -> install / ask / refuse (the decision table)."""
     import notify
 
     rep = load_report(vet_id)

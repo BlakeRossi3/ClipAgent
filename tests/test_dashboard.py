@@ -587,8 +587,10 @@ def test_old_urls_redirect_to_studio(client, clock):
 def test_seeded_home_shows_everything(client, seeded):
     html = client.get("/dashboard/").text
     assert "DEMO DATA" in html and "Needs you" in html and "Spoke &amp; Chain" in html
-    for name in ("Studio", "Ledger", "Quartermaster", "Archivist", "Briefer", "Researcher", "Engineer"):
+    for name in ("Atom Eve", "Debbie", "Donald", "The Immortal", "Invincible", "Allen", "Robot"):  # the staff, as characters
         assert name in html
+    for role in ("Studio director", "Bookkeeper", "Quartermaster", "Archivist", "Briefer", "Researcher", "Engineer"):
+        assert role in html
     assert "Black bean tacos" in html and "Emergency fund" in html
     j = client.get("/dashboard/api/home").json()
     assert j["mood"] == "alert" and set(j["html"]) == {"needs", "tiles", "roster", "feed"}

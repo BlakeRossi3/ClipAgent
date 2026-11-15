@@ -13,7 +13,7 @@
 4. **Metadata**: title, uploader, duration, caption/description, link.
 5. **Vault note** ``Inbox/Reels/<date>-<slug>.md`` with all of the above.
 
-The judgment (what the reel shows, how it applies to Sterling or the channel) is the model's
+The judgment (what the reel shows, how it applies to Cecil or the channel) is the model's
 job; ``skills/watch-reel/SKILL.md`` says how. Tool: ``reel_watch``. CLI:
 ``python -m assistant.reels watch <url> [--refresh] [--json]`` and ``... cleanup``.
 """

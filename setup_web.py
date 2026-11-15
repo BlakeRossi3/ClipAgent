@@ -163,6 +163,7 @@ def _render(request: Request, step: str, ctx: Mapping[str, Any] | None = None, *
         "step": step, "steps": STEPS, "idx": idx, "wizard": not s.setup_complete, "s": s, "a": _asettings(),
         "note": note, "errors": {}, "result": None, "salute": _salute(), "windows": _is_windows(),
         "butler": home.sprite_svg("main", size=72, cls="setup-butler"),
+        "glyph": home.glyph,
         "next_step": STEP_KEYS[idx + 1] if 0 <= idx < len(STEP_KEYS) - 1 else None,
         "prev_step": STEP_KEYS[idx - 1] if idx > 0 else None,
         "values": current_values(step), "secrets": secret_flags(),
@@ -901,7 +902,7 @@ def update_app() -> dict[str, Any]:
 
 
 # ===========================================================================
-# Sterling's powers (self-editing assistant) - kept in one block; see assistant/selfedit.py
+# Cecil's powers (self-editing assistant) - kept in one block; see assistant/selfedit.py
 # ===========================================================================
 
 SELF_EDIT_GIT_ID = ["-c", "user.name=Sterling", "-c", "user.email=sterling@clipagent.local"]

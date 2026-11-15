@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import math
 import re
 import secrets
@@ -63,6 +64,7 @@ import db
 from config import get_settings
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -95,6 +97,75 @@ SECTIONS = [
     ("settings", "Settings", "/setup/"),
 ]
 
+#: The top bar's dropdown menus (base.html): (key, label, [(label, href, hint)]). Staff and the
+#: Settings steps are filled in at render time (:func:`main_menus`).
+SETTINGS_MENU = [
+    ("Settings overview", "/setup/", "Everything you set up, in one place"),
+    ("About you", "/setup/about", "Name, address, time zone"),
+    ("The brain", "/setup/brain", "Claude account, keys, budgets"),
+    ("Job & money", "/setup/money", "Pay rate, schedule, tax"),
+    ("Your phone", "/setup/phone", "Texts, calls, WhatsApp"),
+    ("YouTube", "/setup/youtube", "Channel connection"),
+    ("Power & privacy", "/setup/power", "Voice, practice mode, password"),
+    ("Health check", "/setup/done", "What works, what needs fixing"),
+    ("Desktop modes", "/dashboard/modes", "Gaming, work, wind down"),
+    ("Twilio check", "/dashboard/twilio-check", "Why texts fail, and the fix"),
+]
+MEMORY_MENU = [
+    ("The vault", "/dashboard/memory", "Everything the assistant knows"),
+    ("Claude history", "/dashboard/history", "Your claude.ai chats, distilled"),
+    ("Memory import", "/setup/memory", "Bring in a vault export"),
+]
+
+
+def _menu_section(path: str) -> str:
+    if path.startswith("/setup") or path.startswith(("/dashboard/modes", "/dashboard/twilio-check")):
+        return "memory" if path.startswith("/setup/memory") else "settings"
+    if path.startswith(("/dashboard/memory", "/dashboard/history")):
+        return "memory"
+    if path.startswith(("/dashboard/agents", "/dashboard/staff")):
+        return "staff"
+    if path.startswith("/dashboard/events"):
+        return "log"
+    if path.rstrip("/") in ("/dashboard", ""):
+        return "home"
+    return "studio"
+
+
+def main_menus(path: str) -> list[dict[str, Any]]:
+    """The top bar: Cecil (home), Studio, Staff, Memory, Settings dropdowns, then Log. ``current`` marks
+    the section and each item's ``current`` the page (exact path match)."""
+    try:
+        import home
+
+        staff = home.staff_nav()
+    except Exception as exc:  # pragma: no cover - a broken agents dir must not take the chrome down
+        log.warning("staff menu unavailable: %s", exc)
+        staff = []
+    norm = path.rstrip("/") or "/"
+
+    def items(rows: list[tuple[str, str, str]]) -> list[dict[str, Any]]:
+        return [{"label": a, "href": h, "hint": s, "current": (h.rstrip("/") or "/") == norm} for a, h, s in rows]
+
+    studio = [(label, href, "") for _k, label, href in NAV if _k != "events"]
+    staff_items = [{"label": "All staff", "href": "/dashboard/staff", "hint": "Who does what, live",
+                    "current": norm == "/dashboard/staff"}]
+    staff_items += [{"label": m["display"], "href": f"/dashboard/agents/{m['name']}", "hint": m["role"],
+                     "sprite": m["sprite"], "current": norm == f"/dashboard/agents/{m['name']}"} for m in staff]
+    section = _menu_section(path)
+    menus = [
+        {"key": "home", "label": None, "href": "/dashboard/"},
+        {"key": "studio", "label": "Studio", "items": items(studio)},
+        {"key": "staff", "label": "Staff", "items": staff_items, "wide": True},
+        {"key": "memory", "label": "Memory", "items": items(MEMORY_MENU)},
+        {"key": "settings", "label": "Settings", "items": items(SETTINGS_MENU), "right": True},
+        {"key": "log", "label": "Log", "href": "/dashboard/events"},
+    ]
+    for m in menus:
+        m["current"] = m["key"] == section
+    return menus
+
+
 #: The Studio section's own pages (the phase-1 analytics dashboard).
 NAV = [
     ("overview", "Overview", "/dashboard/studio"),
@@ -123,7 +194,7 @@ _FLASH = {
     "chat_long": ("warning", "That message is too long for one go. Shorten it and try again."),
     "chat_off": ("warning", "The assistant is not taking messages right now."),
     "chat_bad_image": ("warning", "That image was not accepted (PNG, JPEG, WebP or GIF, up to 8 MB, 4 per message)."),
-    "sterling_stopped": ("warning", "The assistant is stopped. Start it again here or text START STERLING."),
+    "sterling_stopped": ("warning", "The assistant is stopped. Start it again here or text START CECIL."),
     "sterling_started": ("good", "The assistant is back on."),
     "sterling_undone": ("good", "The assistant's last code change was undone; ClipAgent is restarting."),
     "sterling_undo_failed": ("warning", "Nothing was undone (see Settings for the assistant's recent changes)."),
@@ -564,6 +635,16 @@ def _env():
     )
     env.globals["asset_v"] = _asset_version()
     env.globals["build_id"] = _build_id()
+
+    def agent_name(name: str | None) -> str:
+        import home
+
+        try:
+            return home.agent_display(name)
+        except Exception:  # pragma: no cover - a broken agents dir still renders
+            return (name or "assistant").capitalize()
+
+    env.globals["agent_name"] = agent_name
     env.filters.update(
         compact=fmt_compact, int=fmt_int, usd=fmt_usd, pct=fmt_pct, duration=fmt_duration, hours=fmt_hours,
         dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json, ext_url=ext_url,
@@ -611,7 +692,7 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
     except sqlite3.Error:  # pragma: no cover - unreadable DB still renders the error page
         demo = None
     flash = _FLASH.get(request.query_params.get("msg", ""))
-    if nav in ("home", "memory", "login", "settings"):
+    if nav in ("home", "memory", "login", "settings", "staff"):
         section = nav
     else:
         section = "studio"
@@ -625,6 +706,7 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
         "request_path": request.url.path,
         "nav": NAV,
         "sections": SECTIONS,
+        "menus": main_menus(request.url.path) if nav != "login" else [],
         "section": section,
         "assistant_name": assistant_name,
         "active": nav,
@@ -2399,5 +2481,9 @@ def api_costs(request: Request) -> Response:
 import home as _home  # noqa: E402 - imported last: home reaches back into this module lazily
 
 _home.register(router)
+
+import home_live as _home_live  # noqa: E402 - the Cecil home's live panels + the staff page
+
+_home_live.register(router)
 
 __all__ = ["router", "DEMO_KV_KEY", "csrf_token", "spearman", "hook_form", "strategy_diff"]

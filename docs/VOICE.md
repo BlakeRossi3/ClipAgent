@@ -1,4 +1,4 @@
-# Voice: talking to Sterling out loud
+# Voice: talking to Cecil out loud
 
 `python -m voice` is an always-on process on the laptop. `main.py schedule` (the process the
 ClipAgent shortcut / `windows/ClipAgent.ps1` launcher starts) starts it as a child process when
@@ -9,25 +9,25 @@ wake word, voice, barge-in mode and a "Test my mic" meter.
 
 ## What it hears, and what is sent where
 - The microphone stays open, but nothing leaves the laptop until a wake word triggers. "Hey Jarvis"
-  is detected by openWakeWord on the CPU. The assistant's name ("Sterling") is spotted by a small
+  is detected by openWakeWord on the CPU. The assistant's name ("Cecil") is spotted by a small
   local Whisper model (`tiny.en`) run on each short burst of speech. Neither stores the audio.
 - After the wake word (or within 8 s of a reply: follow-up mode), what you say is turned into text
   by faster-whisper on this laptop (the GPU when it works, otherwise the CPU). Only that **text**
   goes to Claude; the laptop voice process never sends audio anywhere.
 - **The Jarvis page hears you faster in Chrome/Edge** (`VOICE_STT=auto`, the default): the browser's own
-  speech recognition transcribes as you speak and sends the text straight to Sterling, skipping the
+  speech recognition transcribes as you speak and sends the text straight to Cecil, skipping the
   record, upload, decode and Whisper steps. Those browsers do this by sending the audio to Google's or
   Microsoft's speech service. For fully local hearing choose `server` (Whisper on this laptop) under
   Settings -> Power & privacy -> Voice -> "Jarvis page listening". If the browser engine fails (no
   network, blocked service) the page falls back to Whisper by itself. A heartbeat restarts the browser
-  engine whenever Chrome silently throttles it; interim words already pause Sterling (barge-in).
+  engine whenever Chrome silently throttles it; interim words already pause Cecil (barge-in).
 - On the Jarvis page replies are spoken by the browser's own voice by default (instant; the best British
   male voice installed: "Microsoft Ryan Online (Natural)" in Edge, "Google UK English Male" in Chrome).
   Settings -> Power & privacy -> Voice picks another browser voice, Kokoro (`bm_george`, `bm_lewis`,
   `bm_fable`, `bm_daniel`; on this laptop) or ElevenLabs (voice `JBFqnCBsd6RMkjVDRZzb`, as in
   adewaskar/jarvis; needs `ELEVENLABS_API_KEY`; then the reply **text** goes to ElevenLabs). The laptop
   voice process has no browser: it uses Kokoro, Windows (SAPI) voices or ElevenLabs.
-- Say "switch to Lewis" (or "use the browser voice", "use Ryan"): Sterling changes it himself and the
+- Say "switch to Lewis" (or "use the browser voice", "use Ryan"): Cecil changes it himself and the
   next sentence is in the new voice. A change in Settings also applies at once (no restart).
 - Every exchange is saved in the chat history (channel "voice"). Answers are spoken, never "see the dashboard".
 
@@ -36,10 +36,10 @@ Modelled on adewaskar/jarvis (MIT): one warm Claude Agent SDK session in the ser
 and the work, with every power and the whole day's conversation (details in docs/ASSISTANT.md).
 - The page streams everything live from `GET /voice/api/stream` (server-sent events): the text, each
   finished sentence (spoken as soon as it completes), tool steps ("Reading home.py", "Running tests"),
-  background tasks with elapsed time and result, and panels Sterling draws with `display`. The
+  background tasks with elapsed time and result, and panels Cecil draws with `display`. The
   **activity rail** beside the ring shows them.
 - Long work: "That'll take a few minutes, sir. I'll tell you when it's done." It runs in a parallel
-  session; when it finishes Sterling says so once, on the page or laptop that asked.
+  session; when it finishes Cecil says so once, on the page or laptop that asked.
 - Barge-in: speaking over him pauses him at once; if it was a real request he stops (and the answer in
   flight is cancelled), if it was noise or his own echo he carries on. A filler line ("Running the
   tests.") plays only when the first tool starts and nothing has been said yet.
@@ -51,9 +51,9 @@ and the work, with every power and the whole day's conversation (details in docs
 ## "Is it working?"
 - **D** on the Jarvis page toggles diagnostics: microphone permission and level, which engine is hearing
   you and the last transcript, the link to the brain, the last turn's time from the end of your speech to
-  Sterling's first word, the voice and the last thing spoken, and your MCP servers (names only). Also in
+  Cecil's first word, the voice and the last thing spoken, and your MCP servers (names only). Also in
   the "..." menu. The timings are posted to `/voice/api/timing` and kept with the server's diagnostics.
-- **T** runs an audio self-test: Sterling says one line and the panel shows whether playback really started.
+- **T** runs an audio self-test: Cecil says one line and the panel shows whether playback really started.
 - Settings -> Maintenance -> **Run self-check** (or `python main.py assistant selfcheck`, or ask him) tries
   every capability on your real data, undoes every change and sends nothing.
 
@@ -66,7 +66,7 @@ it all back. Images reach the page only through a guarded proxy on this server.
 ## Local commands (no Claude involved)
 | Say | Does |
 |---|---|
-| "stop listening", "mute" | **hard mute**: the microphone is closed, so there is no wake word either. Saying "Sterling, start listening" cannot work while muted. Turn it back on with the dashboard pill, the tray icon or **Ctrl+Alt+M**. |
+| "stop listening", "mute" | **hard mute**: the microphone is closed, so there is no wake word either. Saying "Cecil, start listening" cannot work while muted. Turn it back on with the dashboard pill, the tray icon or **Ctrl+Alt+M**. |
 | "stop", "quiet" | stops talking (barge-in), keeps listening for a follow-up |
 | "never mind", "cancel" | drops the request in progress (the answer still lands in the history, unspoken) |
 | "start listening" | answers "I'm listening" and opens a follow-up window |
@@ -87,10 +87,10 @@ The first start downloads the models into `data/models` (about 125 MB: openWakeW
 faster-whisper `tiny.en` (about 75 MB) into the Hugging Face cache; progress is in the log. To do it
 up front: `.venv\Scripts\python -m voice --download-models`.
 
-## A custom "Hey Sterling" wake word
+## A custom "Hey Cecil" wake word
 openWakeWord can train one from synthetic speech (its `automatic_model_training` notebook on
 Google Colab, about an hour). Put the resulting `hey_sterling.onnx` in `data/models/wakewords/`;
-it is loaded next to `hey_jarvis` automatically. Until then the name spotter handles "Sterling".
+it is loaded next to `hey_jarvis` automatically. Until then the name spotter handles "Cecil".
 
 ## Troubleshooting
 - **It never hears anything**: Windows Settings -> Privacy & security -> Microphone -> turn on

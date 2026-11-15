@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% import "home_parts.html" as p with context %}
+{% import "cecil_parts.html" as cc with context %}
 {% block title %}Home{% endblock %}
 {% block content %}
-{% set a = h.a %}
+{% set a = h.a %}{% set c = h.cecil %}
 <div class="home jv-home" data-refresh="{{ h.refresh }}">
 {# --- Jarvis view: the voice-first stage (static/jarvis.js). Layout and feel adapted from
      adewaskar/jarvis src/ui/Hud.tsx + index.css (MIT License, Copyright (c) 2026 Aditya Dewaskar);
@@ -33,12 +34,33 @@
     </details>
   </header>
 
+  {# --- live status strip (static/cecil.js): brain, turn stage, elapsed, who is working --- #}
+  <div class="cc-strip" data-cc-strip role="status" aria-live="off">
+    <span class="cc-cell" data-cc-brain data-brain="{{ c.brain.state }}"><i aria-hidden="true"></i><b>{{ c.brain.label }}</b></span>
+    <span class="cc-cell cc-stage-cell"><span class="cc-k">Stage</span><b data-cc-stage>Standing by</b></span>
+    <span class="cc-cell"><span class="cc-k">Elapsed</span><b data-cc-elapsed>0:00</b></span>
+    <span class="cc-cell"><span class="cc-k">Staff working</span><b data-cc-working-n>{{ c.working }}</b></span>
+    <span class="cc-cell"><span class="cc-k">Tasks</span><b data-cc-tasks-n>{{ c.tasks }}</b></span>
+  </div>
+
   <div class="jv-fx" aria-hidden="true"></div>
-  <div class="jv-body">
+  <div class="jv-body cc-grid">
+  {# --- left wing: recent chats + the staff at work (home_live.py, refreshed by static/cecil.js) --- #}
+  <aside class="cc-wing cc-left" aria-label="Recent chats and staff">
+    <section class="rail-sec cc-panel">
+      <h2 class="rail-h">Recent chats <a class="rail-link" href="#history" data-jv-history-link>All</a></h2>
+      <div data-cc-live="chats">{{ cc.chats(c) }}</div>
+    </section>
+    <section class="rail-sec cc-panel">
+      <h2 class="rail-h">Staff at work <a class="rail-link" href="/dashboard/staff">Roster</a></h2>
+      <div data-cc-live="staff">{{ cc.staff(c) }}</div>
+    </section>
+  </aside>
   <div class="jv-stage">
     <div class="jv-blade" data-jv-blade role="dialog" aria-label="Expanded panel" hidden></div>
     <div class="jv-core-wrap">
       <canvas class="jv-core" data-jv-core width="600" height="600" aria-hidden="true"></canvas>
+      <div class="cc-orbits" data-cc-orbits aria-hidden="true"></div>
       <button type="button" class="jv-ptt" data-jv-ptt aria-pressed="false" aria-describedby="jv-hint" {% if not a.can_chat %}disabled{% endif %}>
         <svg class="jv-ico-mic" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <span class="sr-only" data-jv-ptt-label>Talk to {{ a.name }}: tap to start listening</span>
@@ -46,6 +68,7 @@
     </div>
 
     <div class="jv-statusbar">
+      <p class="cc-working" data-cc-working hidden><span class="cc-spinner" aria-hidden="true"></span><span data-cc-working-text>Working on it</span></p>
       <p class="jv-status" role="status" data-jv-status>{% if a.can_chat %}Tap to talk{% else %}{{ a.reason }}{% endif %}</p>
       <a class="jv-needs" href="#needs" data-needs-count {% if not h.needs.count %}hidden{% endif %}><b>{{ h.needs.count }}</b> need{{ "s" if h.needs.count == 1 else "" }} you</a>
     </div>
@@ -57,7 +80,7 @@
     <p class="jv-hint" id="jv-hint" data-jv-hint>{% if a.can_chat %}Keyboard: hold <kbd>Space</kbd> to talk · <kbd>D</kbd> diagnostics · <kbd>T</kbd> audio test{% elif not a.reason %}Voice opens once I am switched on.{% endif %}</p>
   </div>
 
-  {# --- Activity rail: what Sterling is doing right now, live over /voice/api/stream (static/jarvis.js) --- #}
+  {# --- Activity rail: what the assistant is doing right now, live over /voice/api/stream (static/jarvis.js) --- #}
   <aside class="jv-rail" data-jv-rail aria-label="What {{ a.name }} is doing">
     <section class="rail-sec rail-panels" data-jv-panels aria-live="polite" hidden></section>
     <section class="rail-sec">
@@ -68,8 +91,14 @@
       <h2 class="rail-h">Tasks</h2>
       <ul class="rail-tasks" data-jv-tasks><li class="rail-empty">Nothing running in the background.</li></ul>
     </section>
+    <section class="rail-sec cc-panel">
+      <h2 class="rail-h">Recently worked on</h2>
+      <div data-cc-live="work">{{ cc.work(c) }}</div>
+    </section>
   </aside>
   </div>
+
+  <div class="cc-deck" data-cc-live="charts" aria-label="Today in numbers">{{ cc.charts(c) }}</div>
 
   <aside class="jv-diag" id="jv-diag" data-jv-diag aria-label="Diagnostics" hidden>
     <header class="diag-head"><b>Diagnostics</b><span><kbd>D</kbd> closes · <kbd>T</kbd> audio self-test</span><button type="button" class="diag-x" data-jv-diag-x aria-label="Close diagnostics">&times;</button></header>
@@ -106,6 +135,12 @@
   {% if a.usage %}<p class="chat-note chat-usage">Claude plan: {{ a.usage.line }}</p>{% endif %}
 </aside>
 <div class="jv-scrim" data-jv-scrim hidden></div>
+
+{# --- New stuff: what was just built (git log of this checkout, friendly titles) --- #}
+<section class="card cc-new" id="new-stuff" aria-labelledby="new-title">
+  <h2 class="sec-title" id="new-title"><span class="sec-glyph">{{ glyph("spark") | safe }}</span>New stuff<span class="sec-extra">what we just built</span></h2>
+  <div data-cc-live="new">{{ cc.new(c) }}</div>
+</section>
 
 {# --- Briefing: everything else, below the fold --- #}
 <div class="jv-briefing" id="briefing">
@@ -167,4 +202,4 @@
 </div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/dashboard/static/jarvis.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/home.js?v={{ asset_v }}" defer></script>{% endblock %}
+{% block scripts %}<script src="/dashboard/static/jarvis.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/cecil.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/home.js?v={{ asset_v }}" defer></script>{% endblock %}

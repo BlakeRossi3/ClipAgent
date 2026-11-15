@@ -1,4 +1,4 @@
-"""What Sterling says: filler lines, sentence splitting for streaming TTS, spoken-reply shaping.
+"""What Cecil says: filler lines, sentence splitting for streaming TTS, spoken-reply shaping.
 
 Several ideas here are adapted from adewaskar/jarvis (MIT License, Copyright (c) 2026 Aditya
 Dewaskar; ``src/lib/fillers.ts`` and ``src/lib/tts.ts``): the three filler pools (working /

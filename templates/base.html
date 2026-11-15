@@ -2,18 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#01070d">
 <meta name="robots" content="noindex, nofollow">
-<title>{% block title %}Dashboard{% endblock %} · Shorts Agent</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%232a78d6'/%3E%3Cpath d='M6 4.5v7l5.5-3.5z' fill='white'/%3E%3C/svg%3E">
-<script src="/dashboard/static/theme.js?v={{ asset_v }}"></script>
+<title>{% block title %}Dashboard{% endblock %} · {{ assistant_name }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2301070d'/%3E%3Ccircle cx='16' cy='16' r='10' fill='none' stroke='%2322d8f0' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23e3f6fa'/%3E%3C/svg%3E">
+<script src="/dashboard/static/nav.js?v={{ asset_v }}"></script>
 <link rel="stylesheet" href="/dashboard/static/dashboard.css?v={{ asset_v }}">
 <link rel="stylesheet" href="/dashboard/static/home.css?v={{ asset_v }}">
-<script src="/dashboard/static/charts.js?v={{ asset_v }}" defer></script>
 {% block head %}{% endblock %}
+<link rel="stylesheet" href="/dashboard/static/theme.css?v={{ asset_v }}">
+<script src="/dashboard/static/charts.js?v={{ asset_v }}" defer></script>
 </head>
-<body class="section-{{ section }}">
+<body class="section-{{ section }} theme-hud">
 <a class="skip" href="#main">Skip to content</a>
 {% if demo %}
 <div class="banner banner-demo" role="alert">
@@ -21,34 +23,53 @@
   <span><strong>DEMO DATA</strong> — every number on this dashboard is fabricated by <code>seed_demo.py</code>{% if demo.generated_at is defined %} ({{ demo.generated_at | dt }}){% endif %}. These are not real results.</span>
 </div>
 {% endif %}
-<header class="topbar">
+<header class="topbar" data-topbar>
   <div class="topbar-inner">
-    <a class="brand" href="/dashboard/">
-      <svg class="brand-px" width="22" height="22" viewBox="0 0 8 8" shape-rendering="crispEdges" aria-hidden="true"><rect x="2" y="0" width="4" height="1"/><rect x="1" y="1" width="6" height="2"/><rect x="2" y="3" width="4" height="2" class="brand-face"/><rect x="1" y="5" width="6" height="3"/><rect x="3" y="5" width="2" height="1" class="brand-tie"/></svg>
-      <span>{{ assistant_name }}</span>
+    <a class="brand" href="/dashboard/" aria-label="{{ assistant_name }}: home">
+      <svg class="brand-ring" viewBox="0 0 26 26" aria-hidden="true"><circle class="r2" cx="13" cy="13" r="11.5"/><circle class="r1" cx="13" cy="13" r="8"/><circle class="core" cx="13" cy="13" r="3.2"/></svg>
+      <span>Clip<b>Agent</b></span>
     </a>
     {% if active != "login" %}
-    <nav class="nav nav-sections" aria-label="Sections">
-      {% for key, label, href in sections %}
-      <a href="{{ href }}"{% if key == section %} aria-current="page"{% endif %}>{{ label }}</a>
-      {% endfor %}
+    <button type="button" class="nav-toggle" data-nav-toggle aria-expanded="false" aria-controls="main-nav">
+      <svg class="bars" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <svg class="x" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      Menu
+    </button>
+    <nav class="mainnav" id="main-nav" aria-label="Main" data-mainnav>
+      <ul class="mainnav-list">
+        {% for m in menus %}
+        {% if m.get("items") %}
+        <li class="has-menu" data-menu>
+          <button type="button" class="mainnav-link{% if m.current %} is-current{% endif %}" aria-expanded="false" aria-controls="menu-{{ m.key }}" data-menu-btn>{{ m.label }}<svg class="caret" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 3.5L5 7l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <ul class="menu{% if m.get('right') %} menu-right{% endif %}{% if m.get('wide') %} menu-staff{% endif %}" id="menu-{{ m.key }}" data-menu-list>
+            {% for it in m["items"] %}
+            <li><a href="{{ it.href }}"{% if it.current %} aria-current="page"{% endif %}>{% if it.get("sprite") %}{{ it.sprite | safe }}{% endif %}<span>{{ it.label }}{% if it.hint %}<small>{{ it.hint }}</small>{% endif %}</span></a></li>
+            {% if m.key == "staff" and loop.first %}<li class="menu-sep" role="separator"></li>{% endif %}
+            {% endfor %}
+          </ul>
+        </li>
+        {% else %}
+        <li><a class="mainnav-link{% if m.current %} is-current{% endif %}" href="{{ m.href }}"{% if m.current %} aria-current="page"{% endif %}>{{ m.label or assistant_name }}</a></li>
+        {% endif %}
+        {% endfor %}
+      </ul>
     </nav>
-    <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch colour theme" title="Theme"><svg viewBox="0 0 8 8" width="14" height="14" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><rect x="2" y="0" width="3" height="1"/><rect x="1" y="1" width="2" height="1"/><rect x="0" y="2" width="2" height="4"/><rect x="1" y="6" width="2" height="1"/><rect x="2" y="7" width="4" height="1"/><rect x="5" y="6" width="2" height="1"/><rect x="6" y="5" width="2" height="1"/></svg></button>
+    <div class="topbar-end">
+      {% if dry_run %}<span class="topbar-chip" title="Uploads, calls and texts are simulated">Practice</span>{% endif %}
+    </div>
     {% endif %}
   </div>
-  {% if section == "studio" and active != "login" %}
-  <div class="subnav-wrap"><nav class="nav subnav" aria-label="Studio pages">
-    {% for key, label, href in nav %}
-    <a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ label }}</a>
-    {% endfor %}
-  </nav></div>
-  {% endif %}
 </header>
-{% if active != "login" %}
+{% if active != "login" and (open_remote or (dry_run and section == "studio")) %}
 <div class="notices">
   {% if dry_run and section == "studio" %}<p class="notice"><span class="dot dot-info" aria-hidden="true"></span><strong>Dry-run mode.</strong> Uploads, calls and texts are simulated; set <code>DRY_RUN=false</code> to go live.</p>{% endif %}
   {% if open_remote %}<p class="notice notice-warning"><span class="dot dot-warning" aria-hidden="true"></span><strong>No dashboard token set.</strong> Anyone who can reach this address can approve changes. Set <code>DASHBOARD_TOKEN</code>.</p>{% endif %}
 </div>
+{% endif %}
+{% if section == "studio" and active != "login" %}
+<nav class="subtabs" aria-label="Studio pages"><div class="segmented">
+  {% for key, label, href in nav %}<a href="{{ href }}"{% if key == active %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+</div></nav>
 {% endif %}
 {% if flash %}
 <div class="flash flash-{{ flash[0] }}" role="status">{{ flash[1] }}</div>

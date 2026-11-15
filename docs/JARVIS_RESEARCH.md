@@ -1,8 +1,8 @@
-# Jarvis research: what to borrow for Sterling
+# Jarvis research: what to borrow for Cecil
 
 Written 2026-11-13. Inputs: the two repos Blake sent (shallow-cloned and read), plus a web scan
 of the "Jarvis" agents people are talking about. Treat the web claims as marketing until proven.
-Sterling today: SMS / dashboard / outbound call, Obsidian-vault memory, sub-agents with skill
+Cecil today: SMS / dashboard / outbound call, Obsidian-vault memory, sub-agents with skill
 files, check-ins, ledger, meals, lessons/self-improvement, approvals by phone (see `ASSISTANT.md`).
 
 ## 1. open-jarvis/OpenJarvis (Stanford, Apache-2.0, Python)
@@ -18,19 +18,19 @@ Strava, Spotify...), and a Tauri desktop app.
 - **Proactive propose → approve → execute with permission memory** (`tools/proactive_tools.py`,
   `tools/approval_store.py`). Actions queue as `pending_actions`. The owner replies `<id> yes`,
   `<id> no` or **`always yes <id>`**, and the "always" answer is stored as a rule keyed
-  `action_type:fingerprint` (e.g. `sms_draft_reply:contact:+1555...`). Sterling's decisions are
+  `action_type:fingerprint` (e.g. `sms_draft_reply:contact:+1555...`). Cecil's decisions are
   all one-off. This would cut approval fatigue a lot.
 - **Background fact extraction** (`memory/extractor.py`). After each exchange, a cheap model pulls
-  out durable facts on a background thread. On any failure it records "no facts". Sterling only
+  out durable facts on a background thread. On any failure it records "no facts". Cecil only
   remembers what the model explicitly decides to `memory_remember`.
-- **Morning digest with TTS audio** (email + calendar + health + news). Sterling's `morning-brief`
+- **Morning digest with TTS audio** (email + calendar + health + news). Cecil's `morning-brief`
   skill could also be phoned in as audio.
 - **Skill overlays** (`skills/overlay.py`). Trace-optimised descriptions and few-shot examples are
   stored in a sidecar file next to a skill without editing the skill itself. This fits
   `assistant/improve.py`'s lessons loop.
 - **Security wrappers**: secret/PII scanner with WARN/REDACT/BLOCK modes, **taint tracking** so
   private data cannot flow into outbound tools (`security/taint.py`), and SSRF guard.
-- Skills follow the agentskills.io `SKILL.md` standard, which is the same shape as Sterling's
+- Skills follow the agentskills.io `SKILL.md` standard, which is the same shape as Cecil's
   `skills/`.
 
 **Not applicable.** Local-model engines, routing and RL training (we use Claude). The
@@ -64,7 +64,7 @@ every MCP server in `~/.claude.json`.
   - the wake word uses Porcupine (`hey jarvis`), with a clap detector as an alternative.
 - **Filler lines** (`src/lib/fillers.ts`). He says one in-character acknowledgement the moment a
   tool starts ("Cross-referencing.", "Working on it, sir."), because ten seconds of silence reads
-  as a crash. The grammar rules match Sterling's persona: no "let me", no exclamation marks, and
+  as a crash. The grammar rules match Cecil's persona: no "let me", no exclamation marks, and
   "sir" at the end for routine, at the front for urgent.
 - **Model-driven HUD**. A `display` tool renders sanitised panels (DOMPurify, a class allowlist,
   CSP). Remote media is proxied through an SSRF-guarded `/img`. This is a cheap path to a
@@ -72,7 +72,7 @@ every MCP server in `~/.claude.json`.
 - Camera "look at me" vision. It is gated by OS permission, an on-screen indicator, and explicit
   owner intent only.
 
-**Not applicable.** A browser-only face (Sterling must also work by SMS). MediaPipe hand-gesture
+**Not applicable.** A browser-only face (Cecil must also work by SMS). MediaPipe hand-gesture
 cursor and clap-to-wake (fun, but low value). Android/Higgsfield MCPs.
 
 ## 3. The web scene (2025-2026)
@@ -113,9 +113,9 @@ cursor and clap-to-wake (fun, but low value). Android/Higgsfield MCPs.
   6. voice on top (Whisper + ElevenLabs);
   7. Claude or another frontier model as the brain.
 
-  Sterling already has 1, 2, 3 (check-ins) and 7. Items 4 to 6 are mostly in flight.
+  Cecil already has 1, 2, 3 (check-ins) and 7. Items 4 to 6 are mostly in flight.
 
-## 4. Capability gap list for Sterling (prioritised)
+## 4. Capability gap list for Cecil (prioritised)
 
 Effort: S = about a day, M = 2 to 4 days, L = a week or more. "In flight" means a teammate is
 building it now.
@@ -124,14 +124,14 @@ building it now.
 |---|---|---|---|
 | 1 | Full Claude Code tool access + self-editing | The core "does anything" feeling. Copy the adewaskar gate: read-only default, verb-based write gate, hook-enforced, secret paths always refused. | **in flight** |
 | 2 | Chrome control via Claude in Chrome extension | Signed-in browser beats Playwright | **in flight** |
-| 3 | **Standing permissions ("always yes")** on approvals | Lets Sterling act proactively without calling Blake for every repeat action. Add an `as_permissions` table plus the `YES ALWAYS <id>` reply keyword. | S |
+| 3 | **Standing permissions ("always yes")** on approvals | Lets Cecil act proactively without calling Blake for every repeat action. Add an `as_permissions` table plus the `YES ALWAYS <id>` reply keyword. | S |
 | 4 | **Heartbeat / proactive watch loop** | The thing OpenClaw users love most. Run a scheduled cheap sub-agent pass over a vault `HEARTBEAT.md` checklist. Make that file **owner-editable only**: no tool may write it (poisoning lesson). | M |
 | 5 | **Calendar + email read** (Google OAuth) | Every Jarvis brief has them. Morning brief and "what's my day" are useless without them. Start read-only. | M |
 | 6 | **Automatic fact extraction** after each turn | Memory that grows without asking. Have Haiku propose facts into the vault in the background, deduped through `vault.remember`. | S |
 | 7 | Voice conversation (stretch goal; see below) | The literal Jarvis experience | M to L |
 | 8 | Audio morning brief by phone | We already have Twilio call. Render the brief as TTS and have it played on the call. | S |
 | 9 | Desktop modes (gaming/work setup) | Physical-world "Jarvis, set up for work" | **in flight** |
-| 10 | Image upload in chat + watch-reel skill | Gives Sterling eyes on what Blake sees and makes | **in flight** |
+| 10 | Image upload in chat + watch-reel skill | Gives Cecil eyes on what Blake sees and makes | **in flight** |
 | 11 | Claude chat-history import into vault | Instant long-term memory of Blake | **in flight** |
 | 12 | Twilio diagnose-and-fix | Reliability of the main channel | **in flight** |
 | 13 | Taint / outbound guard | Vault data must not leak into web_search, browser or other outbound tools. Becomes critical once 1 and 2 land. | M |
@@ -145,7 +145,7 @@ write the persona or heartbeat files.
 
 | Layer | Option | Notes | Effort |
 |---|---|---|---|
-| Wake word | **openWakeWord** (Apache-2.0, Python, ships a pre-trained `hey_jarvis` model, CPU-only) | Best fit. Custom "hey Sterling" can be trained from synthetic clips in about 1 hour. | S |
+| Wake word | **openWakeWord** (Apache-2.0, Python, ships a pre-trained `hey_jarvis` model, CPU-only) | Best fit. Custom "hey Cecil" can be trained from synthetic clips in about 1 hour. | S |
 | | Porcupine (Picovoice) | Very accurate, built-in "jarvis". Free tier needs an access key, and a custom word is a console export. | S |
 | STT | **faster-whisper** (already a dependency, `small.en` int8) plus Silero/webrtc VAD | Local and free. About 1 s latency on a modern CPU, less with CUDA. | S |
 | | Deepgram / ElevenLabs Scribe streaming | Lower latency and better accuracy. Paid, so it needs a key via request_credential. | S |

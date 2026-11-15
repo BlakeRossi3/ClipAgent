@@ -1,4 +1,4 @@
-"""Self-editing guardrails: Sterling may change its own code; every change is tested and reversible.
+"""Self-editing guardrails: Cecil may change its own code; every change is tested and reversible.
 
 One full-power turn (``runtime`` calls these around it)::
 
@@ -11,11 +11,14 @@ One full-power turn (``runtime`` calls these around it)::
                               #   fail -> git reset --hard <recorded HEAD> + git clean of new files
 
 * ``undo()`` (dashboard button, SMS ``UNDO``) reverts the newest self-edit commit not already reverted
-  (``git revert --no-edit``), and restarts. It never touches commits that are not Sterling's.
+  (``git revert --no-edit``), and restarts. It never touches commits that are not Cecil's.
 * After a restart, :func:`verify_after_restart` (started by ``main.schedule``) checks ``/healthz``;
   an unhealthy app is reset to the commit before the change and restarted again.
-* If the tree was already dirty before the turn (someone edited by hand), nothing is ever reset:
-  a failing change is left in place and reported.
+* Only what the turn itself changed counts: :func:`begin` records the files that were already dirty
+  (with their size and mtime), and :func:`finish` ignores them unless the turn touched them.
+* If the tree was already dirty before the turn (someone edited by hand), nothing is ever reset,
+  tested or committed: the turn's change is left in place and reported once until the tree is clean
+  again (kv :data:`KV_DIRTY_NOTED`), never a full test run after every turn.
 
 Limits (documented in docs/ASSISTANT.md): the suite catches what tests catch; a change that only
 breaks at runtime is caught by the health check, not by meaning.
@@ -42,6 +45,7 @@ log = logging.getLogger(__name__)
 TRAILER = "Sterling-Self-Edit: yes"
 KV_PENDING = "assistant:selfedit:pending"     # {"commit", "prev", "at"} until /healthz confirms
 KV_LAST = "assistant:selfedit:last"           # last outcome, for the Settings page
+KV_DIRTY_NOTED = "assistant:selfedit:dirty_noted"   # set once a dirty tree was reported; cleared when clean
 UPSTREAM_KEY = "clipagent.upstream"           # git config: the branch the launcher merges in
 GIT_ID = ["-c", "user.name=Sterling", "-c", "user.email=sterling@clipagent.local"]
 MAX_SUMMARY = 600
@@ -117,6 +121,7 @@ class Snapshot:
     ok: bool = True
     note: str = ""
     protected: dict[str, bytes | None] = field(default_factory=dict)   # owner-only files as they were
+    dirty: dict[str, str] = field(default_factory=dict)   # files already changed before the turn -> signature
 
 
 @dataclass
@@ -154,7 +159,7 @@ def ensure_branch() -> str:
     if r.returncode != 0:
         raise RuntimeError(f"could not switch to {target}: {(r.stderr or r.stdout).strip()[:200]}")
     if not _out("config", "--get", "user.email"):  # merges by the launcher's update need an identity
-        git("config", "user.name", "Sterling")
+        git("config", "user.name", "Cecil")
         git("config", "user.email", "sterling@clipagent.local")
     db.log_event("assistant", f"self-edit branch {target} in use", data={"from": br})
     return target
@@ -163,6 +168,24 @@ def ensure_branch() -> str:
 def changed_files() -> list[str]:
     lines = git("status", "--porcelain", "--untracked-files=all").stdout.splitlines()
     return sorted({ln[3:].split(" -> ")[-1].strip('"') for ln in lines if ln.strip()})
+
+
+def _sig(rel: str) -> str:
+    """Cheap change signature of one working-tree file (size + mtime; "-" when it is gone)."""
+    try:
+        st = (app_dir() / rel).stat()
+    except OSError:
+        return "-"
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def turn_changes(snap: Snapshot, files_now: list[str] | None = None) -> list[str]:
+    """Files the turn changed: newly dirty ones, pre-existing dirty files whose content moved, and
+    pre-existing dirty files that the turn put back to clean."""
+    now = changed_files() if files_now is None else files_now
+    out = {f for f in now if f not in snap.dirty or _sig(f) != snap.dirty[f]}
+    out |= {f for f in snap.dirty if f not in now}
+    return sorted(out)
 
 
 def _protected_now() -> dict[str, bytes | None]:
@@ -204,9 +227,13 @@ def begin() -> Snapshot:
     if not s.self_edit or not is_repo():
         return Snapshot("", True, "", ok=False, note="not a git checkout", protected=guard)
     try:
-        clean = not changed_files()
+        files = changed_files()
+        clean = not files
+        if clean:
+            db.kv_delete(KV_DIRTY_NOTED)     # committed or discarded: the next dirty tree is reported again
         branch = ensure_branch() if clean else current_branch()
-        return Snapshot(_out("rev-parse", "HEAD"), clean, branch, protected=guard)
+        return Snapshot(_out("rev-parse", "HEAD"), clean, branch, protected=guard,
+                        dirty={f: _sig(f) for f in files})
     except Exception as exc:
         db.log_event("assistant", "self-edit guard unavailable", level="warning", data={"error": repr(exc)[:300]})
         return Snapshot("", True, "", ok=False, note=str(exc)[:200], protected=guard)
@@ -232,21 +259,29 @@ def finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
 def _finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
     if not snap.ok:
         return None
-    files = changed_files()
+    files = turn_changes(snap)
     moved = _out("rev-parse", "HEAD") != snap.head
     if not files and not moved:
         return None
+    if not snap.clean:
+        # Hand edits were already there: never test, commit or reset on top of them. Say so once per set
+        # of hand edits (not after every turn), and leave everything as it is.
+        if db.kv_get(KV_DIRTY_NOTED):
+            log.info("self-edit check skipped: the app folder already had uncommitted changes")
+            return None
+        db.kv_set(KV_DIRTY_NOTED, db.now_iso())
+        out = Outcome("kept_dirty", f"I changed my code ({', '.join(files[:5])}), but the app folder already had "
+                      "uncommitted changes, so I left everything as it is: not tested and not committed. Commit "
+                      "or discard those changes and my next edit will be tested and saved.", files)
+        _remember(out)
+        return out
     timeout = get_assistant_settings().self_edit_test_timeout_sec
     passed, output = _tests(app_dir(), timeout)
     if not passed:
-        if not snap.clean:
-            out = Outcome("kept_dirty", "I changed my code but the tests fail, and there were already "
-                          "uncommitted changes, so I left everything as it is. Failing: " + _tail(output), files)
-        else:
-            git("reset", "--hard", snap.head)
-            git("clean", "-fd")
-            out = Outcome("rolled_back", "I tried to change my own code but the tests failed, so I undid it. "
-                          "What failed: " + _tail(output), files)
+        git("reset", "--hard", snap.head)
+        git("clean", "-fd")
+        out = Outcome("rolled_back", "I tried to change my own code but the tests failed, so I undid it. "
+                      "What failed: " + _tail(output), files)
         _remember(out)
         return out
     if moved and not files:
@@ -321,7 +356,7 @@ def schedule_restart(delay: float = 4.0) -> None:
 # -- history + undo ------------------------------------------------------------
 
 def self_commits(limit: int = 10) -> list[dict[str, Any]]:
-    """Newest first: {sha, title, at, reverted} for Sterling's own commits on this branch."""
+    """Newest first: {sha, title, at, reverted} for Cecil's own commits on this branch."""
     if not is_repo():
         return []
     raw = git("log", "-n", "200", "--format=%H%x1f%cI%x1f%s%x1f%b%x1e").stdout

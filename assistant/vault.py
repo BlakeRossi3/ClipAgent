@@ -129,7 +129,7 @@ class IndexStats:
 # ---------------------------------------------------------------------------
 
 # Notes only the owner writes (the heartbeat checklist): tool, sub-agent and self-edit writes are refused.
-# Sterling proposes changes with request_approval; the approved handler writes with ``owner=True``.
+# Cecil proposes changes with request_approval; the approved handler writes with ``owner=True``.
 PROTECTED_NOTES = frozenset({"Agent/Heartbeat.md"})
 
 

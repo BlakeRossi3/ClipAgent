@@ -18,7 +18,7 @@ Stages:
 2. **Store** in ``as_import_*`` tables (own migrations, kv ``assistant:history_schema_version``)
    with an FTS5 index -> :func:`search` / tool ``history_search``.
 3. **Distil** (:func:`distil_pending`): newest conversations first, ``HISTORY_IMPORT_BATCH`` per
-   run (nightly job until done), each through Sterling's ``archivist`` (``runtime.run_task``) which
+   run (nightly job until done), each through Cecil's ``archivist`` (``runtime.run_task``) which
    returns facts as JSON; plain code files them with :func:`assistant.vault.remember` (dedup) and
    provenance ``claude chat "<name>" <date>``. Resumable; stops early to leave
    ``HISTORY_IMPORT_RESERVE_TURNS`` Claude-plan runs (or budget) for the owner's own chats.
@@ -523,7 +523,10 @@ def import_bytes(files: list[tuple[str, bytes]]) -> list[dict[str, Any]]:
             except HistoryImportError as exc:
                 out.append({"file": safe, "status": "error", "error": str(exc)})
         finally:
-            p.unlink(missing_ok=True)
+            try:
+                p.unlink(missing_ok=True)
+            except OSError as exc:   # Windows: an antivirus scan can hold the file for a moment
+                log.info("upload temp file not removed yet: %s", exc)
     return out
 
 
@@ -665,13 +668,19 @@ def parse_manifest(text: str) -> Manifest:
                     truncated or (total_i is not None and total_i > len(entries)), expired)
 
 
+def is_windows() -> bool:
+    """The one Windows check (tests patch this, never the global ``os.name``: changing that makes
+    ``pathlib.Path()`` build a PosixPath, which cannot be instantiated on Windows)."""
+    return os.name == "nt"
+
+
 def downloads_dir() -> Path:
     from assistant.toolkit_settings import get_toolkit_settings
 
     d = get_toolkit_settings().history_downloads_dir
     if d:
         return d
-    prof = os.environ.get("USERPROFILE") if os.name == "nt" else None
+    prof = os.environ.get("USERPROFILE") if is_windows() else None
     return (Path(prof) if prof else Path.home()) / "Downloads"
 
 
@@ -777,7 +786,7 @@ def watch_downloads(expected: list[str], *, folder: Path | None = None, since: f
 
 
 def _open_url(url: str) -> None:
-    if os.name == "nt":
+    if is_windows():
         os.startfile(url)  # type: ignore[attr-defined]  # his default (signed-in) browser
     else:
         import webbrowser
@@ -794,7 +803,7 @@ def _spawn_watcher(expected: list[str], since: float) -> bool:
             "--timeout-min", str(t.history_watch_minutes), *expected]
     kw: dict[str, Any] = {"cwd": str(Path(__file__).resolve().parent.parent), "stdin": subprocess.DEVNULL,
                           "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
-    if os.name == "nt":
+    if is_windows():
         kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
     else:
         kw["start_new_session"] = True
@@ -822,7 +831,7 @@ def import_from_manifest(text: str, *, open_links: bool | None = None, watch: bo
     m = parse_manifest(text)
     good = [e for e in m.entries if e.url_ok]
     bad = [e for e in m.entries if not e.url_ok]
-    windows = os.name == "nt"
+    windows = is_windows()
     do_open = windows if open_links is None else open_links
     report: dict[str, Any] = {
         "created_at": m.created_at, "total_files": m.total_files, "listed": len(m.entries),

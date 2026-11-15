@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Staff{% endblock %}
+{% block content %}
+<div class="staff-page">
+<header class="page-head">
+  <div>
+    <p class="eyebrow">Staff · {{ roster | length }} on the roster</p>
+    <h1>The team</h1>
+    <p class="lede">{{ a.name }} directs; each specialist takes the work that fits. Names and looks are borrowed from <em>Invincible</em>; the ids underneath (<code>studio</code>, <code>ledger</code>…) never change, so their history stays put.</p>
+  </div>
+</header>
+{% if roster %}
+<ul class="staff-grid">
+  {% for ag in roster %}
+  {% set lv = live.get(ag.name) or {} %}
+  {% set state = lv.get("state") or ag.status %}
+  <li class="card staff-card is-{{ state }}{% if ag.name == 'main' %} is-chief{% endif %}">
+    <div class="staff-px" aria-hidden="true">{{ ag.sprite_big | safe }}</div>
+    <div class="staff-main">
+      <p class="eyebrow">{{ ag.role }}{% if ag.name != ag.display | lower %} · <code>{{ ag.name }}</code>{% endif %}</p>
+      <h2 class="staff-name"><a href="/dashboard/agents/{{ ag.name }}">{{ ag.display }}</a></h2>
+      {% if ag.character %}<p class="staff-char">{{ ag.character }}</p>{% endif %}
+      <p class="staff-state"><span class="cc-agent-state"><i aria-hidden="true"></i>{{ state }}</span>
+        {% if state == "working" and lv.get("doing") %}<span class="staff-doing">{{ lv.doing }}</span>{% endif %}</p>
+      <p class="staff-desc">{{ ag.description | truncate(170) }}</p>
+      <dl class="staff-kv">
+        <div><dt>Today</dt><dd>{{ ag.runs_today }} run{{ "s" if ag.runs_today != 1 else "" }} · {{ ag.cost_today | usd }}</dd></div>
+        <div><dt>Model</dt><dd><code>{{ ag.model }}</code></dd></div>
+        {% if ag.last %}<div><dt>Last</dt><dd>{{ (ag.last.summary or ag.last.task) | truncate(90) }} <span class="muted">· {{ ag.last.ts | ago }}</span></dd></div>{% endif %}
+      </dl>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="empty"><p class="empty-title">No staff</p><p class="empty-body">No agent files were found in agents/.</p></div>
+{% endif %}
+</div>
+{% endblock %}

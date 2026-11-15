@@ -248,7 +248,7 @@ def test_import_from_manifest_elsewhere_lists_links_and_tool_hides_them(monkeypa
     assert [x["filename"] for x in r["links"]] == ["light_metadata-000.zip", "conversations-000.zip"]
     tools.load_extensions()
     ctx = tools.ToolContext()
-    monkeypatch.setattr(hi.os, "name", "posix")
+    monkeypatch.setattr(hi, "is_windows", lambda: False)
     res = tools.dispatch("history_import_from_manifest", {"manifest": json.dumps(MANIFEST)}, ctx,
                          allowed={"history_import_from_manifest"})
     assert res.ok and "sig=" not in res.content and "light_metadata-000.zip" in res.content

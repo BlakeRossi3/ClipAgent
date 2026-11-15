@@ -32,6 +32,7 @@ HALLUCINATIONS = {"thank you", "thanks for watching", "you", "bye", "thank you f
 
 # Common transcriptions of the names it answers to. "Jarvis" is the openWakeWord word.
 _NAME_ALTS = {
+    "cecil": r"cecil|cecile|cecille|cecel|cessil|cessile|sessile|seasil|cecilia",
     "sterling": r"sterling|stirling|starling|sterlin|sterlin'|sterl[iy]ng|stelling|stealing",
     "jarvis": r"jarvis|jarvys|jervis|travis|jarv",
 }
@@ -53,7 +54,7 @@ class Addressed:
     rest: str        # what followed (or preceded) the name: usually the actual request
 
 
-def addressed(text: str, name: str = "Sterling") -> Addressed | None:
+def addressed(text: str, name: str = "Cecil") -> Addressed | None:
     """None unless the assistant's name (or "Jarvis") is in ``text``; else the words around it."""
     n = norm(text)
     m = name_pattern(name).search(n)
@@ -63,7 +64,7 @@ def addressed(text: str, name: str = "Sterling") -> Addressed | None:
     return Addressed(" ".join(rest.split()))
 
 
-def parse(text: str, name: str = "Sterling") -> str | None:
+def parse(text: str, name: str = "Cecil") -> str | None:
     """The local command ``text`` is (MUTE/STOP/CANCEL/START), or None for anything for Claude.
 
     Exact phrases only (after dropping the name, "please", "sir"...): "stop the upload" goes to Claude.
@@ -82,7 +83,7 @@ def is_noise(text: str) -> bool:
     return not n or n in HALLUCINATIONS
 
 
-_OVERRIDE = re.compile(r"\b(stop|wait|sterling|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b")
+_OVERRIDE = re.compile(r"\b(stop|wait|cecil|sterling|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b")
 _STOPWORDS = set((
     "a an the and or but so of to in on at by for with from is are was were be it its this that these those i you "
     "he she we they me him her them my your our their what which who how why when where do does did can could "

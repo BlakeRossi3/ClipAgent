@@ -150,7 +150,7 @@ def test_images_are_passed_as_paths_for_the_read_tool(cc):
 def test_stop_switch_blocks_every_run(cc):
     runtime.set_stopped(True, via="test")
     res = runtime.run_turn("hi", channel="dashboard")
-    assert res.status == "stopped" and not cc.calls and "START STERLING" in res.text
+    assert res.status == "stopped" and not cc.calls and "START CECIL" in res.text
     assert notify.is_pipeline_command("stop sterling") and notify.is_pipeline_command("UNDO")
     assert "Started" in notify.handle_sms_command("START STERLING") and not runtime.is_stopped()
     assert "Stopped" in notify.handle_sms_command("stop  sterling") and runtime.is_stopped()

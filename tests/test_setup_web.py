@@ -516,6 +516,7 @@ def test_done_page_shows_checklist_with_fix_links(c, monkeypatch):
               main.Check("python", "pass", "3.13"), main.Check("ffmpeg", "fail", "not found", "install it")]
     monkeypatch.setattr(main, "doctor_checks", lambda **kw: checks)
     html = c.get("/setup/done").text
+    html = html[html.index('<main id="main"'):]                                    # the page, not the menus
     assert html.index("ffmpeg") < html.index("Twilio") < html.index("1 things working")   # red first
     assert 'href="/setup/phone">Fix' in html and "install it" in html
     assert "docs/TWILIO_SETUP.md" not in html                                       # CLI hint replaced by Fix

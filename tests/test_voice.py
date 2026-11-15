@@ -242,8 +242,8 @@ def test_push_to_talk_unmutes_and_listens():
 
 
 def test_name_spotter_one_breath_request():
-    a, clock, ex, tts, ctl, _ = make("Sterling, what's the weather like", wake_mode="name",
-                                     name_stt=FakeSTT("Sterling, what's the weather like"))
+    a, clock, ex, tts, ctl, _ = make("Cecil, what's the weather like", wake_mode="name",
+                                     name_stt=FakeSTT("Cecil, what's the weather like"))
     run(a, clock, LOUD, 6)
     run(a, clock, QUIET, 5)
     assert a.state == va.THINKING and ex.calls[0][0] == "what's the weather like"
@@ -262,7 +262,8 @@ def test_echo_of_own_voice_is_dropped():
 
 
 def test_commands_and_speech_helpers():
-    assert commands.parse("Sterling, stop listening please") == commands.MUTE
+    assert commands.parse("Cecil, stop listening please") == commands.MUTE
+    assert commands.parse("sessile stop listening") == commands.MUTE           # a common mishearing
     assert commands.parse("never mind") == commands.CANCEL
     assert commands.parse("quiet") == commands.STOP
     assert commands.parse("stop the upload") is None

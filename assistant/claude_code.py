@@ -1,6 +1,6 @@
 """Run the assistant on the owner's Claude subscription through Claude Code in headless mode.
 
-``ASSISTANT_BACKEND=claude_code`` makes every assistant model call (Sterling, every sub-agent,
+``ASSISTANT_BACKEND=claude_code`` makes every assistant model call (Cecil, every sub-agent,
 check-ins and briefs, dashboard chat, live evals, the improvement loop) a ``claude -p`` run of the
 unmodified Claude Code CLI, signed in with the owner's own Claude account. The Shorts pipeline
 (``llm.py``) keeps using the Anthropic API key.
@@ -25,7 +25,7 @@ How a tools-only run works::
     (the conversation text goes in on stdin; never through a shell; no console window on Windows)
 
 * No built-in tools (no shell, no file edits, no web fetch), no user/project settings, no
-  CLAUDE.md, no other MCP servers. The only capabilities are Sterling's own tools, served by
+  CLAUDE.md, no other MCP servers. The only capabilities are Cecil's own tools, served by
   ``assistant/mcp_server.py`` (stdio MCP) which enforces the agent's allowlist itself and records
   every call exactly like the in-process path (audit trail, approvals, owner-only texts, SMS cap,
   DRY_RUN all live in ``assistant.tools``).
@@ -517,7 +517,7 @@ def rule_path(p: Path | str) -> str:
 
 
 def api_fallback_active() -> bool:
-    """True while the Claude plan is limited and Sterling should run Claude Code on the saved Anthropic
+    """True while the Claude plan is limited and Cecil should run Claude Code on the saved Anthropic
     API key instead (ASSISTANT_API_FALLBACK, default on). Same full powers; billed per token, capped by
     ASSISTANT_DAILY_BUDGET_USD (passed to Claude Code as --max-budget-usd)."""
     s = get_assistant_settings()

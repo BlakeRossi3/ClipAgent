@@ -48,9 +48,9 @@
     {% endif %}
     {% for r in n.run_errors[:1] %}
     <li class="need need-fail">
-      <p class="need-kind">{{ r.agent | capitalize }} · {{ r.ts | ago }}</p>
+      <p class="need-kind">{{ agent_name(r.agent) }} · {{ r.ts | ago }}</p>
       <p class="need-text">{{ (r.summary or r.task) | truncate(140) }}</p>
-      <a class="need-link" href="/dashboard/agents/{{ r.agent }}">Open {{ r.agent }} →</a>
+      <a class="need-link" href="/dashboard/agents/{{ r.agent }}">Open {{ agent_name(r.agent) }} →</a>
     </li>
     {% endfor %}
   </ul>
@@ -183,6 +183,7 @@
 {% macro agent_sheet(a) %}
 <div class="agent-sheet-head">{{ a.sprite_big | safe }}
   <div><p class="agent-name">{{ a.display }}</p><p class="agent-role">{{ a.role }} · <code>{{ a.model }}</code></p>
+  {% if a.character is defined and a.character %}<p class="agent-char">{{ a.character }}</p>{% endif %}
   <p class="status status-{{ a.status }}"><i></i>{{ a.status }}</p></div></div>
 <p class="agent-desc">{{ a.description }}</p>
 {% if a.skills %}<p class="chips">{% for k in a.skills %}<span class="chip" title="{{ k.description }}">{{ k.name }}</span>{% endfor %}</p>{% endif %}

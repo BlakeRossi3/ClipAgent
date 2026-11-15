@@ -8,7 +8,7 @@
   no markdown or URLs where they do not belong, the honorific at most once, no "As an AI",
   no gushing stock phrases, no filler openers ("Well,", "Okay,", "Let me check"), never "yeah",
   no apologies, and (spoken channels) at most two sentences of conversation. The spec is
-  skills/persona/SKILL.md, Sterling's version of adewaskar/jarvis PROMPT_CORE (MIT License).
+  skills/persona/SKILL.md, Cecil's version of adewaskar/jarvis PROMPT_CORE (MIT License).
 
 Golden examples for tests and evals live in ``skills/persona/examples.md``.
 """
@@ -264,7 +264,8 @@ def system_blocks(channel: str, *, agent: str | registry.AgentSpec = "main", pro
     parts = [_render(skills["persona"].body, s) if "persona" in skills else f"You are {s.name}."]
     parts.append(f"# Your role: {spec.name}\n\n{_render(spec.prompt, s)}")
     if spec.name == "main":
-        roster = "\n".join(f"- {a.name}: {a.description}" for a in agents.values() if a.name != "main")
+        roster = "\n".join(f"- {a.name}" + (f" ({a.extra['display_name']})" if a.extra.get("display_name") else "")
+                           + f": {a.description}" for a in agents.values() if a.name != "main")
         parts.append(f"# Sub-agents you can delegate to\n\n{roster}")
     other = [n for n in spec.skills if n != "persona" and n in skills]
     if other:

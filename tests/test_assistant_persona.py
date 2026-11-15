@@ -61,8 +61,8 @@ def test_system_blocks():
     blocks = persona.system_blocks("sms")
     assert len(blocks) == 2
     first = blocks[0]
-    assert "Sterling" in first and "{{" not in first and "# Your role: main" in first
-    assert "- ledger:" in first and '<skill name="weekly-hours">' in first
+    assert "Cecil" in first and "{{" not in first and "# Your role: main" in first
+    assert "- ledger (Debbie):" in first and '<skill name="weekly-hours">' in first
     assert "SMS" in blocks[1] and '"sir"' in blocks[1]
     sub = persona.system_blocks("system", agent="ledger")
     assert "Sub-agents you can delegate to" not in sub[0] and "SMS" not in sub[1]

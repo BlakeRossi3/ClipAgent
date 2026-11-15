@@ -1,4 +1,4 @@
-"""assistant/admin.py: Sterling as administrator - read everything, change everything, never a secret."""
+"""assistant/admin.py: the assistant as administrator - read everything, change everything, never a secret."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def test_app_search_and_conversation_history(cfg, clock):
     store.add_message("in", "voice", "How did the shorts do today?")
     db.log_event("pick", "blue van clip picked")
     hist = admin.conversation_history(30, query="blue van")
-    assert hist["matches"][0]["date"] == "2026-11-02" and {m["who"] for m in hist["matches"]} == {"Blake", "Sterling"}
+    assert hist["matches"][0]["date"] == "2026-11-02" and {m["who"] for m in hist["matches"]} == {"Blake", "Cecil"}
     assert hist["conversations"][0]["channel"] == "sms"
     recent = admin.conversation_history(3)
     assert [c["channel"] for c in recent["conversations"]] == ["voice"]
@@ -253,7 +253,9 @@ def test_staff_add_rename_update_delete_restore(cfg, staff_dir):
     assert "main.md" in r["references_updated"]
     agents = valid()
     assert "bookie" in agents and "ledger" not in agents and agents["bookie"].extra["role"] == "Bookkeeper"
-    assert "- bookie:" in (staff_dir / "main.md").read_text() and "ledger_summary" in (staff_dir / "main.md").read_text()
+    main_md = (staff_dir / "main.md").read_text()
+    assert "- bookie (Bookie):" in main_md and "(Debbie)" not in main_md and "ledger_summary" in main_md
+    assert agents["bookie"].extra["display_name"] == "Bookie"         # the new name is the one shown
     admin.staff_update("bookie", {"description": "The books.", "add_tools": ["pay_log"], "remove_tools": ["goals_update"]})
     b = valid()["bookie"]
     assert b.description == "The books." and "pay_log" in b.tools and "goals_update" not in b.tools
@@ -274,7 +276,7 @@ def test_staff_add_rename_update_delete_restore(cfg, staff_dir):
     assert "bookie" not in valid()
     admin.app_undo(d["change_id"])                         # undo the delete
     admin.app_undo(r["change_id"])                         # ...and the rename restores ledger + main.md
-    assert "ledger" in valid() and "- ledger:" in (staff_dir / "main.md").read_text()
+    assert "ledger" in valid() and "- ledger (Debbie):" in (staff_dir / "main.md").read_text()
     r = _call("staff_list")
     assert r.ok and "penny-pincher" in r.content
 

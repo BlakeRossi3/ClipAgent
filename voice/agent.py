@@ -2,7 +2,7 @@
 
 ::
 
-    idle --wake word / "Sterling ..." / hotkey--> listening --end of speech--> thinking
+    idle --wake word / "Cecil ..." / hotkey--> listening --end of speech--> thinking
       ^                                               |  (local command: handled here)   |
       |                                               v                                  v
       +------- no speech for followup_sec ------- followup <---- reply finished ---- speaking
@@ -12,7 +12,7 @@
 
 Single-threaded and clock-driven so it can be tested frame by frame: the app (or a test) calls
 :meth:`VoiceAgent.feed` with each 80 ms frame and :meth:`VoiceAgent.tick` when no audio arrives.
-Only the brain (Sterling's warm brain, ``assistant/brain.py``, reached through the server; it streams
+Only the brain (Cecil's warm brain, ``assistant/brain.py``, reached through the server; it streams
 sentences, which are spoken while the rest is still being generated) runs on a worker thread; the tray and hotkey post
 requests with :meth:`VoiceAgent.post`, which the loop picks up on its own thread.
 
@@ -310,7 +310,7 @@ class VoiceAgent:
         if cmd:
             self._command(cmd, text)
         elif len(found.rest.split()) >= 2:
-            # "Sterling, what's on today?" in one breath: the whole thing is the request. Re-run it
+            # "Cecil, what's on today?" in one breath: the whole thing is the request. Re-run it
             # through the full model for accuracy.
             full = self._transcribe(self.stt, clip) or text
             rest = commands.addressed(full, self.s.assistant_name)
@@ -616,7 +616,7 @@ class VoiceAgent:
 # ---------------------------------------------------------------------------
 
 def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None) -> str:
-    """Hand the transcript to Sterling's warm brain and return what was said. ``on_sentence``
+    """Hand the transcript to Cecil's warm brain and return what was said. ``on_sentence``
     receives each sentence as soon as it is ready (streamed speech)."""
     return brain_reply(text, on_sentence, origin="voice")["spoken"]
 

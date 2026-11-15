@@ -60,7 +60,7 @@ class VoiceSettings:
     tray: bool = True
     rescan_sec: float = 60.0               # look for a new/better microphone this often while idle
     brain_url: str = "http://127.0.0.1:8000"   # the server holding the warm brain (CLIPAGENT_BRAIN_URL)
-    assistant_name: str = "Sterling"
+    assistant_name: str = "Cecil"
     honorific: str = "sir"
     data_dir: Path = Path("data")
 
@@ -115,7 +115,7 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         a = get_assistant_settings() if environ is None else load_assistant_settings(environ)
         name, honorific = a.name, a.owner_honorific
     except Exception:  # pragma: no cover - the assistant package is optional for the voice loop
-        name, honorific = "Sterling", "sir"
+        name, honorific = "Cecil", "sir"
     return VoiceSettings(
         enabled=config._bool(env.get("VOICE_ENABLED"), False),
         input_device=s("VOICE_INPUT_DEVICE"),
@@ -175,7 +175,7 @@ _file_mtime: float | None = None
 
 def reload_if_changed() -> VoiceSettings | None:
     """For the separate voice process: re-read settings when config.env changed on disk (the Settings
-    page or Sterling's settings_set tool wrote it). Returns the new settings, or None if unchanged."""
+    page or the assistant's settings_set tool wrote it). Returns the new settings, or None if unchanged."""
     global _file_mtime
     try:
         m = config.get_settings().config_file.stat().st_mtime

@@ -72,7 +72,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _install_log_redaction()
     get_settings().ensure_dirs()
     db.init_db()
-    try:  # Sterling's warm brain: connect now so the first question needs no process start
+    try:  # one-time: the old default name Sterling -> Cecil in config.env
+        from assistant.settings import migrate_legacy_name
+
+        migrate_legacy_name()
+    except Exception as exc:
+        log.warning("assistant name migration skipped: %s", exc)
+    try:  # the assistant's warm brain: connect now so the first question needs no process start
         from assistant import brain
 
         brain.warm()

@@ -132,6 +132,111 @@ AGENT_COLORS: dict[str, tuple[str, str, str, str]] = {
 }
 
 
+#: The staff as characters from *Invincible* (a private app; every sprite is ORIGINAL 16x16 pixel art that
+#: only evokes the character through palette and costume motif). Agent ids stay as they are (they are
+#: stored in as_agent_runs / as_messages and used by ``delegate``); the names shown come from each
+#: agents/*.md ``display_name`` (and main's from ASSISTANT_NAME). '.' empty, 'k' outline, 'e' eye pixel
+#: (drawn on the blinking layer), any other letter = a colour from the character's palette.
+CHARACTERS: dict[str, dict[str, Any]] = {
+    "main": {  # Cecil Stedman: bald, grey sides and moustache, dark suit, interface-cyan tie
+        "rows": ["................", ".....kkkkkk.....", "....kssssssk....", "...kssssssssk...", "...kgssssssgk...",
+                 "...kgessssegk...", "...kbssssssbk...", "...kssggggssk...", "....kssggssk....", "..kccwwaawwcck..",
+                 ".kcccwaaaawccck.", ".kcccwwaawwccck.", ".kscccwaawcccsk.", ".kkcccwwwwccckk.", "..kcccckkcccck..",
+                 "..kkkk....kkkk.."],
+        "pal": {"s": "#d9a77f", "g": "#b9bec7", "b": "#d48f78", "c": "#1c2333", "w": "#e9eef2", "a": "#22d8f0"},
+    },
+    "studio": {  # Atom Eve: red hair, pink suit, white atom on the chest
+        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhssssssshk..", "..khsssssssshk..",
+                 "..khsesssseshk..", "..khbssssssbhk..", "..khsssmmssshk..", "..hh.kssssk.hh..", "..hkppppppppkh..",
+                 ".kpppppwwpppppk.", ".kppppwppwppppk.", ".kqpppppwwpppqk.", ".kkqqpppppqqkk..", "..kqqqqkkqqqqk..",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#d2462e", "s": "#f0c19b", "b": "#f19a8f", "m": "#b5524a", "p": "#ff5fae", "q": "#b83280", "w": "#ffffff"},
+    },
+    "ledger": {  # Debbie: shoulder-length hair, lavender cardigan, the household folder
+        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhsssssshhk..", "..khsssssssshk..",
+                 "..khsesssseshk..", "..khbssssssbhk..", "..khssmmmmsshk..", "..hh.kssssk.hh..", "..kccwwwwwwcck..",
+                 ".kcccwwwwwwccck.", ".kcccwwwwwwcxxx.", ".kscccwwwwccsxx.", ".kkcccwwwwccckk.", "..kddddkkddddk..",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#c8894d", "s": "#f1c7a3", "b": "#ec9f8e", "m": "#b5524a", "c": "#8d6bb8", "w": "#f4efe6",
+                "x": "#e8b054", "d": "#3d5a80"},
+    },
+    "quartermaster": {  # Donald Ferguson: combed hair, glasses, navy suit, red tie, an earpiece
+        "rows": ["................", "....kkkkkkkk....", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khsssssshk...",
+                 "...kgegssgegk...", "...kbssssssbkx..", "...ksssmmsssk...", "....kssssssk....", "..kccwwaawwcck..",
+                 ".kcccwaaaawccck.", ".kcccwwaawwccck.", ".kscccwaawcccsk.", ".kkcccwwwwccckk.", "..kcccckkcccck..",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#5b3a24", "s": "#e2b08c", "b": "#d9937c", "m": "#a8564a", "g": "#9fd8e6", "c": "#1f2f4f",
+                "w": "#eef2f5", "a": "#c0392b", "x": "#22d8f0"},
+    },
+    "archivist": {  # The Immortal: long dark hair and beard, deep teal, gold, a crimson cape
+        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhsssssshhk..", "..khsssssssshk..",
+                 "..khsesssseshk..", "..khbssssssbhk..", "..khhhhmmhhhhk..", "..rkhhhhhhhhkr..", ".rkttttttttttkr.",
+                 ".rktttyyyytttkr.", ".rkttttttttttkr.", ".rksttyyyyttskr.", ".rkkttttttttkkr.", "rrkttttkkttttkrr",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#1c1b22", "s": "#d9a47f", "b": "#cf8d74", "m": "#7a3b32", "t": "#2f5f6b", "y": "#e3b341", "r": "#b3262d"},
+    },
+    "researcher": {  # Allen the Alien: blue skin, one great eye, Coalition white and green
+        "rows": ["................", "....kkkkkkkk....", "...khhhhhhhhk...", "...kssssssssk...", "...ksswwwwssk...",
+                 "...kswweewwsk...", "...ksswwwwssk...", "...kssmmmmssk...", "....kssssssk....", "..kggwwwwwwggk..",
+                 ".kgggwwggwwgggk.", ".kgggwwwwwwgggk.", ".ksgggwwwwgggsk.", ".kkgggwwwwgggkk.", "..kggggkkggggk..",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#1b1f2a", "s": "#5b8fe0", "w": "#f2f4f7", "m": "#27467a", "g": "#3f8f5a"},
+        "eye": ("#10131a", "#10131a"),
+    },
+    "engineer": {  # Robot: a metal head with a red visor, an antenna, green armour, a red core
+        "rows": [".......x........", ".......k........", "....kkkkkkkk....", "...kmmmmmmmmk...", "...kmmmmmmmmk...",
+                 "...kmeeeeeemk...", "...kmmmmmmmmk...", "...kmkmkmkmmk...", "....kkkkkkkk....", "..kggggggggggk..",
+                 ".kgggmmmmmmgggk.", ".kgggmrrrrmgggk.", ".kmgggmmmmgggmk.", ".kkggggggggggkk.", "..kmmmmkkmmmmk..",
+                 "..kkkk....kkkk.."],
+        "pal": {"m": "#8b98a6", "g": "#3e5a4c", "r": "#ff4040", "x": "#ff4040"},
+        "eye": ("#ff3b3b", "#ffb0a8"),
+    },
+    "briefer": {  # Invincible: black hair, blue mask, yellow chest, blue sides and gloves
+        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khsssssshk...",
+                 "...kueuuuueuk...", "...kbssssssbk...", "...ksssmmsssk...", "....kssssssk....", "..kuuyyyyyyuuk..",
+                 ".kuuuyyyyyyuuuk.", ".kuuuyyuuyyuuuk.", ".kuuuuyuuyuuuuk.", ".kkuuuyyyyuuukk.", "..kuuuukkuuuuk..",
+                 "..kkkk....kkkk.."],
+        "pal": {"h": "#15171d", "s": "#f0c19b", "b": "#ec9f8e", "m": "#b5524a", "u": "#2b55c9", "y": "#f7d23e"},
+        "eye": ("#ffffff", "#0b0d12"),
+    },
+}
+CHARACTER_NAMES = {"main": "Cecil Stedman", "studio": "Atom Eve", "ledger": "Debbie Grayson",
+                   "quartermaster": "Donald Ferguson", "archivist": "The Immortal", "researcher": "Allen the Alien",
+                   "engineer": "Robot", "briefer": "Invincible"}
+
+
+def character_svg(agent: str, *, size: int = 48, label: str = "", cls: str = "") -> str | None:
+    """An agent's character sprite (see :data:`CHARACTERS`), or None for staff without one."""
+    spec = CHARACTERS.get(agent)
+    if spec is None:
+        return None
+    pal = {"k": "#0b0d12", **spec["pal"]}
+    eye_base, eye_lid = spec.get("eye") or (pal.get("s", "#e8b98f"), "#0b0d12")
+    rects: list[str] = []
+    eyes: list[str] = []
+    for y, row in enumerate(spec["rows"]):
+        x = 0
+        while x < 16:
+            ch = row[x]
+            if ch == ".":
+                x += 1
+                continue
+            if ch == "e":
+                rects.append(f'<rect x="{x}" y="{y}" width="1" height="1" fill="{eye_base}"/>')
+                eyes.append(f'<rect x="{x}" y="{y}" width="1" height="1"/>')
+                x += 1
+                continue
+            start = x
+            while x < 16 and row[x] == ch:
+                x += 1
+            rects.append(f'<rect x="{start}" y="{y}" width="{x - start}" height="1" fill="{pal.get(ch, pal["k"])}"/>')
+    title = f"<title>{html.escape(label)}</title>" if label else ""
+    aria = f'role="img" aria-label="{html.escape(label)}"' if label else 'aria-hidden="true"'
+    return (f'<svg class="sprite sprite-{html.escape(agent)} {html.escape(cls)}" viewBox="0 0 16 16" width="{size}" '
+            f'height="{size}" shape-rendering="crispEdges" {aria}>{title}<g class="sprite-body">{"".join(rects)}'
+            f'<g class="px-eyes" style="fill:{eye_lid}">{"".join(eyes)}</g></g></svg>')
+
+
 def _grid(agent: str, pose: str) -> list[str]:
     rows = list(_BASE)
     for overlay in (_GEAR.get(agent, {}), _ALERT if pose == "alert" else {}):
@@ -149,6 +254,9 @@ def _grid(agent: str, pose: str) -> list[str]:
 def sprite_svg(agent: str = "main", *, pose: str = "idle", size: int = 48, label: str = "",
                cls: str = "") -> str:
     """An original 16x16 pixel character as inline SVG (runs merged, eyes on their own layer)."""
+    drawn = character_svg(agent, size=size, label=label, cls=cls)
+    if drawn is not None:
+        return drawn
     key = agent if agent in AGENT_COLORS else "researcher"
     rows = _grid(key, pose)
     coat, hat, prop, hair = AGENT_COLORS[key]
@@ -396,7 +504,7 @@ def assistant_state() -> dict[str, Any]:
         reason = (f"I am switched off for now, {s.owner_honorific}. Set ASSISTANT_ENABLED=true in config.env "
                   "and restart, and I will answer here and by text.")
     elif _safe(lambda: __import__("assistant.runtime", fromlist=["x"]).is_stopped(), False, "stop switch"):
-        reason = (f"I am switched off for now, {s.owner_honorific}. Press Start below or text START STERLING "
+        reason = (f"I am switched off for now, {s.owner_honorific}. Press Start below or text START CECIL "
                   "to bring me back.")
     elif paused:
         reason = "Spending is paused, so I am staying quiet. Text RESUME (or clear the pause) to bring me back."
@@ -652,8 +760,8 @@ def roster_data(today: date) -> list[dict[str, Any]]:
             elif last.status == "error" and age < timedelta(hours=24):
                 status = "error"
         out.append({
-            "name": name, "display": s.name if name == "main" else (spec.extra.get("display_name")
-                                                                      or name.replace("-", " ").capitalize()),
+            "name": name, "display": agent_display(name, spec=spec, settings=s),
+            "character": str(spec.extra.get("character") or CHARACTER_NAMES.get(name, "")),
             "role": spec.extra.get("role") or AGENT_ROLES.get(name, name.replace("-", " ").capitalize()),
             "description": spec.description, "model": _agent_model(spec, s),
             "tools": list(spec.tools), "skills": [{"name": k, "description": skills[k].description if k in skills else ""}
@@ -663,6 +771,57 @@ def roster_data(today: date) -> list[dict[str, Any]]:
             "sprite": sprite_svg(name, size=40), "sprite_big": sprite_svg(name, size=96, label=f"{name} sprite"),
         })
     return out
+
+
+_staff_cache: dict[str, Any] = {"key": None, "rows": []}
+
+
+def _agents_key() -> tuple[Any, ...]:
+    from assistant import registry
+
+    try:
+        files = sorted(Path(registry.AGENTS_DIR).glob("*.md"))
+        return (str(registry.AGENTS_DIR), tuple((f.name, f.stat().st_mtime_ns) for f in files), _asettings().name)
+    except OSError:
+        return (str(registry.AGENTS_DIR), (), _asettings().name)
+
+
+def staff_nav() -> list[dict[str, Any]]:
+    """[{name, display, role, character, sprite}] in roster order: the top bar's Staff menu and every place
+    that shows an agent's name. Cached until an agents/*.md file or ASSISTANT_NAME changes."""
+    from assistant import registry
+
+    key = _agents_key()
+    if _staff_cache["key"] == key:
+        return _staff_cache["rows"]
+    s = _asettings()
+    agents = registry.load_agents(skills=registry.load_skills(strict=False), strict=False)
+    order = {n: i for i, n in enumerate(AGENT_ORDER)}
+    rows = []
+    for name, spec in sorted(agents.items(), key=lambda kv: (order.get(kv[0], 99), kv[0])):
+        rows.append({"name": name, "display": agent_display(name, spec=spec, settings=s),
+                     "role": spec.extra.get("role") or AGENT_ROLES.get(name, name.replace("-", " ").capitalize()),
+                     "character": str(spec.extra.get("character") or CHARACTER_NAMES.get(name, "")),
+                     "sprite": sprite_svg(name, size=28)})
+    _staff_cache.update(key=key, rows=rows)
+    return rows
+
+
+def agent_display(name: str | None, *, spec: Any = None, settings: Any = None) -> str:
+    """The name an agent goes by on screen: main -> ASSISTANT_NAME; else its ``display_name`` (agents/*.md),
+    else the id, capitalised. Ids themselves never change (stored history and ``delegate`` use them)."""
+    s = settings or _asettings()
+    if name in (None, "", "main"):
+        return s.name
+    if spec is None:
+        try:
+            spec = next((r for r in staff_nav() if r["name"] == name), None)
+            if spec is not None:
+                return spec["display"]
+        except Exception:
+            spec = None
+        return name.replace("-", " ").capitalize()
+    return str(spec.extra.get("display_name") or name.replace("-", " ").capitalize())
 
 
 def needs_data() -> dict[str, Any]:
@@ -720,7 +879,7 @@ def feed_data(limit: int = FEED_ITEMS) -> list[dict[str, Any]]:
     s = _asettings()
     items: list[dict[str, Any]] = []
     for m in store.list_messages(limit):
-        who = s.owner_name if m.direction == "in" else (s.name if (m.agent in (None, "main")) else m.agent.capitalize())
+        who = s.owner_name if m.direction == "in" else agent_display(m.agent, settings=s)
         items.append({"ts": m.ts, "kind": "message", "icon": "chat", "who": who,
                       "text": m.body, "meta": m.channel, "tone": "neutral"})
     for r in store.list_agent_runs(limit):
@@ -728,7 +887,7 @@ def feed_data(limit: int = FEED_ITEMS) -> list[dict[str, Any]]:
             continue
         tone = {"error": "critical", "budget": "warning", "denied": "warning", "running": "accent"}.get(r.status, "neutral")
         items.append({"ts": r.ts, "kind": "run", "icon": "team",
-                      "who": s.name if r.agent == "main" else r.agent.capitalize(),
+                      "who": agent_display(r.agent, settings=s),
                       "text": (r.summary or r.task or "")[:220], "meta": r.status if r.status != "ok" else f"${r.cost_usd:.3f}",
                       "tone": tone, "agent": r.agent})
     for u in db.list_uploads("uploaded", limit=limit):
@@ -965,7 +1124,10 @@ def home_page(request: Request) -> Response:
     if request.query_params.get("period"):  # an old overview link: the analytics moved to /studio
         return d._security_headers(RedirectResponse("/dashboard/studio?" + urlencode(
             [(k, v) for k, v in request.query_params.multi_items() if k != "token"]), status_code=303))
+    import home_live
+
     data = home_data()
+    data["cecil"] = home_live.cecil_data()
     resp = d._render(request, "home.html", {"h": data, "glyph": glyph, "chat_max": CHAT_MAX_CHARS}, nav="home")
     return home_csp(resp)
 
@@ -1324,7 +1486,7 @@ def agent_page(request: Request, name: str) -> Response:
     from assistant import store
 
     agent["runs"] = store.list_agent_runs(25, agent=name)
-    return d._render(request, "agent.html", {"ag": agent, "glyph": glyph, "a": assistant_state()}, nav="home")
+    return d._render(request, "agent.html", {"ag": agent, "glyph": glyph, "a": assistant_state()}, nav="staff")
 
 
 def register(router: Any) -> None:

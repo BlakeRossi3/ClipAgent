@@ -367,20 +367,198 @@ def test_split_dictation_is_stitched_into_one_request(env):
     assert [m.body for m in replies] == ["Logged, sir: forty-one hours."]
 
 
-def test_talking_over_a_spoken_answer_is_still_a_barge_in(env, monkeypatch):
-    monkeypatch.setattr(brain, "MERGE_WINDOW_SEC", 0.0)
-    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: (
-        [f"Sentence number {i}." for i in range(200)] if "long story" in p else ["Short answer."]), delay=0.01))
+def test_talking_over_a_spoken_answer_merges_but_stop_does_not(env):
+    prompts = []
+    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: (prompts.append(p), (
+        [f"Sentence number {i}." for i in range(200)] if "long story" in p and "short" not in p
+        else ["Short answer."]))[1], delay=0.01))
     t1 = brain.ask("tell me a long story")
     for _ in range(200):
         if t1.sentences:
             break
         time.sleep(0.01)
-    assert brain.get_brain().stitch_target("browser") is None      # he is being spoken to: not a continuation
-    assert brain.interrupt()
-    t2 = brain.ask("stop, the short version")
-    assert t2.wait(10)["reply"] == "Short answer." and t2.merged_from is None and t2.heard == "stop, the short version"
+    assert brain.get_brain().stitch_target("browser") is t1          # still unfinished: new speech replaces it
+    t2 = brain.ask("actually, the short version")
+    res = t2.wait(10)
+    assert res["reply"] == "Short answer." and t2.merged_from == t1.id
+    assert t2.heard == "tell me a long story actually, the short version"
+    assert "you had begun answering" in prompts[-1] and "Sentence number 0." in prompts[-1]
     assert t1.wait(1)["status"] == "cancelled" and len(t1.sentences) < 200
+    # an explicit stop ("stop", Escape) is not merged into what he says next
+    t3 = brain.ask("tell me a long story")
+    for _ in range(200):
+        if t3.sentences:
+            break
+        time.sleep(0.01)
+    assert brain.interrupt()
+    t4 = brain.ask("what time is it")
+    assert t4.wait(10)["reply"] == "Short answer." and t4.merged_from is None and t4.heard == "what time is it"
+
+
+class LateClient(brain.FakeClient):
+    """The real CLI after an interrupt: the aborted question still streams a stale sentence, then its result."""
+
+    async def interrupt(self):
+        import asyncio
+
+        self.interrupted += 1
+        t = brain._sdk()
+        busy = self._busy
+        await asyncio.sleep(0.05)
+        for chunk in ("Stale words ", "from before."):
+            self._out.put_nowait(t.StreamEvent(uuid="s", session_id=self.session_id, event={
+                "type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": chunk}}))
+        self._out.put_nowait(t.AssistantMessage(content=[t.TextBlock(text="Stale words from before.")],
+                                                model="fake-sonnet"))
+        if busy is not None and not busy.done():
+            busy.cancel()                      # -> its error result
+
+
+def test_rapid_utterances_during_a_long_tool_call_make_one_turn_and_nothing_stale_is_spoken(env):
+    import re
+
+    seen = []
+
+    def script(prompt, client):
+        said = re.search(r"<said>\s*(.*?)\s*</said>", prompt, re.S).group(1)
+        seen.append(said)
+        return [brain.tool_step("WebSearch", query=said), f"Answer for: {said}"]
+
+    brain.set_client_factory(lambda o, t: LateClient(o, t, script, delay=0.4))
+    first = brain.ask("Search the web")
+    for _ in range(300):
+        if first.tools:
+            break
+        time.sleep(0.01)
+    assert first.tools == 1                               # inside the (long) tool call
+    started = time.monotonic()
+    turns = [first]
+    for part in ("for the Ohio State", "score please."):
+        time.sleep(0.05)
+        turns.append(brain.ask(part))
+    res = turns[-1].wait(10)
+    joined = "Search the web for the Ohio State score please."
+    assert res["reply"] == f"Answer for: {joined}" and turns[-1].heard == joined
+    assert [t.wait(1)["status"] for t in turns[:-1]] == ["cancelled", "cancelled"]
+    assert [t.merged_from for t in turns[1:]] == [turns[0].id, turns[1].id]
+    live = [t for t in turns if t.status != "cancelled"]
+    assert live == [turns[-1]]                            # exactly one active turn, the joined text
+    assert seen[-1] == joined and joined not in seen[:-1]
+    time.sleep(0.3)
+    evs = events.BUS.since(0, 1000)
+    spoken = [e["text"] for e in evs if e["type"] == "sentence"]
+    assert spoken == [f"Answer for: {joined}"] and not any("Stale" in x for x in spoken)
+    assert not [e for e in evs if e["type"] == "turn" and e["kind"] == "announce"]
+    b = brain.get_brain()
+    assert b.recoveries == 0 and len(brain.FakeClient.instances) == 1     # interrupted, never reconnected
+    assert time.monotonic() - started < 3.0               # nothing waited out a fixed timeout
+
+
+def test_leftover_output_after_an_interrupt_is_never_an_announcement(env):
+    class Trailing(brain.FakeClient):
+        async def interrupt(self):
+            import asyncio
+
+            self.interrupted += 1
+            if self._busy is not None and not self._busy.done():
+                self._busy.cancel()
+            await asyncio.sleep(0.05)
+            t = brain._sdk()
+            self._out.put_nowait(t.AssistantMessage(content=[t.TextBlock(text="Leftover sentence.")],
+                                                    model="fake-sonnet"))
+
+    brain.set_client_factory(lambda o, t: Trailing(o, t, lambda p, c: [f"Line {i}." for i in range(100)],
+                                                   delay=0.02))
+    t1 = brain.ask("talk for a while")
+    for _ in range(200):
+        if t1.sentences:
+            break
+        time.sleep(0.01)
+    assert brain.interrupt()
+    t1.wait(5)
+    time.sleep(0.3)
+    evs = events.BUS.since(0, 1000)
+    assert not [e for e in evs if e["type"] == "turn" and e["kind"] == "announce"]
+    assert not any("Leftover" in e.get("text", "") for e in evs if e["type"] == "sentence")
+
+
+def test_missing_result_after_an_abandon_reconnects_and_asks_the_joined_question(env, monkeypatch):
+    _fast_watchdog(monkeypatch)
+    made = _factory(lambda o, t, s: WedgeClient(o, t, s))
+    t1 = brain.ask("On Monday I worked")
+    for _ in range(200):
+        if t1.activity_at is not None:
+            break
+        time.sleep(0.01)
+    t2 = brain.ask("nine hours.")                         # merged; the wedged question never returns a result
+    assert t2.wait(10)["reply"] == "Here I am, sir." and t2.merged_from == t1.id
+    assert len(made) == 2 and made[0].interrupted >= 1 and brain.get_brain().recoveries == 1
+
+
+def test_the_same_words_from_the_laptop_and_the_page_are_one_turn(env):
+    script(lambda said, c: ["It will rain tomorrow, sir."])
+    b = brain.ask("What's the weather tomorrow?", origin="browser")
+    v = brain.ask("what's the weather tomorrow", origin="voice")
+    assert v is b and b.wait(5)["reply"] == "It will rain tomorrow, sir."
+    assert len(brain.FakeClient.instances[0].history) == 1
+    other = brain.ask("and on Sunday?", origin="voice")      # different words: a turn of its own
+    assert other is not b and other.wait(5)["status"] == "ok"
+    assert len([m for m in store.list_messages(20, channel="voice", direction="in")]) == 2
+
+
+def test_timing_has_every_brain_stage(env):
+    script(lambda said, c: [brain.tool_step("memory_search", query="dentist"), "Your dentist is on Tuesday."])
+    res, _ = say("when is the dentist")
+    row = brain.get_brain().timing_for(res["turn"])
+    for k in ("queued_ms", "first_token_ms", "first_tool_ms", "tool_ms", "first_sentence_ms", "selfedit_ms",
+              "total_ms"):
+        assert k in row, k
+    assert row["first_tool_ms"] is not None and row["tool_ms"][0]["name"] == "memory_search"
+    assert row["total_ms"] >= row["first_sentence_ms"] >= 0 and row["queued_ms"] is not None
+    ev = [e for e in events.BUS.since(0, 1000) if e["type"] == "timing"]
+    assert ev and ev[-1]["timing"]["brain"]["turn"] == res["turn"]
+    from voice import web
+
+    assert web.diagnostics()["brain_timings"][-1]["turn"] == res["turn"]
+
+
+def test_self_edit_runs_only_after_editing_turns_and_in_the_background(env, monkeypatch):
+    import threading
+
+    from assistant import selfedit
+
+    calls = []
+    release = threading.Event()
+    monkeypatch.setattr(brain.Brain, "_selfedit_enabled", lambda self: True)
+    monkeypatch.setattr(selfedit, "begin", lambda: calls.append(("begin", threading.current_thread().name)) or "SNAP")
+
+    def finish(snap, summary=""):
+        calls.append(("finish", threading.current_thread().name, snap))
+        release.wait(5)                                   # a slow test suite
+        return None
+
+    monkeypatch.setattr(selfedit, "finish", finish)
+    script(lambda said, c: [brain.tool_step("Edit", file_path="app.py"), "Changed it, sir."]
+           if "change" in said else ["Hello, sir."])
+    say("hello")
+    time.sleep(0.2)
+    assert [c[0] for c in calls] == ["begin"] and calls[0][1].startswith("selfedit")   # read-only: no check
+    res, _ = say("change the greeting")
+    assert res["reply"] == "Changed it, sir."            # answered while the check is still running
+    for _ in range(100):
+        if any(c[0] == "finish" for c in calls):
+            break
+        time.sleep(0.01)
+    fin = [c for c in calls if c[0] == "finish"]
+    assert len(fin) == 1 and fin[0][1].startswith("selfedit") and fin[0][2] == "SNAP"
+    assert say("hello again")[0]["reply"] == "Hello, sir."   # the queue is not held by the check
+    release.set()
+    for _ in range(100):
+        row = brain.get_brain().timing_for(res["turn"])
+        if row and row["selfedit_ms"] is not None:
+            break
+        time.sleep(0.02)
+    assert row["selfedit_ms"] is not None
 
 
 def test_his_mcp_servers_join_the_brain_and_their_keys_never_leak(env, tmp_path, monkeypatch):

@@ -60,7 +60,7 @@ def test_history_upload_and_manifest(client, monkeypatch):
                                                       "chat_messages": [{"sender": "human", "text": "hello"}]}]))
     r = client.post("/dashboard/history/upload", files=[("files", ("conversations-000.zip", buf.getvalue()))], headers=H)
     assert r.status_code == 200 and "imported" in r.text and hi.progress()["conversations"] == 1
-    monkeypatch.setattr(hi.os, "name", "posix")
+    monkeypatch.setattr(hi, "is_windows", lambda: False)
     man = {"total_files": 1, "created_at": None, "data_files": [{"filename": "projects-000.zip",
                                                                  "export_url": "https://claude.ai/export/x/p.zip"}]}
     r = client.post("/dashboard/history/manifest", data={"manifest": json.dumps(man)}, headers=H)

@@ -1,4 +1,4 @@
-"""Live events from Sterling's brain to the Jarvis page (``GET /voice/api/stream``, server-sent events).
+"""Live events from Cecil's brain to the Jarvis page (``GET /voice/api/stream``, server-sent events).
 
 One in-process bus. The brain (``assistant/brain.py``), background tasks (``assistant/tasks.py``),
 the ``display`` tool (``assistant/panels.py``) and live settings changes publish small dicts;

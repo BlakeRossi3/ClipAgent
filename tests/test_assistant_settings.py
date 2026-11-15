@@ -17,7 +17,7 @@ pytestmark = pytest.mark.usefixtures("assistant_env")
 def test_defaults(tmp_path):
     s = asettings.load_assistant_settings({"CLIPAGENT_CONFIG_FILE": str(tmp_path / "none.env"),
                                            "CLIPAGENT_DATA_DIR": str(tmp_path / "d")})
-    assert s.name == "Sterling" and s.owner_honorific == "sir"
+    assert s.name == "Cecil" and s.owner_honorific == "sir"
     assert s.model == "claude-fable-5-2" and s.subagent_model == "claude-opus-5-5"
     assert s.daily_budget_usd == 3.0 and s.max_turn_usd == 0.5 and s.max_sms_per_day == 8
     assert s.enabled is False and s.fake is False and s.web_search is False
@@ -52,7 +52,7 @@ def test_override():
     asettings.set_assistant_settings(custom)
     assert asettings.get_assistant_settings().name == "Hudson"
     asettings.set_assistant_settings(None)
-    assert asettings.get_assistant_settings().name == "Sterling"
+    assert asettings.get_assistant_settings().name == "Cecil"
 
 
 def test_default_vault_path_is_gitignored(tmp_path):

@@ -19,10 +19,16 @@ import config
 BACKENDS = ("api", "claude_code")
 
 
+#: The assistant's default name. Before Cecil it was "Sterling" (see :func:`migrate_legacy_name`).
+DEFAULT_NAME = "Cecil"
+LEGACY_DEFAULT_NAME = "Sterling"
+NAME_MIGRATION_KV = "assistant:name_migrated"
+
+
 @dataclass(frozen=True, slots=True)
 class AssistantSettings:
     enabled: bool = False
-    name: str = "Sterling"
+    name: str = DEFAULT_NAME
     owner_honorific: str = "sir"
     owner_name: str = "Blake"
     model: str = "claude-fable-5-2"          # main agent
@@ -88,7 +94,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
 
     return AssistantSettings(
         enabled=config._bool(env.get("ASSISTANT_ENABLED"), False),
-        name=s("ASSISTANT_NAME", "Sterling"),
+        name=s("ASSISTANT_NAME", DEFAULT_NAME),
         owner_honorific=s("OWNER_HONORIFIC", "sir"),
         owner_name=base.owner_name,
         model=s("ASSISTANT_MODEL", "claude-fable-5-2"),
@@ -172,3 +178,27 @@ def reset_assistant_settings() -> None:
     global _cache, _override
     _cache = None
     _override = None
+
+
+def migrate_legacy_name() -> bool:
+    """One-time rename of the stored default: ``ASSISTANT_NAME=Sterling`` in config.env becomes ``Cecil``.
+
+    Only the old default is touched (a name the owner chose himself stays), only in the file (never the
+    process environment), and only once per data dir (kv :data:`NAME_MIGRATION_KV`), so choosing
+    Sterling again afterwards sticks. Called at server start-up. Returns True when it rewrote the file.
+    """
+    import config_store
+    import db
+
+    if not db.kv_set_if_absent(NAME_MIGRATION_KV, db.now_iso()):
+        return False
+    try:
+        stored = config_store.read_values().get("ASSISTANT_NAME", "")
+    except OSError:
+        return False
+    if stored.strip() != LEGACY_DEFAULT_NAME:
+        return False
+    config_store.update({"ASSISTANT_NAME": DEFAULT_NAME})
+    db.log_event("assistant", f"assistant renamed from the old default {LEGACY_DEFAULT_NAME} to {DEFAULT_NAME}",
+                 data={"from": LEGACY_DEFAULT_NAME, "to": DEFAULT_NAME})
+    return True

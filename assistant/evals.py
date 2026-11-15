@@ -55,7 +55,7 @@ CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 HISTORY_KEEP = 100
 DEFAULT_LIVE_MAX_USD = 1.00
 # Generic sandbox identity: cases never depend on (or reveal) the real owner's profile.
-SANDBOX_IDENTITY = {"name": "Sterling", "owner_name": "Alex", "owner_honorific": "sir"}
+SANDBOX_IDENTITY = {"name": "Cecil", "owner_name": "Alex", "owner_honorific": "sir"}
 # Rough per-case live cost model (tokens) used for the up-front estimate.
 EST_CALLS_PER_CASE, EST_INPUT_PER_CALL, EST_OUTPUT_PER_CALL = 3, 6000, 700
 EST_JUDGE_INPUT, EST_JUDGE_OUTPUT = 1500, 300

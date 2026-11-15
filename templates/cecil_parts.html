@@ -1,0 +1,139 @@
+{# The Cecil home's live panels (home_live.py). Rendered into the page and by /dashboard/api/cecil.
+   Every text value here is autoescaped: messages, task text and commit titles are data, never markup. #}
+
+{% macro chats(c) %}
+{% if c.chats %}
+<ol class="cc-chats">
+  {% for x in c.chats %}
+  <li class="cc-chat">
+    <p class="cc-meta"><span class="chip chan-{{ x.channel }}">{{ x.channel }}</span><time datetime="{{ x.ts }}">{{ x.ts | ago }}</time></p>
+    {% if x.you %}<p class="cc-you"><span class="sr-only">You: </span>{{ x.you | truncate(140) }}</p>{% endif %}
+    {% if x.them %}<p class="cc-them"><b>{{ x.who }}</b> {{ x.them | truncate(170) }}</p>{% elif x.you %}<p class="cc-them cc-pending">No reply yet</p>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="rail-empty">No conversations yet. Tap the ring and say hello.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro staff(c) %}
+{% if c.staff %}
+<ul class="cc-staff">
+  {% for m in c.staff %}
+  <li class="cc-agent is-{{ m.state }}">
+    <a href="/dashboard/agents/{{ m.name }}" title="{{ m.character }}">
+      <span class="cc-agent-px" aria-hidden="true">{{ m.sprite | safe }}</span>
+      <span class="cc-agent-main">
+        <span class="cc-agent-name">{{ m.display }} <small>{{ m.role }}</small></span>
+        <span class="cc-agent-doing">{% if m.state == "working" %}{{ m.doing or "Working" }}{% elif m.state == "error" %}Trouble: {{ m.doing | truncate(90) }}{% elif m.last %}Last: {{ m.last.text | truncate(80) }} · {{ m.last.ts | ago }}{% else %}Standing by{% endif %}</span>
+      </span>
+      <span class="cc-agent-state"><i aria-hidden="true"></i>{{ m.state }}{% if m.runs_today %} · {{ m.runs_today }}{% endif %}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="rail-empty">No staff files found.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro work(c) %}
+{% if c.work %}
+<ol class="cc-work">
+  {% for w in c.work %}
+  <li class="cc-work-item is-{{ w.status }} kind-{{ w.kind }}">
+    <span class="cc-work-dot" aria-hidden="true"></span>
+    <p><b>{{ w.who }}</b> {{ w.text | truncate(120) }}</p>
+    <p class="cc-meta">{{ {"run": "task", "task": "background", "code": "code change"}[w.kind] }}{% if w.status not in ("ok",) %} · {{ w.status }}{% endif %} · {{ w.ts | ago }}</p>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="rail-empty">Nothing finished yet today.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro new(c) %}
+{% if c.new %}
+<ol class="cc-new-list">
+  {% for n in c.new %}
+  <li class="cc-new-item{% if loop.index <= 3 %} is-fresh{% endif %}">
+    <span class="cc-new-tag">{% if loop.index <= 3 %}New{% else %}{{ n.sha[:7] }}{% endif %}</span>
+    <span class="cc-new-title">{{ n.title }}</span>
+    {% if n.ts %}<time datetime="{{ n.ts }}">{{ n.ts | ago }}</time>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="rail-empty">No build history here (this copy of the app is not a git checkout).</p>
+{% endif %}
+{% endmacro %}
+
+{% macro charts(c) %}
+{% set k = c.charts %}
+{% if k %}
+<div class="cc-charts">
+  {# 1. Claude usage today: a gauge #}
+  {% set cl = k.claude %}{% set C = 113.1 %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Claude today</figcaption>
+    <div class="cc-gauge-row">
+      <svg class="cc-gauge" viewBox="0 0 44 44" role="img" aria-label="Claude runs today: {{ cl.runs }} of {{ cl.cap }}">
+        <circle cx="22" cy="22" r="18" class="cc-gauge-track"/>
+        <circle cx="22" cy="22" r="18" class="cc-gauge-fill{% if cl.pct >= 85 or cl.limited %} is-hot{% endif %}" stroke-dasharray="{{ '%.1f' | format(C * cl.pct / 100) }} {{ C }}" transform="rotate(-90 22 22)"/>
+        <text x="22" y="25.5" text-anchor="middle">{{ cl.pct | round(0) | int }}%</text>
+      </svg>
+      <p class="cc-big">{{ cl.runs }}<small> / {{ cl.cap }} runs</small></p>
+    </div>
+    <p class="cc-sub">{% if cl.limited %}Plan limit · back {{ cl.limited_text }}{% elif cl.five_left is not none %}5-hour window: {{ cl.five_left }}% left{% else %}Plan usage not reported yet{% endif %}</p>
+  </figure>
+  {# 2. assistant spend, 7 days #}
+  {% set sp = k.spend %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Assistant spend</figcaption>
+    <p class="cc-big">{{ sp.today | usd }}<small> today</small></p>
+    <svg class="cc-svg" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Assistant spend, last 7 days: {{ sp.week | usd }}">
+      {% for b in sp.bars %}<rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="1.5" class="{{ 'is-now' if loop.last else '' }}"/>{% endfor %}
+    </svg>
+    <p class="cc-sub">{{ sp.week | usd }} this week · cap {{ sp.budget | usd }}/day{% if sp.fake %} · practice{% endif %}</p>
+  </figure>
+  {# 3. voice latency #}
+  {% set la = k.latency %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Voice latency</figcaption>
+    <p class="cc-big">{% if la.last is not none %}{{ "%.1f" | format(la.last / 1000) }}<small> s to first word</small>{% else %}—<small> no voice turns yet</small>{% endif %}</p>
+    {% if la.spark %}
+    <svg class="cc-svg cc-line" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Speech-to-first-word latency, last {{ la.n }} turns">
+      <path class="cc-area" d="{{ la.spark.area }}"/><path d="{{ la.spark.line }}"/>
+      <circle cx="{{ la.spark.last[0] }}" cy="{{ la.spark.last[1] }}" r="2.2"/>
+    </svg>
+    {% else %}<div class="cc-svg cc-flat" aria-hidden="true"></div>{% endif %}
+    <p class="cc-sub">{% if la.median is not none %}Median {{ "%.1f" | format(la.median / 1000) }} s over {{ la.n }} turn{{ "s" if la.n != 1 else "" }}{% else %}Measured on the voice screen{% endif %}</p>
+  </figure>
+  {# 4. money this week #}
+  {% set mo = k.money %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Money this week</figcaption>
+    <p class="cc-big">{% if mo.has_job %}{{ mo.week | usd }}<small> · {{ mo.hours | round(1) }} h</small>{% else %}—<small> no pay rate yet</small>{% endif %}</p>
+    <svg class="cc-svg cc-money" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Pay by week, last 8 weeks">
+      {% for b in mo.bars %}<rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="1.5" class="{{ 'is-now' if loop.last else '' }}"/>{% endfor %}
+    </svg>
+    <p class="cc-sub">8 weeks of pay</p>
+  </figure>
+  {# 5. Shorts views #}
+  {% set vw = k.views %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Shorts views</figcaption>
+    <p class="cc-big">{{ vw.week | compact }}<small> this week</small></p>
+    {% if vw.spark %}
+    <svg class="cc-svg cc-line cc-views" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Shorts views per day, last 14 days">
+      <path class="cc-area" d="{{ vw.spark.area }}"/><path d="{{ vw.spark.line }}"/>
+      <circle cx="{{ vw.spark.last[0] }}" cy="{{ vw.spark.last[1] }}" r="2.2"/>
+    </svg>
+    {% else %}<div class="cc-svg cc-flat" aria-hidden="true"></div>{% endif %}
+    <p class="cc-sub"><a href="/dashboard/studio">14 days · open the Studio</a></p>
+  </figure>
+</div>
+{% endif %}
+{% endmacro %}

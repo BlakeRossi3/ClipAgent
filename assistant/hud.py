@@ -1,4 +1,4 @@
-"""Sterling's HUD: what he can put on the Jarvis page, and how the page may restyle itself.
+"""Cecil's HUD: what he can put on the Jarvis page, and how the page may restyle itself.
 
 Adapted from adewaskar/jarvis (MIT License, Copyright (c) 2026 Aditya Dewaskar): ``bridge/panels.mjs``
 (the ``blade`` kinds: image, video, embed, markup), ``bridge/ui.mjs`` (the ``ui_*`` tools: the

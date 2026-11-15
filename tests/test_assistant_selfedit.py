@@ -72,15 +72,37 @@ def test_rollback_on_failing_tests(repo):
     assert _git(r, "rev-parse", "HEAD") == snap.head and selfedit.last_outcome()["status"] == "rolled_back"
 
 
-def test_dirty_tree_is_never_reset(repo):
+def test_dirty_tree_is_never_reset_tested_or_reported_twice(repo):
     r, state, _ = repo
+    ran = []
+    selfedit.set_runners(tests=lambda root, timeout: ran.append(1) or (False, "1 failed"),
+                         restart=lambda: True)
     (r / "app.py").write_text("VERSION = hand edit\n")
     snap = selfedit.begin()
-    assert not snap.clean and selfedit.current_branch() == "main"
-    state["pass"] = False
+    assert not snap.clean and selfedit.current_branch() == "main" and set(snap.dirty) == {"app.py"}
+    assert selfedit.finish(snap) is None                  # the hand edit alone is not this turn's change
     (r / "other.py").write_text("y = 2\n")
-    assert selfedit.finish(snap).status == "kept_dirty"
+    out = selfedit.finish(snap)
+    assert out.status == "kept_dirty" and out.files == ["other.py"] and "already had uncommitted" in out.summary
     assert (r / "app.py").read_text() == "VERSION = hand edit\n" and (r / "other.py").exists()
+    snap2 = selfedit.begin()
+    (r / "third.py").write_text("z = 3\n")
+    assert selfedit.finish(snap2) is None                 # same hand edits: said once, not after every turn
+    assert ran == []                                      # the suite never ran on top of his edits
+
+
+def test_only_files_this_turn_changed_count(repo):
+    r, _state, _ = repo
+    (r / "app.py").write_text("VERSION = hand edit\n")
+    snap = selfedit.begin()
+    assert selfedit.turn_changes(snap) == []
+    import os
+    import time as _t
+
+    _t.sleep(0.01)
+    (r / "app.py").write_text("VERSION = hand edit, then the turn\n")
+    os.utime(r / "app.py", ns=(_t.time_ns(), _t.time_ns() + 10_000_000))
+    assert selfedit.turn_changes(snap) == ["app.py"]
 
 
 def test_unhealthy_restart_rolls_back(repo, monkeypatch):

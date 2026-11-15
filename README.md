@@ -60,7 +60,7 @@ No command prompt needed.
    protected your PC"* the first time, because the file is not signed: click **More info** then
    **Run anyway**. A window shows progress while it installs Python, Git and FFmpeg (if missing)
    and ClipAgent itself. It takes 5-15 minutes the first time. Windows may ask once for permission.
-3. **Follow the browser.** When it is done your browser opens ClipAgent's setup page. Sterling
+3. **Follow the browser.** When it is done your browser opens ClipAgent's setup page. Cecil
    walks you through it in a few short forms: your name, the Anthropic key, your job and pay,
    your phone (optional), YouTube (optional), importing your memory vault, and a final checklist.
 

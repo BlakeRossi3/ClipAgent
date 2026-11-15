@@ -13,7 +13,7 @@
   (:data:`ERROR_CODES`, with links to Twilio's docs).
 
 :func:`apply_fix` performs only safe, reversible changes and only when the owner clicks
-"Fix it" on the dashboard or approves (``YES <id>``) a request Sterling made with ``twilio_fix``:
+"Fix it" on the dashboard or approves (``YES <id>``) a request Cecil made with ``twilio_fix``:
 ``set_sms_webhook`` (old value kept for ``revert_sms_webhook``), ``service_use_number_webhook``,
 ``normalise_numbers`` (rewrites the two phone settings in config.env to E.164).
 

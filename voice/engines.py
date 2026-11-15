@@ -4,7 +4,7 @@
 Layer      Default                                      Fallback
 =========  ===========================================  ==========================================
 Wake word  openWakeWord ``hey_jarvis`` (ONNX, CPU)       the name spotter: ``tiny.en`` Whisper on each
-                                                        short burst of speech, looking for "Sterling"
+                                                        short burst of speech, looking for "Cecil"
 Speech     webrtcvad (20 ms frames) + the energy gate   the energy gate alone
 Words      faster-whisper ``small.en`` (GPU when it     the same on the CPU (int8)
            works, as transcribe.py)

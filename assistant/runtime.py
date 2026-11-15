@@ -67,7 +67,7 @@ CANNED = {
     "rounds": "I could not finish that in one go, {h}. Ask me to continue and I will carry on.",
     "limit": "I've reached your Claude plan's limit for now, {h}. I'll be back {when}.",
     "turns": "I have used today's allowance of Claude conversations, {h}. I will pick this up tomorrow.",
-    "stopped": "I am switched off for now, {h}. Text START STERLING or use the dashboard to bring me back.",
+    "stopped": "I am switched off for now, {h}. Text START CECIL or use the dashboard to bring me back.",
     "signin": "I cannot reach Claude at the moment, {h}: the Claude sign-in needs renewing. Open Settings, "
               "The brain, and press Sign in again.",
 }
@@ -691,7 +691,7 @@ KV_STOPPED = "assistant:stopped"
 
 
 def is_stopped() -> bool:
-    """The owner's kill switch (SMS STOP STERLING / dashboard): no assistant model runs at all."""
+    """The owner's kill switch (SMS STOP CECIL / dashboard): no assistant model runs at all."""
     return db.kv_get(KV_STOPPED) is not None
 
 

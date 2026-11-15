@@ -1,4 +1,4 @@
-"""``settings_get`` / ``settings_set``: Sterling reads and changes his settings - every one except secrets.
+"""``settings_get`` / ``settings_set``: Cecil reads and changes his settings - every one except secrets.
 
 Blake says "switch to Lewis" and the very next sentence is in Lewis's voice: the tool writes
 ``config.env`` (comment-preserving, atomic: :mod:`config_store`), drops every settings cache, tells

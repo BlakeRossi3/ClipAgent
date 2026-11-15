@@ -1,6 +1,6 @@
-"""Sterling as the administrator of ClipAgent: read everything, change everything - except secrets.
+"""The assistant (Cecil) as the administrator of ClipAgent: read everything, change everything - except secrets.
 
-Blake's rule: Sterling can see and change every bit of the app (settings, pay, staff, memory, the
+Blake's rule: the assistant can see and change every bit of the app (settings, pay, staff, memory, the
 pipeline's rows, past conversations) and the ONLY thing he never sees is a secret value (API keys,
 auth tokens, passwords, OAuth token files, the dashboard token, the Claude Code login). He may see
 whether a secret is set.
@@ -51,7 +51,7 @@ REDACTED = "[redacted]"
 #: Config keys whose VALUES are secret (never shown, never set by a tool).
 SECRET_KEYS = frozenset({
     "ANTHROPIC_API_KEY", "TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID", "DASHBOARD_TOKEN", "ELEVENLABS_API_KEY",
-    "YOUTUBE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+    "YOUTUBE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BRAVE_SEARCH_API_KEY", "EXA_API_KEY",
 })
 #: Anything else whose name looks like a secret (config keys, DB columns, kv keys). Case-insensitive.
 SECRET_RE = re.compile(r"(api_?key|auth_?token|oauth|secret|password|passwd|private_?key|access_?token|"
@@ -63,6 +63,15 @@ SECRET_VALUE_RE = re.compile(
     r"(sk-ant-[A-Za-z0-9_\-]{8,}|sk_[A-Za-z0-9]{24,}|AIza[0-9A-Za-z_\-]{30,}|ya29\.[0-9A-Za-z_\-.]{10,}|"
     r"1//[0-9A-Za-z_\-]{20,}|AC[0-9a-f]{32}|SK[0-9a-f]{32}|(?i:bearer)\s+[A-Za-z0-9_\-.=]{16,})")
 MIN_SECRET_LEN = 8
+
+
+def _assistant_name() -> str:
+    try:
+        from assistant.settings import get_assistant_settings
+
+        return get_assistant_settings().name
+    except Exception:  # pragma: no cover - settings unreadable
+        return "Cecil"
 
 
 def is_secret_key(name: str) -> bool:
@@ -250,7 +259,7 @@ TABLE_INFO: dict[str, str] = {
     "kv": "Small persistent flags and state (pause switch, cursors, counters, undo records). Secret entries "
           "read as [redacted].",
     "schema_version": "Pipeline DB migrations applied.",
-    "as_messages": "Every message between Blake and Sterling on every channel (sms, whatsapp, dashboard chat, "
+    "as_messages": "Every message between Blake and Cecil on every channel (sms, whatsapp, dashboard chat, "
                    "voice, call, system): direction in/out, body, kind, agent, cost.",
     "as_checkins": "Scheduled check-in questions to Blake and his answers.",
     "as_jobs": "Blake's jobs: name, hourly rate, pay schedule, tax set-aside.",
@@ -881,7 +890,7 @@ def conversation_history(days: int | None = 7, *, query: str | None = None, chan
     if q:
         out["matches"] = [{"date": db.local_date_of(r["ts"]).isoformat(),
                            "time": db.parse_iso(r["ts"]).astimezone(db.local_tz()).strftime("%H:%M"),
-                           "channel": r["channel"], "who": "Blake" if r["direction"] == "in" else "Sterling",
+                           "channel": r["channel"], "who": "Blake" if r["direction"] == "in" else _assistant_name(),
                            "text": _excerpt(r["body"], 300), "message_id": r["id"]} for r in rows[:limit]]
     try:
         from assistant import history_import
@@ -1339,7 +1348,7 @@ def staff_add(name: str, *, description: str, prompt: str, role: str | None = No
     return {"ok": True, "added": s, "file": str(p), "change_id": cid, "note": _commit_note()}
 
 
-_UPDATABLE = ("description", "model", "tools", "skills", "prompt", "role", "display_name")
+_UPDATABLE = ("description", "model", "tools", "skills", "prompt", "role", "display_name", "character")
 
 
 def staff_update(name: str, fields: dict[str, Any], *, via: str = "assistant") -> dict[str, Any]:
@@ -1372,7 +1381,7 @@ def staff_update(name: str, fields: dict[str, Any], *, via: str = "assistant") -
 def staff_rename(old: str, new: str, *, via: str = "assistant") -> dict[str, Any]:
     o, n = slug(old), slug(new)
     if o == "main":
-        raise AdminError("main is Sterling himself; change ASSISTANT_NAME with config_set to rename him")
+        raise AdminError("main is the assistant himself; change ASSISTANT_NAME with config_set to rename him")
     from assistant import registry
 
     if not registry.NAME_RE.match(n or ""):
@@ -1391,8 +1400,13 @@ def staff_rename(old: str, new: str, *, via: str = "assistant") -> dict[str, Any
             new_meta["role"] = home.AGENT_ROLES.get(o) or o.replace("-", " ").capitalize()
         except Exception:
             new_meta["role"] = o.replace("-", " ").capitalize()
+    # The new name is also the name shown: an old display name (e.g. a character name) goes with the old id.
+    new_meta.pop("display_name", None)
     if slug(new) != new.strip():
         new_meta["display_name"] = " ".join(new.split())
+    # main.md lists the staff as "- id (Display): ..." (or "- id: ..."); keep that bracket in step.
+    shown = f" ({new_meta['display_name']})" if new_meta.get("display_name") else ""
+    roster_line = re.compile(rf"^(\s*- ){re.escape(n)}(?: \([^)\n]*\))?:", re.M)
     touched: list[str] = []
 
     def apply() -> None:
@@ -1400,7 +1414,7 @@ def staff_rename(old: str, new: str, *, via: str = "assistant") -> dict[str, Any
         p.unlink()
         for q in others:
             text = q.read_text(encoding="utf-8")
-            new_text = pat.sub(n, text)
+            new_text = roster_line.sub(lambda m: f"{m.group(1)}{n}{shown}:", pat.sub(n, text))
             if new_text != text:
                 q.write_text(new_text, encoding="utf-8")
                 touched.append(q.name)
@@ -1413,7 +1427,7 @@ def staff_rename(old: str, new: str, *, via: str = "assistant") -> dict[str, Any
 def staff_delete(name: str, *, via: str = "assistant") -> dict[str, Any]:
     s = slug(name)
     if s == "main":
-        raise AdminError("main is Sterling himself and cannot be deleted")
+        raise AdminError("main is the assistant himself and cannot be deleted")
     p, _meta, _body = _read_agent(s)
     arch = _archive_dir() / f"{db.local_today().isoformat()}-{s}.md"
     k = 2

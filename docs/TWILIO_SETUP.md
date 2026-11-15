@@ -87,7 +87,7 @@ first; an upgraded account has neither.
 
 ## 6. When something fails
 
-Settings → **Twilio check** (or `python -m assistant.twilio_doctor check`, or ask Sterling - tool
+Settings → **Twilio check** (or `python -m assistant.twilio_doctor check`, or ask Cecil - tool
 `twilio_diagnose`) reads your account, number, webhook, A2P status, recent message errors and the
 WhatsApp state, and explains each problem with the exact fix. Common codes:
 

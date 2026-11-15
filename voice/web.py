@@ -10,9 +10,11 @@ status, mute toggle, microphone list and "test my mic" level.
 * ``POST /voice/api/ask``        ``text`` -> a turn of the warm brain (``assistant/brain.py``). The answer
   streams over ``/stream``; with ``Accept: application/x-ndjson`` (the laptop voice process) this
   request itself streams the turn's sentences.
-  Utterances that arrive before the previous one has been answered aloud are stitched into one request
-  (``merged`` = the turn replaced); see ``brain.ask``.
-* ``POST /voice/api/interrupt``  barge-in: stop the answer in flight (only while he is being spoken to).
+  Strict single flight: speech that arrives while the previous turn from the same device is unfinished
+  cancels it and is asked together with it (``merged`` = the turn replaced); typed text may queue. The
+  same words from the laptop loop and the page within 3 s are one turn (``duplicate``: true, and the
+  second listener says nothing). See ``brain.ask``.
+* ``POST /voice/api/interrupt``  stop the answer in flight ("stop", Escape, a tap on the ring).
 * ``POST /voice/api/tts``        ``text`` -> audio from the server-side voice (Kokoro / ElevenLabs), for the
   page when it is not using the browser's own voice. The engine is rebuilt whenever the voice settings
   change (:func:`reload_tts`; it used to be cached for the life of the process).
@@ -23,7 +25,9 @@ status, mute toggle, microphone list and "test my mic" level.
   of his rendered Shorts (``renders_dir`` only).
 * ``GET  /voice/api/diagnostics`` what the ``D`` panel shows from the server side: brain connection, speech
   settings, his MCP servers (names only), recent timings. ``POST /voice/api/timing``: the page reports how long
-  it took from the end of his speech to the first spoken word (also published as a ``timing`` event).
+  it took from the end of his speech to the first spoken word; the row is joined with the brain's own stages
+  for that turn (queued, first token, first tool, each tool, first sentence, self-edit, total) and published
+  as a ``timing`` event.
 
 Auth: the dashboard's (cookie / token / loopback) plus CSRF on POSTs; the laptop voice process uses
 a local key from the shared database (``X-Voice-Key``, loopback only).
@@ -411,15 +415,21 @@ async def api_ask(request: Request) -> Response:
         if origin == "voice":
             return d._json({"ok": True, "turn": None, "spoken": reason, "status": "off"})
         return d._json({"ok": False, "error": "off", "msg": reason, "reason": reason}, status_code=503)
+    merge = form.get("typed") is None and origin != "text"     # spoken input: strict single flight
     if "application/x-ndjson" not in request.headers.get("accept", ""):
-        turn = await run_in_threadpool(brain.ask, text, origin=origin)
-        return d._json({"ok": True, "turn": turn.id, "heard": turn.heard, "merged": turn.merged_from, "name": a["name"]})
+        turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge))
+        return d._json({"ok": True, "turn": turn.id, "heard": turn.heard, "merged": turn.merged_from,
+                        "duplicate": turn.origin != origin, "name": a["name"]})
 
     import queue as _q
 
     lines: _q.SimpleQueue[str | None] = _q.SimpleQueue()
-    turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin,
+    turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge,
                                                      on_sentence=lambda s: lines.put(json.dumps({"sentence": s}))))
+    if turn.origin != origin:   # the other listener already asked this: it answers, this one stays quiet
+        dup = {"done": True, "reply": "", "spoken": "", "status": "duplicate", "cost_usd": 0.0, "task": False,
+               "first_sentence_ms": None, "turn": turn.id, "route": "brain"}
+        return StreamingResponse(iter([json.dumps(dup) + "\n"]), media_type="application/x-ndjson")
 
     def finish() -> None:
         res = turn.wait(brain.TURN_TIMEOUT_SEC + 30)
@@ -637,6 +647,15 @@ async def api_timing(request: Request) -> Response:
     import db
 
     row["ts"] = db.now_iso()
+    try:
+        from assistant import brain
+
+        if brain.running() and row["turn"]:
+            stages = brain.get_brain().timing_for(row["turn"])
+            if stages:
+                row["brain"] = stages
+    except Exception as exc:  # diagnostics only
+        log.debug("brain timing not joined: %s", exc)
     TIMINGS.append(row)
     events.publish("timing", timing=row)
     log.info("voice timing: %s", row)
@@ -651,6 +670,10 @@ def diagnostics() -> dict[str, Any]:
     v = get_voice_settings()
     out: dict[str, Any] = {"voice": v.public(), "stt": v.web_stt, "laptop": control.status(),
                            "listeners": events.BUS.listeners, "timings": list(TIMINGS)[-5:]}
+    try:
+        out["brain_timings"] = list(brain.get_brain().timings)[-5:] if brain.running() else []
+    except Exception:
+        out["brain_timings"] = []
     try:
         st = brain.get_brain().status() if brain.running() else {"running": False, "connected": False}
         out["brain"] = {k: st.get(k) for k in ("running", "connected", "busy", "mode", "model", "recovering",

@@ -471,7 +471,7 @@ Phase-1 conventions above apply (UTC ISO in DB, `db.utcnow()`, no import side ef
   and are capped by `ASSISTANT_DAILY_BUDGET_USD` / `ASSISTANT_MAX_TURN_USD`, not the pipeline cap.
 
 ### assistant/settings.py
-`AssistantSettings` (frozen; `.replace(**kw)`): `enabled=False, name="Sterling", owner_honorific="sir",
+`AssistantSettings` (frozen; `.replace(**kw)`): `enabled=False, name="Cecil", owner_honorific="sir",
 owner_name, model="claude-fable-5-2", subagent_model="claude-opus-5-5", effort="medium",
 subagent_effort="low", daily_budget_usd=3.0, max_turn_usd=0.5, max_sms_per_day=8, max_tool_rounds=8,
 max_tokens=2048, subagent_max_tokens=3072, web_search=False, vault_dir, fake (= FAKE_ASSISTANT,
@@ -551,13 +551,13 @@ steps: str | `fake_tool(name, **input)` | list of them | `ModelReply` | callable
 `ModelRequest`, `ModelReply`, `Usage`, `ToolUse`, `AssistantBudgetExceeded(reason turn|daily|paused)`, `estimate_cost(req)`,
 `check_budget(est, turn, settings)`, `remaining_today()`, `price_for(model)`, `cost_of(model, usage)`, `wrap_untrusted(source, text)`.
 
-### Full-power Sterling (claude_code backend)
+### Full-power Cecil (claude_code backend)
 Main agent = real Claude Code with built-in tools (`claude_code.build_full_argv`, `permission_settings`: dontAsk +
 allow/deny rules; secrets and destructive commands denied), our MCP tools, `--agents` from agents/*.md, skills mirrored to
 `<data>/claude-code/skills`, one resumed session per channel (`session_for`, daily rollover -> journal). Self-edits:
 `assistant/selfedit.py` (branch `sterling/self`, test -> commit + restart + /healthz, else reset; `undo()`; tests use
 `selfedit.set_app_dir/set_runners`, conftest points it at a non-repo dir). Kill switch `runtime.set_stopped`
-(SMS STOP/START STERLING, UNDO). Plan usage + deferred queue: `assistant/usage.py` (`as_deferred`, store v2;
+(SMS STOP/START CECIL - the old STOP/START STERLING still work - and UNDO). Plan usage + deferred queue: `assistant/usage.py` (`as_deferred`, store v2;
 tools `usage_status`, `schedule_prompt`; `usage.should_defer(kind, prompt)` for non-urgent jobs). `open_url` opens his
 browser. Chat images: `home.save_upload` -> paths passed to the turn (`runtime.run_turn(attachments=)`). Details: docs/ASSISTANT.md.
 

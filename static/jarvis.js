@@ -46,7 +46,7 @@
   var drawer = document.querySelector('[data-jv-drawer]'), scrim = document.querySelector('[data-jv-scrim]');
   var logEl = document.querySelector('[data-chat-log]');
   var csrf = root.getAttribute('data-csrf'), H = root.getAttribute('data-honorific') || 'sir';
-  var NAME = root.getAttribute('data-name') || 'Sterling';
+  var NAME = root.getAttribute('data-name') || 'Cecil';
   var canTalk = root.getAttribute('data-can-talk') === '1';
   var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   var serverStatus = statusEl.textContent;
@@ -227,7 +227,7 @@
         .then(function (ab) { return new Promise(function (res, rej) { c.decodeAudioData(ab, res, rej); }); })
         .catch(function () { return null; });
     }
-    function prime(item) { if (item && item.audio === undefined) item.audio = serverAudio(item.text); }
+    function prime(item) { if (item && item.audio === undefined) item.audio = item.native ? null : serverAudio(item.text); }
     function begun(item) {               // the first sound of an item: diagnostics, self-test, turn timing
       diag.ttsStarted++; diag.spoken = item.text; diag.spokenAt = Date.now();
       if (item.onstart) { var f = item.onstart; item.onstart = null; try { f(); } catch (e) { /* ignore */ } }
@@ -288,10 +288,10 @@
       })();
     }
     return {
-      say: function (text, turn, front, onstart) {
+      say: function (text, turn, front, onstart, native) {
         var t = shape(text);
         if (!t) return;
-        var item = { text: t, turn: turn, onstart: onstart || null };
+        var item = { text: t, turn: turn, onstart: onstart || null, native: !!native };
         if (front) queue.unshift(item); else queue.push(item);
         pump();
       },
@@ -347,6 +347,46 @@
     return WORKING();
   }
 
+  /* ack:begin -- instant acknowledgement (docs/VOICE_SPEED_RESEARCH.md item 4). Pure (no DOM): the tests run
+     this block in node. A task-like request gets a templated line the moment he stops (never the same line twice
+     in a row), and "Still working on it" once at 8 s with no answer. Plain chat gets nothing. */
+  var ACK = (function () {
+    var TASK = /\b(open|search|find|look(ing)? up|google|log|change|switch|set|turn (on|off|up|down)|play|pause|show|check|start|stop the|run|fix|update|add|remind|schedule|send|text|email|message|call|write|make|create|delete|remove|book|order|read|summari[sz]e|pull up|bring up|download|install|test|record|save|compare|research|translate|calculate|score|scores|weather|forecast|news|headlines?|prices?|stocks?|latest|who won)\b/;
+    var CHAT = /^(hi|hello|hey|hiya|yo|morning|evening|good (morning|afternoon|evening|night)|how are you|how's it going|how are things|what's up|thanks|thank you|cheers|ok|okay|cool|great|nice|perfect|yes|yeah|yep|no|nope|sure|fine|good|right|bye|goodbye|see you|never ?mind|i'm (good|fine|back|here|ok|okay)|are you there|you there)\b/;
+    var LINES = ['One moment, {h}.', 'On it, {h}.', 'Right away, {h}.', 'Very good, {h}.'];
+    var STILL = 'Still working on it, {h}.', STILL_MS = 8000;
+    function words(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function kind(text) {                  // 'task' | 'chat'
+      var w = words(text);
+      if (!w) return 'chat';
+      var n = w.split(' ').length;
+      if (TASK.test(w)) return 'task';
+      if (CHAT.test(w)) return n <= 8 ? 'chat' : 'task';
+      return n >= 7 ? 'task' : 'chat';     // anything that is not a short chat
+    }
+    function make(o) {                     // o: { say(text), later(fn, ms) -> id, cancel(id), h, random }
+      var last = -1, timer = null, active = false, rnd = o.random || Math.random;
+      function fill(t) { return t.replace('{h}', o.h || 'sir'); }
+      function line() { var i = last; while (i === last) i = Math.floor(rnd() * LINES.length) % LINES.length; last = i; return fill(LINES[i]); }
+      function stop() { active = false; if (timer !== null) { o.cancel(timer); timer = null; } }
+      return {
+        start: function (text) {           // he has finished speaking: called synchronously, before the request goes
+          if (active) return false;        // a further breath of the same request: one acknowledgement per request
+          if (kind(text) !== 'task') return false;
+          active = true; o.say(line());
+          timer = o.later(function () { timer = null; if (active) o.say(fill(STILL)); }, STILL_MS);
+          return true;
+        },
+        answered: stop,                    // the first real sentence, the turn's end, a stop or an error
+        busy: function () { return active; }
+      };
+    }
+    return { kind: kind, make: make, LINES: LINES, STILL: STILL, STILL_MS: STILL_MS };
+  })();
+  /* ack:end */
+  var acker = ACK.make({ h: H, later: function (f, ms) { return setTimeout(f, ms); }, cancel: function (id) { clearTimeout(id); },
+    say: function (t) { speaker.say(t, null, true, null, true); } });
+
   /* ---- what he says: segments -> words -> one utterance (src/lib/voice.ts makeAssembler) ---- */
   var CONTINUES = /\b(and|or|but|so|because|since|if|when|while|that|which|who|to|of|in|on|at|by|for|with|from|about|into|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|do|does|did|have|has|had|can|could|would|should|will|might|must|like|than|then|as|very|really|just|some|any)$/i;
   var OVERRIDE = /\b(stop|wait|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i;
@@ -386,6 +426,11 @@
     var wait = Math.min(holdFor(held), Math.max(0, 6000 - (Date.now() - firstAt)));
     if (!wait) fire(); else holdTimer = setTimeout(fire, wait);
   }
+  function newSpeech() {    // strict single flight: his new words stop the voice at once; the server joins the texts
+    speaker.cancel();
+    if (pending && pending !== 'asking') cancelled[pending] = 1;
+    acker.answered();
+  }
   function fire() {
     clearTimeout(holdTimer);
     var t = held.trim(); held = ''; firstAt = 0;
@@ -406,6 +451,7 @@
   }
   function ask(text) {
     youEl.textContent = text;
+    acker.start(text);                 // within milliseconds of the end of his speech, before the request goes
     pending = 'asking'; render();
     var askAt = Date.now(), t0 = { end: speechEndAt || askAt, how: heardBy || 'typed', sttMs: heardSttMs };
     speechEndAt = 0; heardBy = ''; heardSttMs = 0;
@@ -413,17 +459,20 @@
       if (j.ok && j.turn) {
         t0.askMs = Date.now() - askAt; timing[j.turn] = t0;
         if (j.merged) { cancelled[j.merged] = 1; youEl.textContent = j.heard || text; }   // stitched onto the last breath
-        myTurns[j.turn] = 1; pending = j.turn; addHistory('me', text, 'voice · this tab');
+        if (j.duplicate) { pending = null; acker.answered(); render(); return; }   // the laptop heard it first and answers
+        if (!cancelled[j.turn]) { myTurns[j.turn] = 1; pending = j.turn; }
+        addHistory('me', text, 'voice · this tab');
       }
       else {
-        pending = null;
+        pending = null; acker.answered();
         if (j.quiet) youEl.textContent = '';              // a filler or noise: keep listening, say nothing
         else if (j.error) fail(j.msg || j.reason || 'That did not go through.');
       }
       render();
-    }).catch(function () { pending = null; fail('The connection dropped. Try again.'); });
+    }).catch(function () { pending = null; acker.answered(); fail('The connection dropped. Try again.'); });
   }
   function interrupt() {
+    acker.answered();
     if (pending && pending !== 'asking') { cancelled[pending] = 1; pending = null; }
     speaker.cancel();
     post('/voice/api/interrupt', {}).catch(function () { /* nothing in flight */ });
@@ -481,11 +530,8 @@
         var heard = j.heard || '';
         diag.heard = heard; diag.heardAt = Date.now(); heardSttMs = j.stt_ms || 0;
         if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); return; }   // his own voice
-        // Only talking over his answer is a barge-in. While he has not answered yet (at most a filler), the server
-        // stitches this onto the last utterance: one request, not a cancelled one and a new one.
-        if (speaker.busy() && pending && pending !== 'asking' && !spokeIn[pending]) speaker.cancel();
-        else if (speaker.busy()) interrupt();
-        if (mode === 'ptt') { held = ''; ask(heard); } else assemble(heard, !!rec);
+        var busy = !!pending; newSpeech();
+        if (mode === 'ptt') { held = ''; ask(heard); } else if (busy) { assemble(heard, true); fire(); } else assemble(heard, !!rec);
       }).catch(function () { speaker.resume(); fail('The connection dropped. Try again.'); });
   }
   function command(cmd) {
@@ -525,10 +571,9 @@
     var cmd = localCommand(heard);
     if (cmd) { speaker.cancel(); interrupt(); command(cmd); return; }
     if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); render(); return; }   // his own voice
-    if (speaker.busy() && pending && pending !== 'asking' && !spokeIn[pending]) speaker.cancel();
-    else if (speaker.busy()) interrupt();
+    var busy = !!pending; newSpeech();       // a turn still unfinished: send now, the server merges it
     speechEndAt = endAt || Date.now(); heardBy = how; heardSttMs = 0;
-    if (mode === 'ptt') { held = ''; ask(heard); } else assemble(heard, false);
+    if (mode === 'ptt') { held = ''; ask(heard); } else if (busy) { assemble(heard, true); fire(); } else assemble(heard, false);
     render();
   }
   var bsr = (function () {
@@ -901,6 +946,7 @@
       turnText[e.turn] = ((turnText[e.turn] || '') + ' ' + e.text).trim();
       caption(turnText[e.turn], true);
       spokeIn[e.turn] = 1;
+      if (myTurns[e.turn]) acker.answered();
       if (shouldSpeak(e)) speaker.say(e.text, e.turn);
       working = ''; renderSteps(); render();
     },
@@ -910,7 +956,7 @@
       t.steps.forEach(function (x) { if (x.id === e.tool_id) s = x; });
       if (s) s.label = e.label || s.label; else t.steps.push({ id: e.tool_id, label: e.label, status: 'running', parent: e.parent });
       if (!e.parent) working = e.label;
-      if (myTurns[e.turn] && !spokeIn[e.turn] && !filled[e.turn] && !e.parent && !cancelled[e.turn]) {
+      if (myTurns[e.turn] && !spokeIn[e.turn] && !filled[e.turn] && !e.parent && !cancelled[e.turn] && !acker.busy()) {
         filled[e.turn] = 1; speaker.say(fillerFor(e.label || ''), e.turn, true);    // once per turn, then quiet
       }
       renderSteps(); render();
@@ -923,7 +969,7 @@
     done: function (e) {
       var t = act.turns[e.turn];
       if (t) { t.status = e.status === 'ok' ? 'ok' : e.status; t.steps.forEach(function (x) { if (x.status === 'running') x.status = 'ok'; }); }
-      if (pending === e.turn) pending = null;
+      if (pending === e.turn) { pending = null; acker.answered(); }
       if (e.text && !cancelled[e.turn] && (myTurns[e.turn] || turnKinds[e.turn] === 'announce')) {
         addHistory('them', e.text, turnKinds[e.turn] === 'announce' ? 'voice · task done' : 'voice · just now');
       }
@@ -947,7 +993,7 @@
       if (always) { if (sttEngine() === 'browser') bsr.start(); else bsr.stop(); }
     },
     ui: function (e) { if (e.ui) applyUi(e.ui); if (e.effect) fireEffect(e.effect); },
-    timing: function (e) { if (e.timing) diag.serverTiming = e.timing; },
+    timing: function (e) { if (e.timing) { diag.serverTiming = e.timing; if (e.timing.brain) diag.brainTiming = e.timing.brain; } },
     ignored: function () { if (!pending) youEl.textContent = ''; },
     brain: function (e) { brainState = e.state === 'reconnecting' ? 'reconnecting' : ''; render(); }
   };
@@ -1055,6 +1101,14 @@
     if (!navigator.permissions || !navigator.permissions.query) { diag.micPerm = stream ? 'granted' : 'unknown'; return; }
     navigator.permissions.query({ name: 'microphone' }).then(function (r) { diag.micPerm = r.state; }, function () { diag.micPerm = stream ? 'granted' : 'unknown'; });
   }
+  function brainStages(b) {          // the last turn's server-side breakdown (data only)
+    if (!b) return '—';
+    function m(v) { return v == null ? '—' : v + ' ms'; }
+    var tools = (b.tool_ms || []).map(function (t) { return t.name + ' ' + t.ms + ' ms'; }).join(', ');
+    return 'queued ' + m(b.queued_ms) + ' · first token ' + m(b.first_token_ms) + ' · first tool ' + m(b.first_tool_ms) +
+      (tools ? ' (' + tools + ')' : '') + ' · first sentence ' + m(b.first_sentence_ms) + ' · self-edit ' + m(b.selfedit_ms) +
+      ' · total ' + m(b.total_ms);
+  }
   function diagRows() {
     var lvl = stream && micAnalyser ? Math.min(1, rms(micAnalyser) * 7) : -1, srv = diagServer || {}, b = srv.brain || {};
     var link = !es ? 'not connected' : es.readyState === 1 ? 'live' : es.readyState === 0 ? 'connecting' : 'closed';
@@ -1066,6 +1120,7 @@
       ['Last heard', diag.heard ? '"' + diag.heard.slice(-80) + '" · ' + ago(diag.heardAt) : (diag.interim ? '… ' + diag.interim.slice(-60) : '—')],
       ['STT error', diag.sttError || 'none', !!diag.sttError && diag.sttError !== 'no-speech' && diag.sttError !== 'aborted'],
       ['Brain link', link + (b.connected ? ' · session connected' : b.running ? ' · session starting' : ' · session idle') + (b.model ? ' · ' + b.model : ''), link !== 'live'],
+      ['Brain stages', brainStages(diag.brainTiming || ((srv.brain_timings || []).slice(-1)[0])), !!(diag.brainTiming && diag.brainTiming.total_ms > 8000)],
       ['Last turn', lt ? 'speech end → first word ' + lt.ms + ' ms (' + lt.how + (lt.ask != null ? ', ask ' + lt.ask + ' ms' : '') + (lt.stt ? ', whisper ' + lt.stt + ' ms' : '') + ') · ' + ago(lt.at) : '—', lt && lt.ms > 4000],
       ['Voice', diag.tts || (voiceCfg.web_tts === 'browser' ? 'browser: ' + ((pickVoice() || {}).name || 'default voice') : voiceCfg.web_tts), diag.ttsFailures > 0],
       ['Last spoken', diag.spoken ? '"' + diag.spoken.slice(0, 70) + '" · ' + ago(diag.spokenAt) + (diag.ttsFailures ? ' · ' + diag.ttsFailures + ' failed' : '') : '—'],

@@ -1,4 +1,4 @@
-"""Background tasks: long work Sterling starts mid-conversation and reports back on, out loud, once.
+"""Background tasks: long work Cecil starts mid-conversation and reports back on, out loud, once.
 
 "That'll take a few minutes, sir. I'll tell you when it's done." The warm brain calls the
 ``start_task`` tool (or the heartbeat calls :func:`start`); the work runs in a parallel worker
