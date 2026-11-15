@@ -154,8 +154,18 @@ def ensure_branch() -> str:
     if br and br != "HEAD" and not _out("config", "--get", UPSTREAM_KEY):
         git("config", UPSTREAM_KEY, br)
     exists = git("rev-parse", "--verify", "--quiet", f"refs/heads/{target}").returncode == 0
-    # -B would move an existing branch; switch to it only when it already holds this HEAD's history.
-    r = git("checkout", target) if exists else git("checkout", "-b", target)
+    # An existing branch is safe to switch to only when it already holds this HEAD's history. A stale one
+    # (left behind by an update) would swap the OLD app back onto disk: park it on a backup branch and
+    # restart the self-edit branch from the version that is running.
+    if exists and git("merge-base", "--is-ancestor", "HEAD", target).returncode != 0:
+        backup = f"{target.rsplit('/', 1)[0]}/backup-{db.utcnow():%Y%m%d-%H%M%S}" if "/" in target \
+            else f"{target}-backup-{db.utcnow():%Y%m%d-%H%M%S}"
+        git("branch", "-f", backup, target)
+        db.log_event("assistant", f"stale {target} kept as {backup}; restarting it from the current version",
+                     level="warning")
+        r = git("checkout", "-B", target)
+    else:
+        r = git("checkout", target) if exists else git("checkout", "-b", target)
     if r.returncode != 0:
         raise RuntimeError(f"could not switch to {target}: {(r.stderr or r.stdout).strip()[:200]}")
     if not _out("config", "--get", "user.email"):  # merges by the launcher's update need an identity

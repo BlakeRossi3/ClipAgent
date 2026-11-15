@@ -60,6 +60,18 @@ def test_commit_on_pass_then_undo(repo):
     assert not selfedit.undo()["ok"]                              # nothing of Sterling's left to undo
 
 
+def test_stale_self_branch_never_brings_the_old_app_back(repo):
+    r, _state, _restarts = repo
+    _git(r, "branch", "sterling/self")                           # the assistant's branch, at the old version
+    (r / "app.py").write_text("VERSION = 9\n")                   # an update moved the published branch on
+    _git(r, "commit", "-qam", "update")
+    head = _git(r, "rev-parse", "HEAD")
+    snap = selfedit.begin()
+    assert snap.ok and selfedit.current_branch() == "sterling/self"
+    assert _git(r, "rev-parse", "HEAD") == head and (r / "app.py").read_text() == "VERSION = 9\n"
+    assert "sterling/backup-" in _git(r, "branch", "--list", "sterling/backup-*")   # old commits kept
+
+
 def test_rollback_on_failing_tests(repo):
     r, state, _ = repo
     snap = selfedit.begin()
