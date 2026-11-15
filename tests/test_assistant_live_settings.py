@@ -76,3 +76,12 @@ def test_other_settings(cfg):
             live_settings.apply(*bad)
     cur = live_settings.current()
     assert cur["quiet_hours"] == "23:00-07:30" and "Lewis" in cur["voices_available"]["kokoro"]
+
+
+def test_settings_set_says_what_it_was_so_switching_back_is_one_call(cfg):
+    first = live_settings.apply("voice", "Lewis")
+    assert first["now"] == "Kokoro Lewis" and first["was"] not in ("Lewis", None)
+    assert live_settings.apply("voice", first["was"])["was"] == "Lewis"       # "was" is a value it takes back
+    assert live_settings.apply("voice", "browser")["now"] == "the browser's best British male voice"
+    assert live_settings.apply("voice", "Lewis")["was"] == "browser"
+    assert live_settings.apply("quiet_hours", "23:00-07:00")["was"] == "22:00-08:00"

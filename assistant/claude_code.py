@@ -708,6 +708,24 @@ def native_agents() -> dict[str, Any]:
     return out
 
 
+def native_skill_names(specs: Mapping[str, Any] | None = None) -> list[str]:
+    """Our own skills as Claude Code sees them (skills/*, minus persona and restricted third-party ones).
+    The lean voice session lists only these (``ClaudeAgentOptions.skills``): Claude Code's bundled skills
+    and any synced from his claude.ai account stay out of every spoken turn's prompt."""
+    from assistant import registry
+
+    try:
+        from assistant import skill_catalog
+
+        restricted = set(skill_catalog.restricted_names())
+    except Exception as exc:  # pragma: no cover
+        log.warning("restricted-skill list unavailable: %s", exc)
+        restricted = set()
+    specs = registry.load_skills(strict=False) if specs is None else specs
+    # persona is already the system prompt; restricted skills go only through skill_read (which marks the turn)
+    return [n for n in sorted(specs) if n != "persona" and n not in restricted]
+
+
 def sync_native_skills() -> list[str]:
     """Mirror skills/*/ into Claude Code's user skills folder (``<CLAUDE_CONFIG_DIR>/skills``).
     skills/ stays the source of truth; stale mirrors are removed. Returns the names synced."""
@@ -716,18 +734,9 @@ def sync_native_skills() -> list[str]:
     dst_root = home_dir() / "skills"
     dst_root.mkdir(parents=True, exist_ok=True)
     names = []
-    try:
-        from assistant import skill_catalog
-
-        restricted = set(skill_catalog.restricted_names())
-    except Exception as exc:  # pragma: no cover
-        log.warning("restricted-skill list unavailable: %s", exc)
-        restricted = set()
-    for name, spec in sorted(registry.load_skills(strict=False).items()):
-        if name == "persona":  # already the system prompt
-            continue
-        if name in restricted:  # restricted third-party skills: only through skill_read (which marks the turn)
-            continue
+    specs = registry.load_skills(strict=False)
+    for name in native_skill_names(specs):
+        spec = specs[name]
         src_dir = Path(spec.path).parent
         dst = dst_root / name
         dst.mkdir(exist_ok=True)

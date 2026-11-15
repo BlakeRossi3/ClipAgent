@@ -738,3 +738,13 @@ def test_voice_stt_setting(monkeypatch, tmp_path):
     errors, changes = vs.parse_form({"voice_stt": "server"})
     assert not errors and changes == {"VOICE_STT": "server"}
     assert vs.parse_form({"voice_stt": "lasers"})[0]
+
+
+def test_sentence_stream_says_a_finished_sentence_without_waiting_for_more_text():
+    st = speech.SentenceStream()
+    assert st.feed("Good morning, sir.") == ["Good morning, sir."]      # no wait for the next delta
+    assert st.feed(" It is") == [] and st.feed(" late.") == ["It is late."] and st.flush() == []
+    st = speech.SentenceStream()
+    assert st.feed("It costs 3.") == [] and st.feed("5 dollars, Mr.") == [] and st.feed(" Stark.") == \
+        ["It costs 3.5 dollars, Mr. Stark."]
+    assert st.feed("Plan B.") == [] and st.flush() == ["Plan B."]          # a lone letter may be an initial

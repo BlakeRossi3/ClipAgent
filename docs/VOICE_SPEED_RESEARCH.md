@@ -181,3 +181,119 @@ prompt (`<fast_replies>`). The lane is off without an API key. Timing fields: `r
 **Expected latency now** (est., not measured on his laptop): chit-chat on the fast lane is about 1-1.5 s from the end
 of speech to the first word. Plain chat on the brain is about 2.5-4.5 s, down from 3-6 s: a smaller prompt, and on
 the server path an end of turn 0.3-0.9 s earlier. Tool turns gain the same 1-2 s.
+
+## 6. Live measurements, sandbox (2026-11-15)
+
+**Where this was measured.** A Linux cloud box running the real Claude Code CLI (2.1.325, Agent SDK 0.2.181) on the
+plan login, **not** Blake's Windows laptop. There was no browser, no mic, no browser STT/TTS and no Kokoro. There was
+**no fast lane**, because no API key was set (`VOICE_FAST_LANE` off), and no fast search key. Setup: the real
+`uvicorn server:app` with a `seed_demo.py` data dir, `DRY_RUN=true`, `ASSISTANT_BACKEND=claude_code`, sonnet at low
+effort (checked: the request carries `output_config.effort=low`, adaptive thinking), lean voice session, self-edit
+off. Each typed utterance was POSTed to `/voice/api/ask` the way the page does, and the answer was read from
+`/voice/api/stream`. Times are the brain's own `timing` fields, in ms from the moment the utterance arrived. The
+client-side SSE time was 20-60 ms later, because the stream polls every 50 ms. One run per row, so n is small: read
+the numbers as indications, not statistics.
+
+**Cold start:** the server is up in about 0.5 s. The brain connects (CLI spawn plus MCP) **1.2-1.5 s** after that,
+at app start, before the page opens (`server.py` already pre-warms). The first turn after connecting took 1.2-1.6 s
+to the first sentence.
+
+| Category (n) | Before: first sentence med / p90 | Before: total med | After: first sentence med / p90 | After: total med |
+|---|---|---|---|---|
+| Plain chat (3) | 1337 / 1583 | 1648 | **985 / 1149** | 1334 |
+| Status: "what's going on today", "how much did I make" (2) | 3270 / 3332 | 3298 | **1169 / 1176** | 1348 |
+| Quick action: voice to Lewis, voice back, open url (3) | 2099 / 4352 | 2120 | **1897 / 3733** | 1928 |
+| Memory question (1) | 2219 | 2248 | 2087 | 2132 |
+| Web: "latest NASA news" (1) | 11368 | 11404 | 8974 and 11102 (two runs) | — |
+| Rapid dictation, answer after the 2nd utterance (1) | 3227 | 3255 | 2268 | 2298 |
+| Interrupt mid-answer (1) | done 49 ms after the interrupt, 0 stale sentences | | done 45-50 ms after the interrupt, 0 stale sentences | |
+| Context on the first turn (tokens) | 42.4k | | **36.2k** | |
+
+Rapid dictation ("On Monday I worked nine hours." and then, 1.5 s later, "Tuesday eight."): in every run the first
+turn was cancelled with nothing spoken, one merged answer came back, and nothing froze. The turn after an interrupt
+answered normally in about 1 s.
+
+**Where the time goes in a turn with a tool** (from `first_tool_ms`, `tool_ms` and `first_token_ms`):
+- The first model call takes about 0.75-0.9 s until it starts the tool call.
+- Streaming the tool's input takes about 0.3 s. That cost is inside the `tool_ms` figure: our tools themselves run in
+  20-60 ms (measured directly: `studio_snapshot` 9-14 ms, `work_lines` 20-40 ms, an MCP round trip of about 50 ms).
+- The second model call then takes about 1-1.3 s.
+- In this environment the CLI delivers the text of a reply after a tool **in one burst**, so the first sentence
+  arrives with the whole answer. This was confirmed with plain `claude -p --include-partial-messages`, and plain chat
+  without a tool still streams.
+
+Each tool round therefore costs about 1.3-2 s, and the model's own calls dominate. Plain chat is one model call:
+time to first token is 0.7-0.8 s on a warm cache, and the stream comes in bursts of about 350 ms.
+
+**Fixes and their measured effect**
+1. **Status and money questions needed a tool round.** The model called `studio_status` / `ledger_summary` first:
+   3.2-3.4 s. Now `brain.context_parts` adds a short "At a glance" block (Shorts today, failed sources, approvals,
+   this week's hours and pay) **only** when the utterance looks like a status or money question
+   (`status.wants_glance`, about 40 ms). The answer needs no tool: **3270 → 1169 ms** to the first sentence.
+   Source: this is the "context, not a tool call" pattern from section 1 (Stream's speculative tool calling,
+   Full-Duplex-Bench: tool rounds dominate voice latency). The block sits in the per-turn user message, so it does
+   not touch the cached prefix ("tools → system → messages; changes at each level invalidate that level and all
+   subsequent levels", [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
+2. **A keyless `fast_search` wasted a model round.** Without a key it only returns a dated query, then WebSearch runs:
+   one extra round of about 1.5-2 s. Without a key the tool is no longer offered, and the prompt says "one WebSearch
+   call with the month and year". Web: **11.4 → 9.0 s**, the same answer. The second run was 11.1 s because
+   WebSearch itself took 8.5 s instead of 6. Source: every tool round is another model call; see the Anthropic
+   [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming) and tool-use flow. Section 1
+   (Stream, DevX) says the same: do fewer rounds and keep slow searches off the voice path.
+3. **About 4k tokens of skills on every turn.** Claude Code's bundled skills and the claude.ai-synced skills were in
+   the listing. The lean voice session now passes `skills=claude_code.native_skill_names()` (our own skills only;
+   background tasks keep all). `/context` Skills went from 6389 to 1162 tokens, and the first-turn context from
+   42.4k to 36.2k. Plain-chat first sentence: **1337 → 985 ms** median (noisy). Source: the Agent SDK skills docs
+   say "the model doesn't see unlisted skills" when a `skills` list is passed
+   ([Extend agents with skills](https://code.claude.com/docs/en/agent-sdk/skills)). Each listed skill costs context
+   on every turn: about 75-150 tokens each, by community estimates ([skill listing budget](https://pilot-shell.com/blog/skill-listing-budget)).
+4. **"Switch your voice back" took 3 lookups (4.9 s).** `settings_set` did not say what the old value was. It now
+   returns `was` (a value it accepts back), and the tool description says to use it. In between: 4.9 → 3.4 s. After
+   that, the first call tried the human description, which was not a settable value. That was fixed: `was` is now
+   e.g. "browser" or "Lewis". The final re-measure of this one fix was cut off by the plan's 5-hour limit. Its first
+   call ran with `was: "browser"`, but its timing is unmeasured.
+5. **The last sentence waited for the message to close.** `SentenceStream` only ended a sentence when more text
+   followed, about 50 ms later for the final sentence. It now ends a sentence at once when the buffer ends on a word
+   plus `.`, `?` or `!`, still guarding abbreviations, decimals and initials. That saves about 50 ms on one-sentence
+   replies.
+
+**What remains, and is not ours to fix here**
+- **WebSearch** is a server-side search of 6-8.5 s per call. A `BRAVE_SEARCH_API_KEY` or `EXA_API_KEY` turns
+  `fast_search` on, at about 0.4-0.7 s, which should bring news and score questions to about 3 s.
+- **A model round** costs about 0.8-1.3 s per call on the plan. Tool turns stay at about 2 s at best, and the page's
+  instant acknowledgement covers that gap.
+- **An API key** would turn the fast lane on, so chit-chat goes to Haiku at an estimated 0.5-0.8 s to the first
+  word (not measured here).
+- **The post-tool burst** (the whole answer arrives at once) may be specific to this environment. Check it on the
+  laptop in the D panel: `first_token_ms` close to `total_ms` on tool turns.
+- **On Windows** expect a slower cold connect (5-15 s; section 2) and the browser/Kokoro TTS start on top of these
+  figures.
+
+**Other findings from the web research**
+- **Keeping the session warm is the right model.** The SDK has no pool or warm-up call in Python. The documented
+  pattern is one long-lived `ClaudeSDKClient`, as the brain uses
+  ([hosting docs](https://code.claude.com/docs/ja/agent-sdk/hosting.md)). Windows reports CLI start-up of about
+  11 s, and up to 80 s
+  ([issue 16005](https://claudeissues.com/issue/16005-claude-agent-sdk-80-second-startup-time-on-windows)). Here
+  the connect took 1.2-1.5 s, so the app-start pre-warm matters more on his laptop than here.
+- **Prompt cache: 5-minute TTL, refreshed on every hit**
+  ([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)). After more than 5 minutes
+  of silence, the first turn pays a full prompt read. That is another reason to keep the fixed prompt small (fix 3).
+  A keep-warm ping remains out, for the reasons in section 5.
+- **Built-in tool definitions are sent whether or not they are allowed.** The `tools` list (lean session, section
+  5) is the way to drop them; `allowed_tools` is not (claudeissues issue 21773, seen in search results only; the
+  site is blocked here).
+- **The post-tool text burst** (not fixed). No matching Claude Code issue was found. The nearest report says
+  interactive text "only appears all at once when a response completes" while `-p --include-partial-messages`
+  streams ([issue 80364](https://claudeissues.com/issue/80364-bug-interactive-text-streaming-never-paints-incrementally-on-windows-reproduces)).
+  Measure it on the laptop before acting on it.
+- **Fast front model.** Other Claude voice assistants put Haiku in front for quick replies and keep a bigger model
+  for deep work ([ethanplusai/jarvis](https://github.com/ethanplusai/jarvis)), which is the fast lane of section 5.
+  It needs the API key.
+- **Browser TTS on Windows.** Chrome and Edge load voices asynchronously, so `getVoices()` is empty until
+  `voiceschanged` fires ([Readium notes](https://readium.org/speech/docs/WebSpeech.html),
+  [monotonous.org](https://blog.monotonous.org/2021/speechsynthesis-getvoices/)). Some Windows 11 Chrome Google
+  voices stop after the first sentence ([TTSReader](https://ttsreader.com/blog/new-bug-in-google-chrome-voices/)),
+  so prefer Edge's "Online (Natural)" voices. No source confirms that a silent warm-up utterance helps, so the page's
+  self-test (a real spoken line) stays the check.
+

@@ -678,3 +678,26 @@ def test_smart_turn_timing_from_the_listener_joins_the_brain_timing(env):
     row = brain.get_brain().timing_for(turn.id)
     assert row["smart_turn_p"] == 0.93 and row["smart_turn_ms"] == 21 and "x" not in row
     assert row["route"] == "brain" and row["context_tokens"] > 0
+
+
+# -- live measurements (docs/VOICE_SPEED_RESEARCH.md section 6) ------------------------------------------
+
+def test_lean_voice_session_lists_only_our_own_skills(env):
+    names = claude_code.native_skill_names()
+    assert names and "persona" not in names and names == sorted(names)
+    b = brain.Brain()
+    assert b.options(mode="plan", resume=None).skills == names
+    assert b.options(mode="plan", resume=None, worker=True).skills is None     # background tasks keep every skill
+    s = asettings.get_assistant_settings()
+    asettings.set_assistant_settings(s.replace(voice_lean=False))
+    assert brain.Brain().options(mode="plan", resume=None).skills is None
+
+
+def test_status_and_money_questions_get_the_glance_lines_others_do_not(env, clock):
+    job = store.upsert_job("Spoke & Chain", hourly_rate=20.0)
+    store.log_hours(job, 9)
+    ctx = brain.context_parts("what's going on today?", fresh=False)[0]
+    assert "At a glance" in ctx and "uploaded today" in ctx and "This week" in ctx and "9 h worked" in ctx
+    assert "At a glance" in brain.context_parts("how much did I make this week?", fresh=False)[0]
+    assert "At a glance" not in brain.context_parts("hello", fresh=False)[0]
+    assert "At a glance" not in brain.context_parts("tell me a joke", fresh=False)[0]

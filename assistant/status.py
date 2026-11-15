@@ -13,6 +13,7 @@ Every part is optional: a failing source is skipped, never fatal.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 from typing import Callable
 
@@ -120,6 +121,44 @@ def status_snapshot() -> str:
 
     lines += _parts([_tasks, _approvals, checkins, money, shorts, plan, heartbeat, events])
     return "\n".join(lines)
+
+
+#: A spoken quick-status or money question ("what's going on today?", "how much did I make this week?").
+#: Only these get :func:`glance_lines` in their context, so the answer needs no tool round.
+GLANCE_RE = re.compile(
+    r"\b(going on|what'?s up|what'?s new|status|update|today|this week|last week|make|made|earn\w*|money|"
+    r"pay|paid|income|hours|worked|uploads?|shorts|views|channel|approvals?|pending|how are things|anything new)\b",
+    re.I)
+
+
+def wants_glance(heard: str) -> bool:
+    return bool(GLANCE_RE.search(heard or ""))
+
+
+def glance_lines() -> list[str]:
+    """The few facts a quick status or money question needs, so the model answers from the context
+    instead of calling studio_status / ledger_summary first. Measured (docs/VOICE_SPEED_RESEARCH.md
+    section 6): that one tool round cost about 2 s of a 3.2-3.4 s answer."""
+    def shorts() -> list[str]:
+        snap = tools.studio_snapshot(7)
+        line = (f"Shorts: {snap['uploads_today']} of {snap['upload_cap']} uploaded today, "
+                f"{snap['period_views']} views in 7 days")
+        failed = int((snap.get("sources_by_status") or {}).get("failed") or 0)
+        if failed:
+            line += f", {failed} source(s) failed"
+        if snap.get("pipeline_paused"):
+            line += ", pipeline spending paused"
+        out = [line]
+        out += [f"Approval #{d['id']} waiting ({d['kind']}): {str(d['summary'])[:100]}"
+                for d in snap["pending_approvals"][:2]]
+        return out
+
+    def money() -> list[str]:
+        return work_lines()[:1]
+
+    lines = _parts([shorts, money])
+    return ["At a glance (use only for what he asked; details: studio_status, ledger_summary):", *lines] \
+        if lines else []
 
 
 def work_lines() -> list[str]:

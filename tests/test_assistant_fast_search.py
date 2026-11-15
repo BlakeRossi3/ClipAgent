@@ -91,8 +91,14 @@ def test_without_keys_sports_and_news_get_today_and_latest(monkeypatch, clock):
     assert fast_search.dated_query("latest news 2026") == "latest news 2026"
 
 
-def test_the_voice_brain_offers_it_and_the_prompt_says_when():
+def test_the_voice_brain_offers_it_with_a_key_and_goes_straight_to_websearch_without(monkeypatch):
     from assistant import brain
 
+    # no key: fast_search would only hand back a query (a whole wasted model round), so it is not offered
+    assert "fast_search" not in brain.Brain().tool_table()
+    prompt = brain.system_prompt(lean=True)
+    assert "one WebSearch call" in prompt and "fast_search" not in prompt
+    _keys(monkeypatch, BRAVE_SEARCH_API_KEY=FAKE_KEY)
     assert "fast_search" in brain.Brain().tool_table()
-    assert "fast_search first" in brain.VOICE_PROMPT and "WebSearch only for deeper research" in brain.VOICE_PROMPT
+    prompt = brain.system_prompt(lean=True)
+    assert "fast_search first" in prompt and "WebSearch only for deeper research" in prompt

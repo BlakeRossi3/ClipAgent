@@ -65,9 +65,23 @@ def remember_browser_voices(names: list[str]) -> list[str]:
 
 def current() -> dict[str, Any]:
     """settings_get: the allowlisted settings, the voices he can pick, and what each one means."""
+    from voice.settings import KOKORO_VOICES, get_voice_settings, kokoro_name
+
+    v = get_voice_settings()
+    return {
+        **_values(),
+        "voices_available": {"kokoro": [kokoro_name(k) for k in KOKORO_VOICES],
+                             "browser": browser_voices()[:30],
+                             "elevenlabs": "available" if v.elevenlabs_api_key else "needs an ElevenLabs key in Settings"},
+        "settable": list(SETTINGS) + ["any other non-secret config key (config_get lists them)"],
+    }
+
+
+def _values() -> dict[str, Any]:
+    """The allowlisted settings' current values (settings_get, and "was" in a settings_set result)."""
     import config
     from assistant.settings import get_assistant_settings
-    from voice.settings import KOKORO_VOICES, get_voice_settings, kokoro_name
+    from voice.settings import get_voice_settings
 
     v, a, c = get_voice_settings(), get_assistant_settings(), config.get_settings()
     return {
@@ -79,11 +93,23 @@ def current() -> dict[str, Any]:
         "quiet_hours": f"{c.quiet_hours_start}-{c.quiet_hours_end}",
         "assistant_daily_budget_usd": a.daily_budget_usd,
         "assistant_max_turn_usd": a.max_turn_usd,
-        "voices_available": {"kokoro": [kokoro_name(k) for k in KOKORO_VOICES],
-                             "browser": browser_voices()[:30],
-                             "elevenlabs": "available" if v.elevenlabs_api_key else "needs an ElevenLabs key in Settings"},
-        "settable": list(SETTINGS) + ["any other non-secret config key (config_get lists them)"],
     }
+
+
+def _undo_value(setting: str) -> Any:
+    """The current value of ``setting`` in a form settings_set accepts back (``was`` in its result)."""
+    from voice.settings import get_voice_settings, kokoro_name
+
+    v = get_voice_settings()
+    if setting == "voice":
+        if v.web_tts == "kokoro":
+            return kokoro_name(v.tts_voice)
+        if v.web_tts == "elevenlabs":
+            return "elevenlabs"
+        return v.web_voice or "browser"
+    if setting == "voice_engine":
+        return v.web_tts
+    return _values().get(setting)
 
 
 def _describe_voice(v: Any) -> str:
@@ -227,6 +253,10 @@ def apply(setting: str, value: Any, *, via: str = "assistant") -> dict[str, Any]
             raise SettingRefused(str(exc)) from None
     setting = name.lower()
     changes, said = changes_for(setting, value)
+    try:  # what it was, so "switch back" is one call (measured: without it the model hunted with 3 tools, ~3 s)
+        was = _undo_value(setting)
+    except Exception:
+        was = None
     if any(admin.is_secret_key(k) and k != "ELEVENLABS_VOICE_ID" for k in changes):  # belt and braces
         raise SettingRefused("Refused: that would change a secret.")
     config_store.update(changes)
@@ -241,12 +271,15 @@ def apply(setting: str, value: Any, *, via: str = "assistant") -> dict[str, Any]
     except Exception:  # the voice package is optional
         pass
     db.log_event("assistant", f"setting changed: {setting}", data={"via": via, "keys": sorted(changes),
-                                                                   "value": said[:80]})
+                                                                   "value": said[:80], "was": str(was)[:80]})
     if setting in ("voice", "voice_engine", "voice_speed"):
         from voice.settings import get_voice_settings
 
         events.publish("settings", voice=get_voice_settings().public())
-    return {"ok": True, "setting": setting, "now": said, "changed": sorted(changes)}
+    out = {"ok": True, "setting": setting, "now": said, "changed": sorted(changes)}
+    if was is not None:
+        out["was"] = was
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +309,8 @@ def register_tools(register: Any) -> None:
     register(Tool("settings_set", "Change one of your settings at once, live, e.g. {setting: 'voice', value: "
                                   "'Lewis'}. Friendly names: " + ", ".join(SETTINGS) + "; any other non-secret "
                                   "config key works too (e.g. DRY_RUN). Secrets are never changed. Do it "
-                                  "immediately when he asks, then confirm in a few words.",
+                                  "immediately when he asks, then confirm in a few words. The result's 'was' is "
+                                  "the previous value: to switch back, set that at once (no lookup needed).",
                   _obj({"setting": {"type": "string"},
                         "value": {"type": "string", "description": "The new value, e.g. 'Lewis', '22:00-07:00', '4'."}},
                        required=["setting", "value"]),
