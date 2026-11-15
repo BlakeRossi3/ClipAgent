@@ -398,14 +398,30 @@ Claude history / Twilio check (`assistant/toolkit_web.py`, `templates/toolkit.ht
 * **Skill vetting** (`assistant/skill_vetting.py`, tools `skill_vet`, `skill_install`, `skill_third_party`):
   fetch into quarantine pinned to a commit (never executed), static checks, GitHub reputation, then the
   model's SAFE/CAUTION/UNSAFE verdict. Decision table: trusted repo (anthropics/skills, the official
-  plugin marketplace, `SKILLS_TRUSTED_REPOS`) + SAFE + no red flag -> installed via the self-edit flow
-  (tests, commit, UNDO); CAUTION or unknown source -> owner approval (`YES <id>`); UNSAFE -> never.
-  Installed skills are recorded in `skills/third_party.json` (source, commit, verdict, file hashes)
-  and are reference text only. **Limits, plainly:** static scanners are easy to evade (published
+  plugin marketplace, `SKILLS_TRUSTED_REPOS`) -> a review card on Settings -> Skills (one tap when SAFE with
+  no red flag, a tick when CAUTION; nothing installs without him); unknown source -> owner approval
+  (`YES <id>`); UNSAFE -> never. Installed skills are recorded in `skills/third_party.json` (source, commit,
+  verdict, installed file hashes). **Limits, plainly:** static scanners are easy to evade (published
   research shows one-line bypasses) and a model's reading can miss things; the verdict is advisory,
-  the allowlist and the owner's YES are the gate. Under the full-power Claude Code backend the agent
-  has a shell, so a skill it follows can do whatever the agent can - another reason unknown sources
-  always need approval.
+  the allowlist and the owner's approval are the gate.
+* **Trusted skill installer** (`assistant/skill_catalog.py`, page `/dashboard/skills` under Settings, tools
+  `skills_catalog_search`, `skill_request_install`, `skills_installed`): catalog of every `SKILL.md` folder in
+  the trusted repos (GitHub API tree + raw files at the HEAD commit, kv cache 24 h, the marketplace file's
+  collection names). Each entry is pinned to the commit; "update available" compares the skill folder's tree
+  sha, and updates go through the same review. Review = `skill_vetting.vet` at the pinned commit +
+  requirements detection (requirements*.txt, the SKILL.md Dependencies section, `pip install` lines, script
+  imports mapped to PyPI names) pinned to exact PyPI versions with a Windows-wheel check + Cecil's summary.
+  Only Blake approves, on the page (auth + CSRF): Cecil's tool opens and summarises reviews but no tool or
+  approval handler installs one, reviews are not phase-1 decisions, and `approvals` refuses every skill
+  install as a standing rule. Approve = quarantine hashes re-checked, `pip install name==version` into the
+  venv, copy + manifest (repo, path, tree sha, file hashes, packages) through the self-edit commit.
+  **Restricted until promoted** (promotion = kv, bound to the file hashes; any change restricts again): not
+  mirrored into Claude Code's native skills; `skill_read` marks the turn (and the MCP process) restricted and
+  `tools.dispatch` then refuses `tools.RESTRICTED_SKILL_BLOCKED` (message_owner, request_approval, open_url,
+  web search, maps/media, config/settings, app_update/delete, more installs); Claude Code deny rules forbid
+  editing its folder and `third_party.json` (secrets were already denied). Honest limit: deny rules bind
+  Claude Code's own tools, not a script run through Bash, which runs as his user; and under full power Cecil
+  could Read the files directly without the marker. Uninstall archives to `skills/.archive/<date>-<name>/`.
 * **Desktop modes** (`assistant/desktop_modes.py`, skill `desktop-modes`): modes in the vault note
   `Agent/Desktop Modes.md` (YAML block), fixed step vocabulary only (launch, close, open_folder,
   open_url, power_plan, volume, mute, notifications, wait), argv lists, values passed to PowerShell

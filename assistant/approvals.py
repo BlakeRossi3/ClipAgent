@@ -3,7 +3,7 @@
 When he approves a request he can say "always allow this kind": ``YES ALWAYS <id>`` (or ``ALWAYS <id>``) by
 text, the dashboard's *Always allow* button, keypad 3 or saying "always" on the approval call. That stores a
 rule keyed by an action type plus a normalised target (the fingerprint), e.g. ``("twilio_fix",
-"set_sms_webhook")``, ``("skill_install", "anthropics/skills")`` or, for the generic ``request_approval``
+"set_sms_webhook")`` or, for the generic ``request_approval``
 tool, the ``action_type`` / ``target`` the agent supplied (``("desktop_mode", "gaming")``).
 
 :func:`auto_approve` is called by ``notify.request_approval`` right after the decision row is written: a
@@ -12,7 +12,7 @@ one line instead of phoning him.
 
 Some things can NEVER become standing, whatever he answers: spending or budget increases, posting publicly
 (a YouTube upload going public, social posts), messaging anyone but him, deleting his files, installing
-third-party code from an unknown source, strategy major changes (every phase-1 strategy decision) and edits
+third-party code (any skill install, trusted source or not), strategy major changes (every phase-1 strategy decision) and edits
 whose content differs each time (improvement proposals, his heartbeat checklist). :func:`classify` says why.
 
 Rules live in kv ``approvals:rules`` (``{id: rule}``); Settings -> Approvals (``/dashboard/approvals``) and the
@@ -110,16 +110,9 @@ def _fp_twilio(data: dict[str, Any]) -> Fingerprint | str:
 
 
 def _fp_skill(data: dict[str, Any]) -> Fingerprint | str:
-    from assistant import skill_vetting
-
-    try:
-        rep = skill_vetting.load_report(str(data.get("vet_id")))
-    except Exception:
-        return "the skill report could not be read"
-    repo = norm(rep.reputation.repo or "")
-    if not rep.reputation.trusted or not repo:
-        return "installing third-party code from an unknown source always asks"
-    return Fingerprint("skill_install", repo, f"skills from {repo}")
+    """Skill installs never become standing: every skill (and every new version of one) is different code,
+    so each is reviewed by him (Settings -> Skills, or YES <id> for an unknown source)."""
+    return "each skill install is different third-party code, so every one is shown to you"
 
 
 register_fingerprinter("twilio_fix", _fp_twilio)

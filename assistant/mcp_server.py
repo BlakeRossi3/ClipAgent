@@ -42,6 +42,8 @@ class Server:
         rid = env.get("CLIPAGENT_MCP_RUN_ID") or ""
         self.run_id = int(rid) if rid.isdigit() else None
         self.calls_path = Path(env["CLIPAGENT_MCP_CALLS"]) if env.get("CLIPAGENT_MCP_CALLS") else None
+        # Restricted third-party skills read in this run (one process = one agent run): sticky across calls.
+        self.restricted_skills: set[str] = set()
         home = env.get("CLIPAGENT_MCP_HOME")
         if home:
             from assistant import claude_code
@@ -65,12 +67,13 @@ class Server:
         from assistant import runtime, tools
 
         ctx = tools.ToolContext(channel=self.channel, agent=self.agent, source=self.source,
-                                message_id=self.message_id)
+                                message_id=self.message_id, restricted_skills=set(self.restricted_skills))
         if name == "delegate" and "delegate" in self.allowed:
             content, ok = runtime.delegate_via_mcp(args if isinstance(args, dict) else {}, ctx, self.run_id)
         else:
             res = tools.dispatch(name, args if args is not None else {}, ctx, allowed=self.allowed)
             content, ok = res.content, res.ok
+        self.restricted_skills |= ctx.restricted_skills
         self._record(ctx.calls)
         return {"content": [{"type": "text", "text": runtime.wrap_untrusted(f"tool:{name}", content)}],
                 "isError": not ok}

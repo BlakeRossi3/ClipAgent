@@ -82,7 +82,7 @@ def test_fingerprints_and_never_standing(demo):
     assert approvals.classify(db.get_decision(did))[0] is None
 
 
-def test_skill_installs_standing_only_for_trusted_sources(monkeypatch):
+def test_skill_installs_never_become_standing(monkeypatch):
     from assistant import skill_vetting
 
     reps = {"t": SimpleNamespace(reputation=SimpleNamespace(trusted=True, repo="anthropics/skills")),
@@ -94,10 +94,12 @@ def test_skill_installs_standing_only_for_trusted_sources(monkeypatch):
                                                                       "handler": "skill_install",
                                                                       "data": {"vet_id": vid}}))
 
-    fp, _ = approvals.classify(dec("t"))
-    assert fp == Fingerprint("skill_install", "anthropics/skills", "skills from anthropics/skills")
-    fp, why = approvals.classify(dec("u"))
-    assert fp is None and "unknown source" in why
+    for vid in ("t", "u"):   # even a trusted source: every skill version is different code
+        d = dec(vid)
+        fp, why = approvals.classify(d)
+        assert fp is None and "third-party code" in why
+        res = approvals.approve_always(d.id, via="sms")
+        assert res["rule"] is None and approvals.list_rules() == []
 
 
 # ---------------------------------------------------------------------------

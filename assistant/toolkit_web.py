@@ -5,6 +5,7 @@
   number of export zips, progress, distil a batch now.
 * ``/dashboard/twilio-check`` - Twilio doctor results with "Fix it" buttons.
 * ``/dashboard/approvals`` - standing approvals ("always allow this kind"): review and revoke.
+* ``/dashboard/skills`` - the trusted skill installer: installed, available from trusted sources, review cards.
 
 Auth, CSRF and page chrome come from :mod:`dashboard` (same token/cookie as every dashboard page).
 """
@@ -280,3 +281,132 @@ async def approvals_revoke(request: Request) -> Response:
     ok = approvals.revoke_rule(rid, via="dashboard")
     return _page(request, "approvals", _approvals_ctx(revoked=rid if ok else None,
                                                       error=None if ok else "That rule was already revoked."))
+
+
+# ---------------------------------------------------------------------------
+# skills: the trusted skill installer (assistant/skill_catalog.py)
+# ---------------------------------------------------------------------------
+
+def _skills_ctx(q: str = "", *, refresh: bool = False, **extra: Any) -> dict[str, Any]:
+    from assistant import skill_catalog as sc
+
+    cat = sc.catalog(refresh=refresh)
+    words = [w for w in q.lower().split() if w]
+    entries = [e for e in cat["entries"]
+               if all(w in f"{e['name']} {e['description']} {e.get('collection', '')}".lower() for w in words)]
+    reviews = [sc.card(r) for r in sc.list_reviews()]
+    return {"repos": cat["repos"], "entries": entries, "q": q, "installed": sc.installed(),
+            "open_reviews": [r for r in reviews if r["status"] in sc.OPEN_STATUSES or r["status"] == "refused"
+                             and not r.get("resolved_at")],
+            "past_reviews": [r for r in reviews if r["status"] in ("installed", "rejected", "failed")][:8],
+            "trusted": sc.trusted_repos(), **extra}
+
+
+@router.get("/skills", include_in_schema=False)
+async def skills_page(request: Request) -> Response:
+    if (r := _get_guard(request)) is not None:
+        return r
+    q = str(request.query_params.get("q") or "")[:100]
+    ctx = await run_in_threadpool(_skills_ctx, q)
+    return _dash()._render(request, "skills.html", {"msg": None, "error": None, **ctx}, nav="settings")
+
+
+async def _skills_action(request: Request, fn: Any) -> Response:
+    from assistant import skill_catalog as sc
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    try:
+        msg = await run_in_threadpool(fn, form)
+    except (sc.CatalogError, sc.sv.VettingError) as exc:
+        page = await run_in_threadpool(_skills_ctx, "")
+        return _dash()._render(request, "skills.html", {**page, "msg": None, "error": str(exc)}, status_code=400,
+                               nav="settings")
+    page = await run_in_threadpool(_skills_ctx, "", refresh=bool(form.get("refresh")))
+    return _dash()._render(request, "skills.html", {**page, "msg": msg, "error": None}, nav="settings")
+
+
+def _confirmed(form: Any) -> bool:
+    return str(form.get("confirm") or "") in ("yes", "on", "1", "true")
+
+
+@router.post("/skills/refresh", include_in_schema=False)
+async def skills_refresh(request: Request) -> Response:
+    return await _skills_action(request, lambda form: "Catalog re-read from GitHub.")
+
+
+@router.post("/skills/review", include_in_schema=False)
+async def skills_review(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        c = sc.request_install(str(form.get("name") or ""), str(form.get("repo") or "") or None,
+                               requested_by="owner (dashboard)")
+        if c["status"] == "awaiting_summary":
+            sc.ask_cecil(c["id"])
+            return f"{c['name']} is in quarantine and scanned. Cecil is reading it now; its card is below."
+        return f"{c['name']}: review card below."
+    return await _skills_action(request, act)
+
+
+@router.post("/skills/summarise", include_in_schema=False)
+async def skills_summarise(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        c = sc.get_review(str(form.get("review_id") or ""))
+        sc.ask_cecil(c["id"])
+        return f"Asked Cecil to read {c['name']} again."
+    return await _skills_action(request, act)
+
+
+@router.post("/skills/approve", include_in_schema=False)
+async def skills_approve(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        c = sc.start_approve(str(form.get("review_id") or ""), via="dashboard", confirm=_confirmed(form))
+        return (f"Installing {c['name']}" + (f" and {', '.join(c['pip_installs'])}" if c["pip_installs"] else "")
+                + ": tests, then a commit. It starts restricted. Reload in a minute.")
+    return await _skills_action(request, act)
+
+
+@router.post("/skills/reject", include_in_schema=False)
+async def skills_reject(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    return await _skills_action(request, lambda form: (sc.reject(str(form.get("review_id") or ""), via="dashboard"),
+                                                       "Dismissed; the quarantined copy was deleted.")[1])
+
+
+@router.post("/skills/promote", include_in_schema=False)
+async def skills_promote(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        name = str(form.get("name") or "")
+        sc.promote(name, via="dashboard", confirm=_confirmed(form))
+        return f"{name} is promoted: its restrictions are lifted until its files change."
+    return await _skills_action(request, act)
+
+
+@router.post("/skills/restrict", include_in_schema=False)
+async def skills_restrict(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        name = str(form.get("name") or "")
+        sc.restrict(name, via="dashboard")
+        return f"{name} is restricted again."
+    return await _skills_action(request, act)
+
+
+@router.post("/skills/uninstall", include_in_schema=False)
+async def skills_uninstall(request: Request) -> Response:
+    from assistant import skill_catalog as sc
+
+    def act(form: Any) -> str:
+        res = sc.uninstall(str(form.get("name") or ""), via="dashboard")
+        return f"Uninstalled {res['uninstalled']} (archived; UNDO restores it). {res['commit_result']}"
+    return await _skills_action(request, act)

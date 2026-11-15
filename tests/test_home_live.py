@@ -25,7 +25,7 @@ EVIL = '<script>alert(1)</script><img src=x onerror=alert(2)>'
 PAGES = ["/dashboard/", "/dashboard/studio", "/dashboard/clips", "/dashboard/insights", "/dashboard/strategy",
          "/dashboard/sources", "/dashboard/costs", "/dashboard/decisions", "/dashboard/events", "/dashboard/memory",
          "/dashboard/staff", "/dashboard/agents/studio", "/dashboard/modes", "/dashboard/history",
-         "/dashboard/twilio-check", "/setup/", "/setup/about", "/setup/brain", "/setup/money", "/setup/phone",
+         "/dashboard/twilio-check", "/dashboard/skills", "/setup/", "/setup/about", "/setup/brain", "/setup/money", "/setup/phone",
          "/setup/youtube", "/setup/memory", "/setup/power", "/setup/done"]
 
 
@@ -35,7 +35,13 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _no_git():
+def _no_git(monkeypatch):
+    from assistant import skill_vetting
+
+    def offline(url, accept=None):   # the Skills page reads its catalog from GitHub
+        raise skill_vetting.VettingError("offline in tests")
+
+    monkeypatch.setattr(skill_vetting, "http_get", offline)
     home_live.set_git_log(lambda n: [])
     yield
     home_live.set_git_log(None)

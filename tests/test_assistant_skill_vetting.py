@@ -134,17 +134,24 @@ def fake_github(files, *, stars=5000, created="2024-01-01T00:00:00Z", link=False
     return get
 
 
-def test_trusted_safe_skill_installs_automatically(clean):
+def test_trusted_safe_skill_waits_for_a_one_tap_card(clean):
+    from assistant import skill_catalog
+
     sv.http_get = fake_github({"skills/pdf/SKILL.md": GOOD.replace("pdf-tidy", "pdf"), "README.md": "other"})
     rep = sv.vet("https://github.com/anthropics/skills/tree/main/skills/pdf")
     assert rep.reputation.trusted and rep.static_rating == "SAFE" and rep.commit == SHA
     assert [f["rel"] for f in rep.files] == ["SKILL.md"]  # only the skill folder
     res = sv.submit_verdict(rep.id, "SAFE", "Adds headings to PDF notes. Touches nothing else.")
-    assert res["decision"] == "install" and clean == ["add third-party skill pdf"]
+    # never installed automatically any more: the owner taps Install on Settings -> Skills
+    assert res["decision"] == "review" and res["tier"] == "one_tap" and clean == []
+    assert not (sv.skills_dir() / "pdf").exists()
+    skill_catalog.approve(res["review_id"], via="test")
+    assert clean == ["add third-party skill pdf"]
     installed = sv.skills_dir() / "pdf" / "SKILL.md"
     assert installed.is_file()
     m = sv.read_manifest()["skills"]["pdf"]
-    assert m["commit"] == SHA and m["restricted"] and m["approved_by"] == "auto" and m["verdict"]["rating"] == "SAFE"
+    assert m["commit"] == SHA and m["restricted"] and m["approved_by"] == "owner via test"
+    assert m["verdict"]["rating"] == "SAFE" and m["repo"] == "anthropics/skills" and m["path"] == "skills/pdf"
     assert "pdf" in registry.load_skills(sv.skills_dir())
     assert sv.remove("pdf").startswith("committed") and not installed.exists()
 

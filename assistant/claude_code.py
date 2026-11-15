@@ -675,6 +675,16 @@ def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = N
 
     for p in heartbeat.protected_paths():
         deny += [f"Edit({rule_path(p)})", f"Write({rule_path(p)})"]
+    try:  # third-party skills: the manifest and restricted skills' folders are never edited by the agent
+        from assistant import skill_catalog
+
+        for p in skill_catalog.protected_paths():
+            pat = rule_path(p) + ("/**" if p.suffix != ".json" else "")
+            deny += [f"Edit({pat})", f"Write({pat})"]
+            if p.suffix != ".json":
+                allow.append(f"Read({rule_path(p)}/**)")   # its own files only; secrets stay denied above
+    except Exception as exc:  # pragma: no cover - a broken manifest must not stop the brain
+        log.warning("skill restriction rules unavailable: %s", exc)
     return {"permissions": {"allow": allow, "deny": deny, "defaultMode": "dontAsk"},
             # Keep the PowerShell tool on next to Bash deny rules (Windows with Git Bash).
             "env": {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"}}
@@ -706,8 +716,17 @@ def sync_native_skills() -> list[str]:
     dst_root = home_dir() / "skills"
     dst_root.mkdir(parents=True, exist_ok=True)
     names = []
+    try:
+        from assistant import skill_catalog
+
+        restricted = set(skill_catalog.restricted_names())
+    except Exception as exc:  # pragma: no cover
+        log.warning("restricted-skill list unavailable: %s", exc)
+        restricted = set()
     for name, spec in sorted(registry.load_skills(strict=False).items()):
         if name == "persona":  # already the system prompt
+            continue
+        if name in restricted:  # restricted third-party skills: only through skill_read (which marks the turn)
             continue
         src_dir = Path(spec.path).parent
         dst = dst_root / name

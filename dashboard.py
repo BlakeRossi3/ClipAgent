@@ -110,6 +110,7 @@ SETTINGS_MENU = [
     ("Health check", "/setup/done", "What works, what needs fixing"),
     ("Desktop modes", "/dashboard/modes", "Gaming, work, wind down"),
     ("Twilio check", "/dashboard/twilio-check", "Why texts fail, and the fix"),
+    ("Skills", "/dashboard/skills", "Vetted skills from trusted sources"),
 ]
 MEMORY_MENU = [
     ("The vault", "/dashboard/memory", "Everything the assistant knows"),
@@ -119,7 +120,8 @@ MEMORY_MENU = [
 
 
 def _menu_section(path: str) -> str:
-    if path.startswith("/setup") or path.startswith(("/dashboard/modes", "/dashboard/twilio-check")):
+    if path.startswith("/setup") or path.startswith(("/dashboard/modes", "/dashboard/twilio-check",
+                                                                         "/dashboard/skills")):
         return "memory" if path.startswith("/setup/memory") else "settings"
     if path.startswith(("/dashboard/memory", "/dashboard/history")):
         return "memory"

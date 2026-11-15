@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Skills{% endblock %}
+{% block content %}
+<div class="home">
+<div class="page-head-h">
+  <p class="muted"><a href="/setup/">Settings</a> · <a href="/dashboard/skills">Skills</a> · <a href="/dashboard/approvals">Approvals</a></p>
+  <h1>Skills</h1>
+  <p class="lede-h">Skills only from sources you trust ({{ trusted | join(", ") }}), each pinned to an exact commit. Cecil reads every file and flags risks; nothing is installed until you approve the card. New skills start restricted: no secrets, no messaging, no web, until you promote them.</p>
+</div>
+{% if msg %}<p class="card voice" role="status">{{ msg }}</p>{% endif %}
+{% if error %}<p class="card voice" role="alert"><span class="pill pill-warning">Not done</span> {{ error }}</p>{% endif %}
+
+{% macro tier_pill(c) -%}
+{% if c.status == "installing" %}<span class="pill pill-info">installing</span>
+{% elif c.tier == "unsafe" %}<span class="pill pill-critical">UNSAFE</span>
+{% elif c.tier == "one_tap" %}<span class="pill pill-good">SAFE</span>
+{% else %}<span class="pill pill-warning">CAUTION</span>{% endif %}
+{%- endmacro %}
+
+<section class="card" aria-labelledby="sk-pending"><h2 class="sec-title" id="sk-pending">Pending review</h2>
+{% if open_reviews %}
+  {% for c in open_reviews %}
+  <article class="card" style="margin:12px 0 0">
+    <h3 class="mini-head">{{ tier_pill(c) }} <strong>{{ c.name }}</strong>{% if c.update_of %} <span class="tag">update</span>{% endif %}
+      <span class="muted">· {{ c.repo or c.source }}{% if c.path %}/{{ c.path }}{% endif %}{% if c.commit %} @ <code>{{ c.commit[:10] }}</code>{% endif %} · {{ "trusted source" if c.trusted else "unknown source" }} · {{ c.files }} files, {{ c.scripts }} scripts · asked by {{ c.requested_by }}</span></h3>
+    {% if c.description %}<p class="muted">{{ c.description | truncate(240) }}</p>{% endif %}
+    {% if c.verdict %}
+      <p><strong>Cecil ({{ c.verdict.rating }}):</strong> {{ c.verdict.summary }}</p>
+      {% if c.verdict.red_flags %}<p><strong>His red flags:</strong> {{ c.verdict.red_flags | join("; ") }}</p>{% endif %}
+    {% else %}
+      <p class="muted">Waiting for Cecil's summary.
+        <form method="post" action="/dashboard/skills/summarise" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="review_id" value="{{ c.id }}"><button class="linkbtn" type="submit">ask him again</button></form></p>
+    {% endif %}
+    <p><strong>What it can touch:</strong> {{ c.touches | join("; ") }}. Static checks: {{ c.static_rating }}.</p>
+    {% if c.requirements.python %}
+    <p><strong>Python packages</strong> <span class="muted">(installed into this app's venv only if you approve)</span></p>
+    <ul class="plain">{% for p in c.requirements.python %}<li><code>{{ p.name }}{% if p.version %}=={{ p.version }}{% endif %}</code>
+      {% if p.action == "already" %}<span class="muted">already installed</span>{% elif p.action == "install" %}<span class="pill pill-info">will install</span> <span class="muted">Windows: {{ {"wheel": "wheel available", "pure": "pure Python", "sdist_only": "no wheel (may need a compiler)", "unknown": "not checked"}.get(p.windows, p.windows) }}</span>{% else %}<span class="pill pill-warning">cannot pin</span> <span class="muted">{{ p.error }}</span>{% endif %}
+      <span class="muted">· from {{ p.origins | join(", ") | truncate(90) }}</span></li>{% endfor %}</ul>
+    {% endif %}
+    {% if c.requirements.system %}<p><strong>Other programs it expects</strong> <span class="muted">(not installed by me)</span>: {{ c.requirements.system | join(" · ") }}</p>{% endif %}
+    {% if c.tier != "one_tap" and c.reasons %}
+    <details{% if c.tier == "unsafe" %} open{% endif %}><summary>{{ c.reasons | length }} reason{{ "" if c.reasons | length == 1 else "s" }} for care</summary>
+      <ul class="plain">{% for r in c.reasons %}<li>{{ r }}</li>{% endfor %}</ul></details>
+    {% endif %}
+    {% if c.error %}<p class="voice">Last attempt failed: {{ c.error }}</p>{% endif %}
+    <div class="s-btnrow">
+    {% if c.status == "installing" %}
+      <span class="muted">Installing: tests, then a commit…</span>
+    {% elif c.tier == "unsafe" or c.status == "refused" %}
+      <span class="muted">Cannot be installed.</span>
+    {% elif c.tier == "one_tap" %}
+      <form method="post" action="/dashboard/skills/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="review_id" value="{{ c.id }}"><button class="hbtn hbtn-accent" type="submit">Install{% if c.pip_installs %} (+ {{ c.pip_installs | length }} package{{ "" if c.pip_installs | length == 1 else "s" }}){% endif %}</button></form>
+    {% else %}
+      <form method="post" action="/dashboard/skills/approve"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="review_id" value="{{ c.id }}">
+        <label class="f-check"><input type="checkbox" name="confirm" value="yes" required> I read the reasons; install it{% if c.pip_installs %} and {{ c.pip_installs | join(", ") }}{% endif %}</label>
+        <button class="hbtn" type="submit">Install anyway</button></form>
+    {% endif %}
+    {% if c.status != "installing" %}
+      <form method="post" action="/dashboard/skills/reject"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="review_id" value="{{ c.id }}"><button class="hbtn" type="submit">Dismiss</button></form>
+    {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+{% else %}
+  <p class="muted">Nothing waiting. Pick a skill below, or ask Cecil to find one.</p>
+{% endif %}
+</section>
+
+<section class="card" aria-labelledby="sk-installed"><h2 class="sec-title" id="sk-installed">Installed third-party skills</h2>
+{% if installed %}
+  <ul class="plain">{% for s in installed %}<li style="margin-bottom:10px">
+    <strong>{{ s.name }}</strong>
+    {% if s.restricted %}<span class="pill pill-warning">restricted</span>{% else %}<span class="pill pill-good">promoted</span>{% endif %}
+    {% if s.update_available %}<span class="pill pill-info">update available</span>{% endif %}
+    {% if s.modified %}<span class="pill pill-critical">files changed since review</span>{% endif %}
+    <br><span class="muted">{{ s.repo or s.source }}{% if s.path %}/{{ s.path }}{% endif %}{% if s.commit %} @ <code>{{ s.commit[:10] }}</code>{% endif %} · installed {{ s.installed_at | ago if s.installed_at else "?" }} by {{ s.approved_by }}{% if s.python_requirements %} · packages: {{ s.python_requirements | join(", ") }}{% endif %}</span>
+    <div class="s-btnrow">
+      {% if s.restricted %}
+      <form method="post" action="/dashboard/skills/promote"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ s.name }}">
+        <label class="f-check"><input type="checkbox" name="confirm" value="yes" required> Let it use messaging, web and settings tools</label>
+        <button class="hbtn" type="submit">Promote</button></form>
+      {% else %}
+      <form method="post" action="/dashboard/skills/restrict"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ s.name }}"><button class="hbtn" type="submit">Restrict again</button></form>
+      {% endif %}
+      {% if s.update_available and s.repo %}
+      <form method="post" action="/dashboard/skills/review"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ s.name }}"><input type="hidden" name="repo" value="{{ s.repo }}"><button class="hbtn" type="submit">Review the update</button></form>
+      {% endif %}
+      <form method="post" action="/dashboard/skills/uninstall"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ s.name }}"><button class="hbtn" type="submit">Uninstall</button></form>
+    </div></li>{% endfor %}</ul>
+  <p class="f-help">Restricted: reached only when Cecil reads it; while he follows it he cannot message anyone, open pages, search the web or touch settings, and he may never edit its files. Its scripts still run as you if he runs them, so the scan and your review are the real gate. Uninstall archives it to <code>skills/.archive/</code>; UNDO brings it back.</p>
+{% else %}
+  <p class="muted">None yet.</p>
+{% endif %}
+</section>
+
+<section class="card" aria-labelledby="sk-available"><h2 class="sec-title" id="sk-available">Available from trusted sources</h2>
+  <form method="get" action="/dashboard/skills" class="s-btnrow" role="search">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search: pdf, slides, spreadsheet…" aria-label="Search skills">
+    <button class="hbtn" type="submit">Search</button>
+  </form>
+  {% for r in repos %}<p class="muted">{{ r.repo }}{% if r.commit %} @ <code>{{ r.commit[:10] }}</code>{% endif %}{% if r.fetched_at %} · checked {{ r.fetched_at | ago }}{% endif %}{% if r.error %} · <strong>could not read GitHub:</strong> {{ r.error }}{% endif %}</p>{% endfor %}
+  <form method="post" action="/dashboard/skills/refresh"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="refresh" value="1"><button class="linkbtn" type="submit">Check GitHub now</button></form>
+  {% if entries %}
+  <ul class="plain">{% for e in entries %}<li style="margin:10px 0">
+    <strong>{{ e.name }}</strong>{% if e.collection %} <span class="tag">{{ e.collection }}</span>{% endif %}
+    {% if e.installed_as %}{% if e.update_available %}<span class="pill pill-info">update available</span>{% else %}<span class="pill pill-good">installed</span>{% endif %}{% endif %}
+    {% if e.review_id %}<span class="pill pill-warning">in review</span>{% endif %}
+    <br><span>{{ e.description | truncate(220) }}</span>
+    <br><span class="muted">{{ e.files }} files · {{ e.scripts }} scripts{% if e.requirements_file %} · has requirements{% endif %} · pinned <code>{{ e.commit[:10] }}</code> · <a href="{{ e.url }}" target="_blank" rel="noopener noreferrer">source</a></span>
+    {% if not e.review_id and (not e.installed_as or e.update_available) %}
+    <form method="post" action="/dashboard/skills/review" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="name" value="{{ e.name }}"><input type="hidden" name="repo" value="{{ e.repo }}"><button class="hbtn hbtn-sm" type="submit">{{ "Review update" if e.installed_as else "Install…" }}</button></form>
+    {% endif %}</li>{% endfor %}</ul>
+  {% else %}
+  <p class="muted">{{ "No skills match." if q else "The catalog is empty right now." }}</p>
+  {% endif %}
+</section>
+
+{% if past_reviews %}<section class="card"><h2 class="sec-title">Recent decisions</h2><ul class="plain">{% for c in past_reviews %}<li>{{ c.name }} <span class="muted">· {{ c.status }}{% if c.resolved_at %} {{ c.resolved_at | ago }}{% endif %}{% if c.error %} · {{ c.error | truncate(120) }}{% endif %}</span></li>{% endfor %}</ul></section>{% endif %}
+</div>
+{% endblock %}

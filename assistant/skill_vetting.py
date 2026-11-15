@@ -16,7 +16,9 @@ Flow (see skills/watch-reel/SKILL.md, part 2):
 5. :func:`decide` (pure decision table):
 
    ==========================================  ========
-   trusted source, SAFE, no red flags at all   install  (self-edit flow: tests + commit + UNDO)
+   trusted source, SAFE, no red flags at all   install  (one-tap card on Settings -> Skills, then the
+                                                        self-edit flow: tests + commit + UNDO)
+   CAUTION from a trusted source               ask      (card on Settings -> Skills, explicit tick)
    CAUTION, or an unknown source               ask      (one-line approval, YES <id>)
    UNSAFE (model or a critical static finding) refuse
    ==========================================  ========
@@ -553,8 +555,11 @@ def _commit_change(summary: str, change: Callable[[], None]) -> str:
 committer: Callable[[str, Callable[[], None]], str] = _commit_change
 
 
-def install(rep: VetReport, *, approved_by: str) -> dict[str, Any]:
-    """Copy the quarantined skill into skills/<name>/ and record it in the manifest (via self-edit)."""
+def install(rep: VetReport, *, approved_by: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Copy the quarantined skill into skills/<name>/ and record it in the manifest (via self-edit).
+
+    ``extra``: more manifest fields (the catalog adds repo, path, tree sha, Python packages). The
+    recorded ``files`` hashes are those of the installed copy (what restriction checks compare)."""
     from assistant import registry
 
     name = _norm_name(rep.name)
@@ -580,16 +585,18 @@ def install(rep: VetReport, *, approved_by: str) -> dict[str, Any]:
             shutil.rmtree(target)
         shutil.copytree(folder, target)
         (target / "SKILL.md").write_text(text, encoding="utf-8")
-        for p in target.rglob("*"):
+        hashes = {}
+        for p in sorted(target.rglob("*")):
             if p.is_file():
                 p.chmod(0o644)
+                hashes[p.relative_to(target).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
         m.setdefault("skills", {})[name] = {
             "source": rep.source, "commit": rep.commit, "installed_at": db.now_iso(), "approved_by": approved_by,
             "verdict": rep.verdict, "static_rating": rep.static_rating, "trusted_source": rep.reputation.trusted,
             "restricted": True,
             "restrictions": ["reference text only: never inlined into an agent prompt automatically",
                              "cannot add tools; must not be used to read secrets or message anyone"],
-            "files": {f["rel"]: f["sha256"] for f in rep.files}, "vet_id": rep.id}
+            "files": hashes, "vet_id": rep.id, **(extra or {})}
         _write_manifest(m)
 
     result = committer(f"add third-party skill {name}", change)
@@ -647,11 +654,16 @@ def submit_verdict(vet_id: str, rating: str, summary: str, red_flags: list[str] 
         db.log_event("assistant", f"skill refused: {rep.name}", level="warning", data={"why": why[:300]})
         return {"decision": "refuse", "name": rep.name, "why": why,
                 "tell_owner": f"I did not add {rep.name}: {why}."}
-    if decision == "install":
-        res = install(rep, approved_by="auto")
-        return {"decision": "install", **res,
-                "tell_owner": f"Added the {rep.name} skill from {rep.source} (pinned {rep.commit[:10] if rep.commit else ''}). "
-                              "Text UNDO to remove it."}
+    if rep.reputation.trusted:
+        # Trusted sources: never installed automatically any more. The owner approves on the Skills page
+        # (one tap when this was decision "install"); see assistant/skill_catalog.py.
+        from assistant import skill_catalog
+
+        c = skill_catalog.review_from_report(rep, requested_by="assistant")
+        c = skill_catalog.submit_summary(rep.id, rating, summary, flags, by="assistant")
+        return {"decision": "review", "review_id": rep.id, "tier": c["tier"],
+                "tell_owner": f"The {rep.name} skill from {rep.source} is ready for your OK on Settings, Skills"
+                              + (" (one tap)." if c["tier"] == "one_tap" else "; it needs a careful look.")}
     line = (f"Add skill {rep.name} from {rep.source}? {rep.verdict['rating']}: {rep.verdict['summary'][:140]}"
             + (f" Flags: {'; '.join(all_flags[:3])[:120]}" if all_flags else ""))
     did = notify.request_approval("other", line[:300], {"action": "assistant_action", "handler": "skill_install",
@@ -710,8 +722,9 @@ def register_tools(register: Callable[..., None]) -> None:
                   owner=MODULE, side_effects=True))
     register(Tool("skill_install",
                   "Give your verdict on a vetted skill after reading every file. rating SAFE/CAUTION/UNSAFE, summary = "
-                  "what it does and what it can touch, red_flags = every concern. The code then installs it (trusted "
-                  "source + SAFE + no flags), asks the owner (CAUTION or unknown source) or refuses (UNSAFE).",
+                  "what it does and what it can touch, red_flags = every concern. The code then puts a trusted-source "
+                  "skill on the owner's Skills page for approval, asks the owner by text (unknown source) or "
+                  "refuses (UNSAFE). Nothing installs without him.",
                   _obj({"vet_id": {"type": "string"}, "rating": {"type": "string", "enum": list(RATINGS)},
                         "summary": {"type": "string"}, "red_flags": {"type": "array", "items": {"type": "string"}}},
                        ["vet_id", "rating", "summary"]), _tool_install, owner=MODULE, side_effects=True))
