@@ -17,9 +17,8 @@ sentences, which are spoken while the rest is still being generated) runs on a w
 requests with :meth:`VoiceAgent.post`, which the loop picks up on its own thread.
 
 Interaction details adapted from adewaskar/jarvis ``src/lib/voice.ts`` (MIT License, Copyright
-(c) 2026 Aditya Dewaskar): a filler line the moment work starts and then quiet until the answer,
-barge-in that keeps the mic open while speaking with a raised threshold and a 350 ms self-guard at
-the start of each sentence, echo filtering of what is heard against what was just said, and
+(c) 2026 Aditya Dewaskar): barge-in that keeps the mic open while speaking with a raised threshold and
+a 350 ms self-guard at the start of each sentence, echo filtering of what is heard against what was just said, and
 holding a sentence that trails off on "and"/"to" a moment longer before sending it.
 """
 
@@ -170,8 +169,8 @@ class VoiceAgent:
         # two workers: a stitched follow-up must reach the server while the turn it replaces is still settling
         self.executor = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-brain")
         rng = rng or random.Random()
-        self.pick_working = speech.Picker(speech.WORKING, rng)
-        self.pick_still = speech.Picker(speech.STILL, rng)
+        # the safety net for silence (what Cecil says while working is the model's own judgement)
+        self.narrator = speech.Narrator(settings.honorific, rng, quiet_sec=settings.filler_delay_sec)
         self.pick_ack = speech.Picker(speech.ACKNOWLEDGE, rng)
         end = max(2, round(settings.end_silence_sec / audio.FRAME_SEC))
         mx = max(10, round(settings.max_utterance_sec / audio.FRAME_SEC))
@@ -496,11 +495,14 @@ class VoiceAgent:
             p, ms = self.rec.eot
             kw["timing"] = {"smart_turn_p": None if p is None else round(p, 3), "smart_turn_ms": ms}
         self.rec.eot = None
+        if getattr(self.brain, "accepts_tools", False):   # each step too, for the narrator's safety net
+            kw["on_tool"] = lambda name, label: parts.put(("tool", name, label))   # type: ignore[arg-type]
         if getattr(self.brain, "streams", False):  # sentences arrive while the rest is generated
             fut = self.executor.submit(self.brain, text, parts.put, **kw)
         else:
             fut = self.executor.submit(self.brain, text, **kw)
         self.turn = Turn(text, fut, self.clock(), parts=parts)
+        self.narrator.start(self.turn.started)
         self.side.reset()
         self._set(THINKING)
 
@@ -548,8 +550,13 @@ class VoiceAgent:
                 part = turn.parts.get_nowait()
             except queue.Empty:
                 break
+            if isinstance(part, tuple):           # ("tool", name, label): a step started
+                if not turn.cancelled:
+                    self._queue.extend(_Say(t, "filler") for t in self.narrator.tool(now, part[1], part[2]))
+                continue
             if turn.cancelled or not part.strip():
                 continue
+            self.narrator.sentence(now)
             turn.streamed += 1
             self._queue.append(_Say(part, "reply"))
             self.diag.last_said = (self.diag.last_said + " " + part).strip() if turn.streamed > 1 else part
@@ -560,6 +567,7 @@ class VoiceAgent:
                 self._set(SPEAKING)
         if turn.future.done() and turn.parts.empty():
             self.turn = None
+            self.narrator.stop()
             try:
                 reply = turn.future.result()
             except Exception as exc:
@@ -579,15 +587,11 @@ class VoiceAgent:
             else:
                 self._back_to_waiting()
             return
-        if turn.streamed or self.state != THINKING:
+        if turn.cancelled:
             return
-        waited = now - turn.started
-        if turn.fillers == 0 and waited >= self.s.filler_delay_sec:
-            turn.fillers = 1
-            self._queue.append(_Say(self.pick_working(self.h), "filler"))
-        elif turn.fillers == 1 and waited >= self.s.filler_delay_sec + speech.STILL_AFTER_SEC:
-            turn.fillers = 2
-            self._queue.append(_Say(self.pick_still(self.h), "filler"))
+        for line in self.narrator.tick(now):      # only when nothing has been said for a while
+            turn.fillers += 1
+            self._queue.append(_Say(line, "filler"))
 
     def _say(self, text: str, kind: str, *, after: str) -> None:
         self._queue.extend(_Say(t, kind) for t in speech.split_sentences(text))
@@ -649,19 +653,22 @@ class VoiceAgent:
 # ---------------------------------------------------------------------------
 
 def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None, *,
-                    timing: dict[str, Any] | None = None) -> str:
+                    timing: dict[str, Any] | None = None, on_tool: Callable[[str, str], None] | None = None) -> str:
     """Hand the transcript to Cecil's warm brain and return what was said. ``on_sentence``
-    receives each sentence as soon as it is ready (streamed speech); ``timing``: this process's
-    end-of-turn stages (Smart Turn), joined to the brain's timing event."""
-    return brain_reply(text, on_sentence, origin="voice", timing=timing)["spoken"]
+    receives each sentence as soon as it is ready (streamed speech); ``on_tool`` each top-level step
+    (name, label) for the narrator's safety net; ``timing``: this process's end-of-turn stages (Smart
+    Turn), joined to the brain's timing event."""
+    return brain_reply(text, on_sentence, origin="voice", timing=timing, on_tool=on_tool)["spoken"]
 
 
 assistant_brain.streams = True  # type: ignore[attr-defined]
 assistant_brain.accepts_timing = True  # type: ignore[attr-defined]
+assistant_brain.accepts_tools = True  # type: ignore[attr-defined]
 
 
 def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
-                origin: str = "voice", timing: dict[str, Any] | None = None) -> dict[str, Any]:
+                origin: str = "voice", timing: dict[str, Any] | None = None,
+                on_tool: Callable[[str, str], None] | None = None) -> dict[str, Any]:
     """One turn of the warm brain (``assistant/brain.py``) -> ``{"reply", "spoken", "status", "cost_usd",
     "task", "first_sentence_ms"}``. The laptop voice process is a separate process, so it asks the
     server that holds the brain (``POST /voice/api/ask``, streamed sentences); if the server is not
@@ -681,12 +688,13 @@ def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
         return {"reply": "", "spoken": "", "status": "ignored", "cost_usd": 0.0, "task": None,
                 "first_sentence_ms": None}
     try:
-        return remote_reply(text, on_sentence, origin=origin, timing=timing)
+        return remote_reply(text, on_sentence, origin=origin, timing=timing, on_tool=on_tool)
     except _Unreachable as exc:
         log.info("brain server not reachable (%s); answering in-process", exc)
     from assistant import brain
 
-    return brain.ask(text, origin=origin, on_sentence=on_sentence, timing=timing).wait(brain.TURN_TIMEOUT_SEC + 30)
+    return brain.ask(text, origin=origin, on_sentence=on_sentence, timing=timing,
+                     on_tool=on_tool).wait(brain.TURN_TIMEOUT_SEC + 30)
 
 
 class _Unreachable(Exception):
@@ -697,7 +705,8 @@ _remote_post: Callable[..., Any] | None = None
 
 
 def remote_reply(text: str, on_sentence: Callable[[str], None] | None = None, *, origin: str = "voice",
-                 post: Callable[..., Any] | None = None, timing: dict[str, Any] | None = None) -> dict[str, Any]:
+                 post: Callable[..., Any] | None = None, timing: dict[str, Any] | None = None,
+                 on_tool: Callable[[str, str], None] | None = None) -> dict[str, Any]:
     """Ask the server's brain over HTTP (loopback, local key), reading its sentences as they arrive."""
     import json
 
@@ -724,6 +733,8 @@ def remote_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
                 msg = json.loads(line)
                 if "sentence" in msg and on_sentence is not None:
                     on_sentence(msg["sentence"])
+                if isinstance(msg.get("tool"), dict) and on_tool is not None:
+                    on_tool(str(msg["tool"].get("name") or ""), str(msg["tool"].get("label") or ""))
                 if msg.get("done"):
                     out = msg
     except (httpx.TransportError, OSError) as exc:

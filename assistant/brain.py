@@ -105,9 +105,24 @@ How you speak (the persona rules above, applied to speech):
   mid-sentence when correcting him. Never twice in one reply.
 - Success is impersonal ("The hours are logged."). Failure is a fact about the world ("I'm afraid the
   quota is spent."). No filler, no enthusiasm, no apology, never "yeah", no exclamation marks.
-- Never narrate a tool ("let me check") and never open with a filler ("one moment", "on it"): his
-  screen already says a short acknowledgement for you the instant he stops talking. Go quiet, use the
-  tool, then answer. Never restate an order: act, then report. Never repeat yourself if ignored.
+- How much you say while you work is your judgement, as a good human assistant in the room would
+  judge it. His screen already shows that you are working, so never announce that you are and never use
+  a generic filler ("one moment", "on it", "let me check"). Write a line as text just before the tool
+  call it belongs to: it is spoken while the tool runs. Never restate an order; never repeat a line.
+  - Answerable now (conversation, status, notes, what you know): just the answer, nothing before it.
+  - A quick action he will see or hear happen (open a page, switch voice, a desktop mode): one line as
+    you do it ("Opening YouTube, {h}."), then nothing more unless it failed.
+  - A live lookup (news, scores, what's on): a conversation. Say what you are checking, share what you
+    find as it comes in, a line every few seconds ("Three stories so far, {h}; the top one is the
+    Artemis launch."), then the answer.
+  - A few seconds of work: one specific line saying what you are doing, then silence, then the answer.
+  - A long job: say it will take a while and that you will report back; afterwards only real
+    milestones, further apart the longer it runs; then the result.
+  - Something that needs no acknowledgement ("thanks", "got it") gets none, or the briefest reply.
+  - Your Speaking Style note (below) holds what he has taught you; where it differs, it wins.
+- When he reacts to how you spoke ("too much", "keep me posted on these", "you didn't tell me you'd
+  started", "that was perfect"), change at once and record it with speaking_style_note: the kind of
+  task, a few words, and his words. Then one short sentence, no apology.
 - If he speaks again before you finish, his words arrive joined into one request: answer all of it
   once, without repeating what you already said.
 - Never mention how you are built: never say "channel", "front", "full self", "delegate", "sub-agent",
@@ -116,9 +131,9 @@ How you speak (the persona rules above, applied to speech):
   (a voice, a file, a person), do not ask him to repeat it.
 
 How you work:
-- Quick things you do inline at once, then confirm in a few words: change your voice or other settings
-  (settings_set, e.g. "switch to Lewis" -> settings_set voice=Lewis), open a page (open_url), a desktop
-  mode, read your settings or status, check notes. Do it first, talk after.
+- Quick things you do inline at once: change your voice or other settings (settings_set, e.g. "switch
+  to Lewis" -> settings_set voice=Lewis), open a page (open_url), a desktop mode, read your settings or
+  status, check notes. What you say around them follows the rules above.
 - Anything that will take more than about a minute (coding, research, long reading, several steps):
   call start_task with a clear, self-contained brief, then say so in one line, e.g. "That will take a
   few minutes, {h}. I'll report when it's done." You will be told when it finishes; then give the
@@ -212,6 +227,9 @@ class Turn:
     marks: dict[str, float] = field(default_factory=dict)   # stage -> time.monotonic()
     tool_ms: list[dict[str, Any]] = field(default_factory=list)
     tool_t: dict[str, tuple[str, float]] = field(default_factory=dict)
+    on_tool: Callable[[str, str], None] | None = None   # (short name, label) of each top-level step
+    told: set[str] = field(default_factory=set)         # steps already passed to on_tool
+    said_before_tool: int = 0                # sentences spoken before the latest top-level step = spoken updates
     selfedit_ms: float | None = None
     snap_f: Any = None                       # concurrent.futures.Future of selfedit.begin()
     selfedit_queued: bool = False
@@ -461,8 +479,14 @@ def system_prompt(*, worker: bool = False, chrome: bool | None = None, lean: boo
         note += ("\n\nClaude in Chrome is set up but switched off to keep you quick: when a request needs you to drive "
                  "his browser (click, fill in, read a signed-in page), call need_tools with kind=browser first.")
     facts = FACTS_FAST if fast_search_ready() else FACTS_WEB
+    style = ""
+    if not worker:
+        from assistant import speaking_style
+
+        style = speaking_style.prompt_block()
+        style = "\n\n" + style if style else ""
     return persona_text + "\n\n" + part.format(owner=s.owner_name or "the owner", name=s.name, h=s.owner_honorific,
-                                               facts=facts) + note
+                                               facts=facts) + style + note
 
 
 def fast_search_ready() -> bool:
@@ -584,7 +608,7 @@ class Brain:
         names: list[str] = []
         for spec in agents.values():
             names += [t.name for t in tools.available(spec.tools) if t.name not in names]
-        for extra in ("settings_get", "settings_set", "fast_search"):
+        for extra in ("settings_get", "settings_set", "fast_search", "speaking_style_note"):
             if extra not in names and extra in tools.REGISTRY:
                 names.append(extra)
         if not fast_search_ready():       # keyless it only hands back a query: one wasted model round
@@ -964,7 +988,7 @@ class Brain:
         self._flush(turn)
         if turn.held_ack:                      # a lone ack even after the nudge: say something honest
             turn.held_ack = ""
-        if not turn.sentences and turn.status == "ok":
+        if not turn.sentences and not turn.tool_names and turn.status == "ok":   # a silent quick action is fine
             self._emit(turn, f"I'm afraid I didn't catch what you'd like me to do, {h}.", force=True)
         self._finalize(turn)
         if not turn.cancelled:
@@ -1035,8 +1059,26 @@ class Brain:
             notes.append(fastlane.brain_note(log_))
         if turn.route == "fast>brain":
             notes.append(fastlane.handoff_note(getattr(turn, "fast_said", "")))
+        if turn.kind == "chat":
+            notes.append(self._style_feedback_note(turn))
         notes = [n for n in notes if n]
         return "\n\n".join([*notes, prompt]) if notes else prompt
+
+    def _style_feedback_note(self, turn: Turn) -> str:
+        """He may be commenting on how the last request was narrated: say which one (a hint; the model judges)."""
+        try:
+            from assistant import speaking_style
+
+            if not speaking_style.detect_feedback(turn.heard):
+                return ""
+            prev = speaking_style.last_turn()
+            if not prev or prev.get("turn") in {turn.id, *(t.id for t in turn.chain)}:
+                return ""
+            speaking_style.mark_feedback(prev["turn"], turn.heard)
+            return speaking_style.feedback_note(prev)
+        except Exception as exc:
+            log.debug("style feedback note failed: %s", exc)
+            return ""
 
     # -- self-edits: a background worker, never the voice queue ------------------------------
     def _selfedit_enabled(self) -> bool:
@@ -1365,11 +1407,27 @@ class Brain:
             self._flush(turn)              # text before a tool is a finished thought: say it now
             if turn.held_ack:
                 self._release_ack(turn)
+            turn.said_before_tool = len(turn.sentences)
         label = _label(name, inp)
+        # the laptop's narrator hears of each top-level step once, with its input when there is one
+        # (the stream announces a tool before its input arrives; the full message refines it)
+        tell = parent is None and turn.on_tool is not None and not turn.cancelled and tool_id not in turn.told \
+            and (bool(inp) or refine)
         if refine and (not inp or turn.steps[tool_id] == label):
+            if tell:
+                self._tell_tool(turn, tool_id, short, turn.steps[tool_id])
             return
         turn.steps[tool_id] = label
         events.publish("tool", turn=turn.id, tool_id=tool_id, name=short, label=label, parent=parent)
+        if tell:
+            self._tell_tool(turn, tool_id, short, label)
+
+    def _tell_tool(self, turn: Turn, tool_id: str, short: str, label: str) -> None:
+        turn.told.add(tool_id)
+        try:
+            turn.on_tool(short, label)   # type: ignore[misc]
+        except Exception as exc:         # the laptop's narrator must not stop the answer
+            log.warning("on_tool failed: %s", exc)
 
     # -- speech ----------------------------------------------------------------------
     def _feed(self, turn: Turn, delta: str) -> None:
@@ -1478,12 +1536,28 @@ class Brain:
 
             tasks.say(tasks.fallback_summary(str(turn.task.get("_full") or "")), origin=turn.origin,
                       task=str(turn.task.get("task") or ""), task_id=turn.task.get("id"))
+        if turn.kind == "chat" and not turn.cancelled:
+            self._log_style(turn)
         turn.done.set()
         # --- after-turn hook: automatic memory (assistant/auto_memory.py; debounced, never raises) ---
         if turn.kind == "chat":
             from assistant import auto_memory
 
             auto_memory.after_turn("voice")
+
+    def _log_style(self, turn: Turn) -> None:
+        """Evidence for training how he likes to be spoken to (assistant/speaking_style.py; never raises)."""
+        try:
+            from assistant import speaking_style
+
+            dur = (time.monotonic() - turn.t0) * 1000
+            used = set(turn.tool_names).union(*(t.tool_names for t in turn.chain))
+            speaking_style.log_turn(turn.id, turn.heard, duration_ms=dur, updates=turn.said_before_tool,
+                                    sentences=len(turn.sentences), tools=used, origin=turn.origin,
+                                    kind=speaking_style.infer_kind(turn.heard, used, task_started=turn.task_started,
+                                                                   duration_ms=dur))
+        except Exception as exc:
+            log.debug("speaking style log failed: %s", exc)
 
     def _publish_timing(self, turn: Turn) -> None:
         if turn.kind != "chat":
@@ -1654,7 +1728,8 @@ def prompt_for(heard: str, *, fresh: bool, note: str = "", parts: list[str] | No
 
 
 def ask(heard: str, *, origin: str = "browser", on_sentence: Callable[[str], None] | None = None,
-        record: bool = True, merge: bool = True, timing: dict[str, Any] | None = None) -> Turn:
+        record: bool = True, merge: bool = True, timing: dict[str, Any] | None = None,
+        on_tool: Callable[[str, str], None] | None = None) -> Turn:
     """Queue one thing he said; returns the :class:`Turn` at once (``turn.wait()`` for the result).
     Speech arrives through ``on_sentence`` and the event bus as it is generated.
 
@@ -1682,7 +1757,7 @@ def ask(heard: str, *, origin: str = "browser", on_sentence: Callable[[str], Non
                             "what you already said.)")
             else:
                 heard = raw
-            turn = Turn(id=tid, heard=heard, prompt="", origin=origin, on_sentence=on_sentence,
+            turn = Turn(id=tid, heard=heard, prompt="", origin=origin, on_sentence=on_sentence, on_tool=on_tool,
                         merged_from=merged_from, chain=chain)
             b.last_chat[origin] = turn
             b.heard_recent.append((time.monotonic(), origin, _words(raw), turn))

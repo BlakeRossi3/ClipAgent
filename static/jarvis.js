@@ -14,7 +14,8 @@
      through the speakers is recognised as echo; fillers ("maybe, um") are ignored. Barge-in: speech while he
      talks pauses him at once, and once the words arrive it either stops him (and the answer in flight) or,
      if it was only noise, lets him carry on.
-   - Fillers (src/lib/fillers.ts): one short line the moment the first tool starts, then quiet until the answer.
+   - Speaking while working: Cecil's own judgement (his lines arrive as sentences between tool calls); the
+     narrator here is only a safety net for silence, its patience scaled to the step that is running.
    - The activity rail: current steps, background tasks with elapsed time, finished tasks with a one-line
      result, and panels. Panel markup is model-written, so it is rebuilt node by node from a strict allowlist
      (sanitizePanel: the same tags and classes as assistant/panels.py; no scripts, handlers, links or styles
@@ -43,6 +44,7 @@
     pttLabel = q('[data-jv-ptt-label]'), histBtn = q('[data-jv-history]'), menu = q('[data-jv-menu]'),
     tip = q('[data-jv-tip]'), tipX = q('[data-jv-tip-x]');
   var stepsEl = q('[data-jv-steps]'), tasksEl = q('[data-jv-tasks]'), panelsEl = q('[data-jv-panels]'), liveEl = q('[data-jv-live]');
+  var trailEl = q('[data-jv-trail]'), trailList = q('[data-jv-trail-list]');
   var drawer = document.querySelector('[data-jv-drawer]'), scrim = document.querySelector('[data-jv-scrim]');
   var logEl = document.querySelector('[data-chat-log]');
   var csrf = root.getAttribute('data-csrf'), H = root.getAttribute('data-honorific') || 'sir';
@@ -327,82 +329,146 @@
     if (!pending && local === 'speaking') local = null; render();
   }
 
-  /* ---- fillers (adewaskar/jarvis src/lib/fillers.ts: subjectless, short, "sir" final and only sometimes) */
-  function picker(pool) { var last = -1; return function () { var i = last; while (pool.length > 1 && i === last) i = Math.floor(Math.random() * pool.length); last = i; return pool[Math.max(0, i)].replace('{h}', H); }; }
-  var WORKING = picker(['Working on it, {h}.', 'Under way.', 'Retrieving.', 'Cross-referencing.', 'Checking.']);
-  var BY_TOOL = [
-    [/test/i, picker(['Running the tests.', 'Testing it now.'])],
-    [/^(reading|editing|writing|searching the code)/i, picker(['Looking through the code.', 'Opening the files.'])],
-    [/web/i, picker(['Searching.', 'Consulting the record.'])],
-    [/^opening/i, picker(['Opening it now.', 'Bringing it up.'])],
-    [/notes|journal|noting/i, picker(['Checking my notes.', 'Consulting the archive.'])],
-    [/voice|setting/i, picker(['Very good, {h}.', 'Directly, {h}.'])],
-    [/shorts|books|hours|goals|usage/i, picker(['Pulling the figures.', 'Checking the numbers.'])],
-    [/map|where/i, picker(['Plotting it.', 'Bringing up the map.'])],
-    [/screen|picture|video|showing/i, picker(['Putting it up.', 'On screen shortly.'])],
-    [/background task|helper/i, picker(['Setting it going.', 'Under way.'])]
-  ];
-  function fillerFor(label) {
-    for (var i = 0; i < BY_TOOL.length; i++) if (BY_TOOL[i][0].test(label)) return BY_TOOL[i][1]();
-    return WORKING();
+  /* ---- a step's own spoken line (only when Cecil said nothing about it; see the narrator below) ---- */
+  function stepLine(name, label) {
+    var lab = String(label || '').split(':')[0].trim();
+    if ((name === 'open_url' || name === 'settings_set' || name === 'desktop_mode_run') && lab) return lab + ', ' + H + '.';
+    if (name === 'show_map') return 'Bringing up the map.';
+    if (name === 'show_media') return 'Putting it on screen.';
+    if (/^(WebSearch|web_search|fast_search)$/.test(name)) return 'Searching.';
+    if (name === 'WebFetch') return lab ? lab + '.' : 'Reading the page.';
+    if (/^(Agent|Task|start_task)$/.test(name)) return 'Setting it going.';
+    if (/^memory_/.test(name)) return 'Checking my notes.';
+    return null;                       // the narrator's neutral line instead
   }
 
-  /* ack:begin -- instant acknowledgement (docs/VOICE_SPEED_RESEARCH.md item 4). Pure (no DOM): the tests run
-     this block in node. A task-like request gets a templated line the moment he stops (never the same line twice
-     in a row); plain chat gets one only if no answer has started after 1.5 s; then a progress line at 5 s and every
-     6 s after (naming the running step when known), so he is never left in silence. */
+  /* ack:begin -- the narrator's safety net. Pure (no DOM, no clock of its own): the tests run this block in node.
+     What Cecil says while he works is his own judgement (the brain's voice prompt and his owner-trained Speaking
+     Style note): he writes those lines himself, between tool calls. This only covers silence, and it scales its
+     patience to the task instead of keeping a fixed interval:
+     - nothing at all a couple of seconds after he stopped talking -> one neutral line (or the running step's own
+       line); a step expected to finish in a moment postpones it, because the answer is about to come;
+     - a visible action (open a page, switch voice, a desktop mode) that nobody announced -> its line at once
+       (300 ms in, so it can name what is being opened);
+     - a long silence while a step is still running -> one "still working" line after a wait that grows with the
+       step's learned duration and with how long the request has already run, doubling after each such line.
+     Bounds, not cadence: never the same line twice running, at most MAX_LINES lines per request. */
   var ACK = (function () {
-    var TASK = /\b(open|search|find|look(ing)? up|google|log|change|switch|set|turn (on|off|up|down)|play|pause|show|check|start|stop the|run|fix|update|add|remind|schedule|send|text|email|message|call|write|make|create|delete|remove|book|order|read|summari[sz]e|pull up|bring up|download|install|test|record|save|compare|research|translate|calculate|score|scores|weather|forecast|news|headlines?|prices?|stocks?|latest|who won)\b/;
-    var CHAT = /^(hi|hello|hey|hiya|yo|morning|evening|good (morning|afternoon|evening|night)|how are you|how's it going|how are things|what's up|thanks|thank you|cheers|ok|okay|cool|great|nice|perfect|yes|yeah|yep|no|nope|sure|fine|good|right|bye|goodbye|see you|never ?mind|i'm (good|fine|back|here|ok|okay)|are you there|you there)\b/;
-    var LINES = ['One moment, {h}.', 'On it, {h}.', 'Right away, {h}.', 'Very good, {h}.'];
-    // Never leave him in silence: a task is acknowledged at once, anything else after LATE_MS without an
-    // answer, and while the work goes on a short progress line follows at FIRST_MS and then every EVERY_MS.
-    var STILL = 'Still working on it, {h}.';
-    var PROGRESS = [STILL, 'Nearly there, {h}.', 'Bear with me, {h}.', 'Still on it, {h}.'];
-    var LATE_MS = 1500, FIRST_MS = 5000, EVERY_MS = 6000, MAX_PROGRESS = 6;
-    function words(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
-    function kind(text) {                  // 'task' | 'chat'
-      var w = words(text);
-      if (!w) return 'chat';
-      var n = w.split(' ').length;
-      if (TASK.test(w)) return 'task';
-      if (CHAT.test(w)) return n <= 8 ? 'chat' : 'task';
-      return n >= 7 ? 'task' : 'chat';     // anything that is not a short chat
-    }
-    function make(o) {                     // o: { say(text), later(fn, ms) -> id, cancel(id), h, random, progress() }
-      var last = -1, timer = null, active = false, rnd = o.random || Math.random, said = '', count = 0;
-      function fill(t) { return t.replace('{h}', o.h || 'sir'); }
-      function line() { var i = last; while (i === last) i = Math.floor(rnd() * LINES.length) % LINES.length; last = i; return fill(LINES[i]); }
-      function stop() { active = false; if (timer !== null) { o.cancel(timer); timer = null; } }
-      function speak(t) { said = t; o.say(t); }
-      function progress() {                // what he is waiting on if known (the running step), else a rotating line
-        timer = null;
-        if (!active || count >= MAX_PROGRESS) return;
-        var t = o.progress ? o.progress() : null;
-        if (!t || t === said) t = fill(PROGRESS[count % PROGRESS.length]);
-        if (t === said) t = fill(PROGRESS[(count + 1) % PROGRESS.length]);
-        count++; speak(t);
-        timer = o.later(progress, EVERY_MS);
-      }
-      function ack() { speak(line()); timer = o.later(progress, FIRST_MS); }
+    var QUIET_MS = 2000, STILL_MIN_MS = 15000, MAX_LINES = 3, DEFAULT_MS = 2500, KEEP = 7, GRACE_MS = 300;
+    var QUIET = ['One moment, {h}.', 'Bear with me, {h}.', 'Just a moment, {h}.'];
+    var STILL = ['Still working on it, {h}.', 'Nearly there, {h}.', 'Still on it, {h}.'];
+    // Seeds for how long a step takes; replaced by what actually happens (learn(), from the timing events).
+    var SEED = { WebSearch: 6000, WebFetch: 4000, web_search: 6000, fast_search: 1200, Bash: 4000, PowerShell: 4000,
+      Agent: 30000, Task: 30000, start_task: 800, open_url: 800, desktop_mode_run: 1500, settings_set: 500,
+      show_map: 1000, show_media: 1000, memory_search: 300, memory_read: 200, memory_remember: 300,
+      studio_status: 400, ledger_summary: 400, ledger_log_hours: 400, settings_get: 100, task_list: 100,
+      goals_list: 200, usage_status: 400, Read: 200, Grep: 300, Glob: 200, speaking_style_note: 200 };
+    var VISIBLE = { open_url: 1, desktop_mode_run: 1, settings_set: 1, show_map: 1, show_media: 1 };
+    var last = '';                          // the last line said by any narrator: never the same twice running
+    function table() {                      // name -> recent durations (ms); shared, persisted by the page
+      var t = {};
       return {
-        start: function (text) {           // he has finished speaking: called synchronously, before the request goes
-          if (active) return false;        // a further breath of the same request: one acknowledgement per request
-          active = true; count = 0;
-          if (kind(text) === 'task') { ack(); return true; }
-          timer = o.later(function () { timer = null; if (active) ack(); }, LATE_MS);   // chat that turns out slow
-          return false;
+        learn: function (name, ms) {
+          if (!name || !(ms >= 0)) return;
+          var xs = t[name] = (t[name] || []); xs.push(+ms); if (xs.length > KEEP) xs.shift();
         },
-        answered: stop,                    // the first real sentence, the turn's end, a stop or an error
-        busy: function () { return active; }
+        expected: function (name) {
+          var xs = t[name];
+          if (xs && xs.length) { var s = xs.slice().sort(function (a, b) { return a - b; }); return s[Math.floor(s.length / 2)]; }
+          return SEED[name] != null ? SEED[name] : DEFAULT_MS;
+        },
+        dump: function () { return t; },
+        load: function (o) {
+          Object.keys(o || {}).forEach(function (k) {
+            if (Array.isArray(o[k])) t[k] = o[k].filter(function (x) { return typeof x === 'number' && x >= 0; }).slice(-KEEP);
+          });
+        }
       };
     }
-    return { kind: kind, make: make, LINES: LINES, STILL: STILL, PROGRESS: PROGRESS, LATE_MS: LATE_MS, FIRST_MS: FIRST_MS, EVERY_MS: EVERY_MS };
+    function make(o) {   // o: { say(text, kind), later(fn, ms) -> id, cancel(id), now() -> ms, h, random, lineFor(name, label), table }
+      var rnd = o.random || Math.random, lat = o.table || table(), timer = null, st = null;
+      function fill(t) { return t.replace('{h}', o.h || 'sir'); }
+      function pick(pool) {
+        var i, t, n = 0;
+        do { i = Math.floor(rnd() * pool.length) % pool.length; t = fill(pool[i]); n++; } while (t === last && n < 20);
+        return t === last ? fill(pool[(i + 1) % pool.length]) : t;
+      }
+      function lineFor(step) { return (o.lineFor && o.lineFor(step.name, step.label)) || pick(QUIET); }
+      function clear() { if (timer !== null) { o.cancel(timer); timer = null; } }
+      function speak(t, kind) {
+        if (!st || !t || st.lines >= MAX_LINES || t === last) return false;
+        st.lines++; st.said = true; st.lastSpoke = o.now(); last = t;
+        o.say(t, kind); return true;
+      }
+      function closeStep() { if (st && st.step) { lat.learn(st.step.name, o.now() - st.step.at); st.step = null; } }
+      function patience() {
+        var exp = st.step ? lat.expected(st.step.name) : DEFAULT_MS;
+        return Math.max(STILL_MIN_MS, 2 * exp, 0.5 * (o.now() - st.t0)) * Math.pow(2, st.stills);
+      }
+      function due() {                       // when the net would next speak, or null
+        if (!st || st.lines >= MAX_LINES) return null;
+        if (!st.said) {
+          if (st.step && VISIBLE[st.step.name]) return st.step.at + GRACE_MS;   // its own line, once its label is in
+          var at = st.t0 + QUIET_MS;
+          if (st.step) { var exp = lat.expected(st.step.name); if (exp < 1500) at = Math.max(at, st.step.at + exp + 1000); }
+          return at;
+        }
+        return st.step ? st.lastSpoke + patience() : null;
+      }
+      function plan() {
+        clear();
+        var at = due();
+        if (at === null) return;
+        timer = o.later(fire, Math.max(0, at - o.now()));
+      }
+      function fire() {
+        timer = null;
+        if (!st) return;
+        var at = due();
+        if (at === null) return;
+        if (o.now() < at) { plan(); return; }      // patience grew meanwhile (the request ran long)
+        if (!st.said) speak(st.step ? lineFor(st.step) : pick(QUIET), st.step ? 'step' : 'quiet');
+        else if (speak(pick(STILL), 'still')) st.stills++;
+        plan();
+      }
+      return {
+        start: function () {                   // he has finished speaking: say nothing now
+          if (st) return false;                // a further breath of the same request
+          st = { t0: o.now(), said: false, lastSpoke: o.now(), lines: 0, stills: 0, step: null };
+          plan(); return true;
+        },
+        sentence: function () {                // Cecil said something himself: his own line or the answer
+          if (!st) return;
+          closeStep(); st.said = true; st.lastSpoke = o.now(); plan();
+        },
+        tool: function (name, label) {         // a top-level step started
+          if (!st) return;
+          closeStep(); st.step = { name: name || '', label: label || '', at: o.now() };
+          plan();
+        },
+        relabel: function (name, label) {      // the step's input arrived ("Opening a page" -> "Opening YouTube")
+          if (st && st.step && st.step.name === name && label) st.step.label = label;
+        },
+        stop: function () { closeStep(); st = null; clear(); },   // the turn ended, he interrupted, or an error
+        busy: function () { return !!st; },
+        patience: function () { return st ? patience() : null; },
+        table: lat
+      };
+    }
+    return { make: make, table: table, QUIET: QUIET, STILL: STILL, QUIET_MS: QUIET_MS, STILL_MIN_MS: STILL_MIN_MS,
+      MAX_LINES: MAX_LINES, SEED: SEED, VISIBLE: VISIBLE };
   })();
   /* ack:end */
-  var acker = ACK.make({ h: H, later: function (f, ms) { return setTimeout(f, ms); }, cancel: function (id) { clearTimeout(id); },
-    say: function (t) { speaker.say(t, null, true, null, true); },
-    progress: function () { return working ? fillerFor(working) : null; } });
+  var LAT_KEY = 'jv:step-ms', latency = ACK.table();
+  try { latency.load(JSON.parse(localStorage.getItem(LAT_KEY) || '{}')); } catch (e) { /* private window: seeds only */ }
+  function learnTimings(b) {          // the brain's measured per-step durations (timing events)
+    (b && b.tool_ms || []).forEach(function (x) { latency.learn(x.name, x.ms); });
+    try { localStorage.setItem(LAT_KEY, JSON.stringify(latency.dump())); } catch (e) { /* not kept */ }
+  }
+  var acker = ACK.make({ h: H, table: latency, now: function () { return Date.now(); },
+    later: function (f, ms) { return setTimeout(f, ms); }, cancel: function (id) { clearTimeout(id); },
+    lineFor: function (name, label) { return stepLine(name, label); },
+    say: function (t, kind) { speaker.say(t, pending && pending !== 'asking' ? pending : null, kind === 'quiet', null, kind === 'quiet'); } });
 
   /* ---- what he says: segments -> words -> one utterance (src/lib/voice.ts makeAssembler) ---- */
   var CONTINUES = /\b(and|or|but|so|because|since|if|when|while|that|which|who|to|of|in|on|at|by|for|with|from|about|into|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|do|does|did|have|has|had|can|could|would|should|will|might|must|like|than|then|as|very|really|just|some|any)$/i;
@@ -455,7 +521,7 @@
   function newSpeech() {    // strict single flight: his new words stop the voice at once; the server joins the texts
     speaker.cancel();
     if (pending && pending !== 'asking') cancelled[pending] = 1;
-    acker.answered();
+    acker.stop();
   }
   function fire() {
     clearTimeout(holdTimer);
@@ -464,7 +530,7 @@
   }
 
   /* ---- asking the brain ------------------------------------------------------------------- */
-  var myTurns = {}, cancelled = {}, pending = null, turnKinds = {}, spokeIn = {}, filled = {};
+  var myTurns = {}, cancelled = {}, pending = null, turnKinds = {}, spokeIn = {};
   var timing = {}, speechEndAt = 0, heardBy = '', heardSttMs = 0, heardEot = null, heardEotMs = 0;
   function firstWord(turn) {            // end of his speech -> first spoken word, measured here
     var t = turn && timing[turn];
@@ -478,7 +544,7 @@
   }
   function ask(text) {
     youEl.textContent = text;
-    acker.start(text);                 // within milliseconds of the end of his speech, before the request goes
+    acker.start();                     // nothing is said now: the net only covers a silence that goes on
     pending = 'asking'; render();
     var askAt = Date.now(), t0 = { end: speechEndAt || askAt, how: heardBy || 'typed', sttMs: heardSttMs,
       eot: heardEot, eotMs: heardEotMs };
@@ -489,20 +555,20 @@
       if (j.ok && j.turn) {
         t0.askMs = Date.now() - askAt; timing[j.turn] = t0;
         if (j.merged) { cancelled[j.merged] = 1; youEl.textContent = j.heard || text; }   // stitched onto the last breath
-        if (j.duplicate) { pending = null; acker.answered(); render(); return; }   // the laptop heard it first and answers
+        if (j.duplicate) { pending = null; acker.stop(); render(); return; }   // the laptop heard it first and answers
         if (!cancelled[j.turn]) { myTurns[j.turn] = 1; pending = j.turn; }
         addHistory('me', text, 'voice · this tab');
       }
       else {
-        pending = null; acker.answered();
+        pending = null; acker.stop();
         if (j.quiet) youEl.textContent = '';              // a filler or noise: keep listening, say nothing
         else if (j.error) fail(j.msg || j.reason || 'That did not go through.');
       }
       render();
-    }).catch(function () { pending = null; acker.answered(); fail('The connection dropped. Try again.'); });
+    }).catch(function () { pending = null; acker.stop(); fail('The connection dropped. Try again.'); });
   }
   function interrupt() {
-    acker.answered();
+    acker.stop();
     if (pending && pending !== 'asking') { cancelled[pending] = 1; pending = null; }
     speaker.cancel();
     post('/voice/api/interrupt', {}).catch(function () { /* nothing in flight */ });
@@ -811,6 +877,7 @@
     return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
   }
   function renderSteps() {
+    renderTrail();
     var id = act.order[act.order.length - 1], t = id && act.turns[id];
     stepsEl.textContent = '';
     if (liveEl) liveEl.hidden = !(t && t.status === 'running');
@@ -829,6 +896,7 @@
     stepsEl.appendChild(li);
   }
   function renderTasks() {
+    renderTrail();
     var list = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; })
       .sort(function (a, b) { return (a.started || '') < (b.started || '') ? -1 : 1; }).slice(-6).reverse();
     tasksEl.textContent = '';
@@ -844,6 +912,51 @@
       tasksEl.appendChild(li);
     });
   }
+  /* the live trail near the ring: he always SEES that work is going on, without a word being said.
+     The running step with a spinner and its elapsed seconds, finished steps ticked, background tasks with a
+     pulse and their elapsed time, then a clear end: a tick and "Done" that fades, or a red line. */
+  var trailTimer = null, trailFade = null, trailEndAt = 0, trailTurn = null;
+  function secs(ms) { var s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
+  function trailRow(cls, ico, label, time) {
+    var li = el('li', 'jv-tr ' + cls);
+    if (ico === 'spin') li.appendChild(el('span', 'cc-spinner jv-tr-ico'));
+    else { var i = el('span', 'jv-tr-ico', ico); i.setAttribute('aria-hidden', 'true'); li.appendChild(i); }
+    var l = el('span', 'jv-tr-label', label); l.title = label; li.appendChild(l);
+    if (time) li.appendChild(el('span', 'jv-tr-time', time));
+    return li;
+  }
+  function renderTrail() {
+    if (!trailEl || !trailList) return;
+    var id = act.order[act.order.length - 1], t = id && act.turns[id], now = Date.now(), rows = [];
+    var tasks = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; }).filter(function (x) { return x.status === 'running'; });
+    if (t && t.at) {
+      var top = t.steps.filter(function (x) { return !x.parent; });
+      if (t.status === 'running') {
+        top.filter(function (x) { return x.status !== 'running'; }).slice(-2).forEach(function (x) {
+          rows.push(trailRow(x.status === 'error' ? 'is-error' : 'is-ok', x.status === 'error' ? '\u2715' : '\u2713', x.label, ''));
+        });
+        var cur = top.filter(function (x) { return x.status === 'running'; }).pop();
+        if (cur) rows.push(trailRow('is-now', 'spin', cur.label, secs(now - (cur.at || t.at))));
+        else rows.push(trailRow('is-now', 'spin', t.last === 'text' ? 'Answering' : (top.length ? 'Working' : 'Thinking'), secs(now - t.at)));
+      } else if (t.end && now - t.end < 6000) {
+        var bad = t.status !== 'ok' && t.status !== 'cancelled';
+        if (bad) rows.push(trailRow('is-error', '\u2715', 'Did not finish', ''));
+        else if (t.status === 'ok' && (top.length || t.end - t.at > 2500)) rows.push(trailRow('is-done', '\u2713', top.length ? 'Done \u00b7 ' + top.length + ' step' + (top.length === 1 ? '' : 's') : 'Done', secs(t.end - t.at)));
+      }
+    }
+    tasks.slice(-2).forEach(function (x) {
+      rows.push(trailRow('is-task', '', 'Background: ' + (x.task || 'task'), elapsed(x.started)));
+    });
+    trailList.textContent = '';
+    rows.forEach(function (r) { trailList.appendChild(r); });
+    var show = rows.length > 0, live = !!(t && t.status === 'running') || tasks.length > 0;
+    trailEl.classList.toggle('is-fading', show && !live && t && t.end && now - t.end > 3500);
+    trailEl.hidden = !show;
+    root.classList.toggle('has-trail', show);
+    if (show && !trailTimer) trailTimer = setInterval(renderTrail, 500);
+    if (!show && trailTimer) { clearInterval(trailTimer); trailTimer = null; }
+  }
+
   /* panels by kind (assistant/hud.py); every value is checked again here before it reaches the DOM */
   var TILE = 256, YT_ID = /^[A-Za-z0-9_-]{11}$/, LOCAL_MEDIA = /^\/voice\/api\/(img|media)\?u=|^\/voice\/api\/clip\/\d+$/;
   function lonX(lon, z) { return (lon + 180) / 360 * Math.pow(2, z) * TILE; }
@@ -952,7 +1065,7 @@
     bladeEl.hidden = false; root.classList.add('has-blade');
   }
   function closeBlade() { if (!bladeEl) return; bladeId = null; bladeEl.hidden = true; bladeEl.textContent = ''; root.classList.remove('has-blade'); }
-  function renderRail() { renderSteps(); renderTasks(); renderPanels(); }
+  function renderRail() { renderSteps(); renderTasks(); renderPanels(); renderTrail(); }
   setInterval(function () {
     if (Object.keys(act.tasks).some(function (k) { return act.tasks[k].status === 'running'; })) renderTasks();
   }, 1000);
@@ -966,7 +1079,7 @@
   }
   var handlers = {
     turn: function (e) {
-      act.turns[e.turn] = { id: e.turn, heard: e.heard || '', kind: e.kind, origin: e.origin, steps: [], status: 'running', text: '' };
+      act.turns[e.turn] = { id: e.turn, heard: e.heard || '', kind: e.kind, origin: e.origin, steps: [], status: 'running', text: '', at: Date.now() };
       act.order.push(e.turn); if (act.order.length > 8) delete act.turns[act.order.shift()];
       turnKinds[e.turn] = e.kind;
       if (e.kind === 'chat') act.panels = act.panels.filter(function (p) { return p.hold === 'sticky'; });
@@ -976,41 +1089,47 @@
       renderRail();
     },
     sentence: function (e) {
-      var t = act.turns[e.turn]; if (t) t.text = (t.text + ' ' + e.text).trim();
+      var t = act.turns[e.turn]; if (t) { t.text = (t.text + ' ' + e.text).trim(); t.last = 'text'; }
       if (cancelled[e.turn]) return;
       turnText[e.turn] = ((turnText[e.turn] || '') + ' ' + e.text).trim();
       caption(turnText[e.turn], true);
       spokeIn[e.turn] = 1;
-      if (myTurns[e.turn]) acker.answered();
+      if (myTurns[e.turn]) acker.sentence();
       if (shouldSpeak(e)) speaker.say(e.text, e.turn);
       working = ''; renderSteps(); render();
     },
     tool: function (e) {
       var t = act.turns[e.turn]; if (!t) return;
+      if (!e.parent) t.last = 'tool';
       var s = null;
       t.steps.forEach(function (x) { if (x.id === e.tool_id) s = x; });
-      if (s) s.label = e.label || s.label; else t.steps.push({ id: e.tool_id, label: e.label, status: 'running', parent: e.parent });
-      if (!e.parent) working = e.label;
-      if (myTurns[e.turn] && !spokeIn[e.turn] && !filled[e.turn] && !e.parent && !cancelled[e.turn] && !acker.busy()) {
-        filled[e.turn] = 1; speaker.say(fillerFor(e.label || ''), e.turn, true);    // once per turn, then quiet
+      if (s) { s.label = e.label || s.label; if (myTurns[e.turn] && !e.parent) acker.relabel(e.name, e.label); }
+      else {
+        t.steps.push({ id: e.tool_id, label: e.label, name: e.name, status: 'running', parent: e.parent, at: Date.now() });
+        if (myTurns[e.turn] && !e.parent && !cancelled[e.turn]) acker.tool(e.name, e.label);
       }
+      if (!e.parent) working = e.label;
       renderSteps(); render();
     },
     tool_done: function (e) {
       var t = act.turns[e.turn]; if (!t) return;
-      t.steps.forEach(function (x) { if (x.id === e.tool_id) x.status = e.ok ? 'ok' : 'error'; });
+      t.steps.forEach(function (x) { if (x.id === e.tool_id) { x.status = e.ok ? 'ok' : 'error'; x.end = Date.now(); } });
       renderSteps();
     },
     done: function (e) {
       var t = act.turns[e.turn];
-      if (t) { t.status = e.status === 'ok' ? 'ok' : e.status; t.steps.forEach(function (x) { if (x.status === 'running') x.status = 'ok'; }); }
-      if (pending === e.turn) { pending = null; acker.answered(); }
+      if (t) { t.status = e.status === 'ok' ? 'ok' : e.status; t.end = Date.now(); t.steps.forEach(function (x) { if (x.status === 'running') x.status = 'ok'; }); }
+      if (pending === e.turn) { pending = null; acker.stop(); }
       if (e.text && !cancelled[e.turn] && (myTurns[e.turn] || turnKinds[e.turn] === 'announce')) {
         addHistory('them', e.text, turnKinds[e.turn] === 'announce' ? 'voice · task done' : 'voice · just now');
       }
       working = ''; renderSteps(); render();
     },
-    error: function (e) { if (pending === e.turn) pending = null; fail(e.message || 'Something went wrong.'); },
+    error: function (e) {
+      var t = act.turns[e.turn]; if (t) { t.status = 'error'; t.end = Date.now(); }
+      if (pending === e.turn) { pending = null; acker.stop(); }
+      fail(e.message || 'Something went wrong.'); renderSteps();
+    },
     task: function (e) {
       var t = e.task || {};
       if (!t.id) return;
@@ -1029,7 +1148,11 @@
       if (always) { if (sttEngine() === 'browser') bsr.start(); else bsr.stop(); }
     },
     ui: function (e) { if (e.ui) applyUi(e.ui); if (e.effect) fireEffect(e.effect); },
-    timing: function (e) { if (e.timing) { diag.serverTiming = e.timing; if (e.timing.brain) diag.brainTiming = e.timing.brain; } },
+    timing: function (e) {
+      if (!e.timing) return;
+      diag.serverTiming = e.timing;
+      if (e.timing.brain) { diag.brainTiming = e.timing.brain; learnTimings(e.timing.brain); }
+    },
     ignored: function () { if (!pending) youEl.textContent = ''; },
     brain: function (e) { brainState = e.state === 'reconnecting' ? 'reconnecting' : ''; render(); }
   };

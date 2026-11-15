@@ -425,9 +425,16 @@ def _fx_clips(items: list[dict[str, Any]]) -> None:
         db.upsert_stat(vid, db.local_today().isoformat(), views=int(c.get("views", 100)))
 
 
+def _fx_speaking_lessons(items: list[dict[str, Any]]) -> None:
+    """What the owner taught about how much to say while working (the Speaking Style note)."""
+    from assistant import speaking_style
+    for x in items:
+        speaking_style.record(x.get("kind", "general"), x["lesson"], prompted_by=x.get("after", ""), source="eval")
+
+
 FIXTURES: dict[str, Callable[[Any], None]] = {
     "jobs": _fx_jobs, "memory": _fx_memory, "notes": _fx_notes, "checkins": _fx_checkins,
-    "history": _fx_history, "clips": _fx_clips,
+    "history": _fx_history, "clips": _fx_clips, "speaking_lessons": _fx_speaking_lessons,
 }
 
 
@@ -435,11 +442,21 @@ def _step(st: Any) -> Any:
     from assistant import runtime
     if isinstance(st, str):
         return st
+    if isinstance(st, dict) and "say" in st and "tool" in st:     # a line spoken just before a tool call
+        say, use = str(st["say"]), runtime.ToolUse("toolu_eval_say", str(st["tool"]), dict(st.get("input") or {}))
+
+        def reply(req: Any, say: str = say, use: Any = use) -> Any:
+            content = [{"type": "text", "text": say},
+                       {"type": "tool_use", "id": use.id + str(len(req.messages)), "name": use.name, "input": use.input}]
+            u = runtime.ToolUse(content[1]["id"], use.name, dict(use.input))
+            return runtime.ModelReply(content, say, [u], "tool_use", runtime.Usage(input_tokens=200, output_tokens=40),
+                                      req.model, f"fake-say-{len(req.messages)}")
+        return reply
     if isinstance(st, dict) and "tool" in st:
         return runtime.fake_tool(str(st["tool"]), **dict(st.get("input") or {}))
     if isinstance(st, list) and st:
         return [_step(x) for x in st]
-    raise EvalError(f"a script step is text, {{tool, input}} or a list of tool steps, got {st!r}")
+    raise EvalError(f"a script step is text, {{tool, input}}, {{say, tool, input}} or a list of tool steps, got {st!r}")
 
 
 class RecordingBackend:
@@ -661,6 +678,25 @@ def _c_forged_tags_escaped(ctx: _Ctx, arg: Any) -> tuple[str, str]:
     return _ok(n_close == 1 and "<system>" not in content, f"forged delimiters survived ({n_close} closes)")
 
 
+def _spoken_updates(ctx: _Ctx) -> list[str]:
+    """Lines the main agent said while it worked: text in a reply that also called a tool."""
+    reqs = [r for r in ctx.requests if r.agent == "main"]
+    out = []
+    for m in (reqs[-1].messages if reqs else []):
+        blocks = m.get("content") if m.get("role") == "assistant" and isinstance(m.get("content"), list) else []
+        kinds = {b.get("type") for b in blocks if isinstance(b, dict)}
+        if "tool_use" in kinds:
+            out += [b["text"] for b in blocks if isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()]
+    return out
+
+
+def _c_spoken_updates(ctx: _Ctx, arg: Any) -> tuple[str, str]:
+    """How many lines were said while working ({min: n} and/or {max: n})."""
+    n = len(_spoken_updates(ctx))
+    lo, hi = (arg.get("min", 0), arg.get("max", 10 ** 6)) if isinstance(arg, dict) else (int(arg), int(arg))
+    return _ok(lo <= n <= hi, f"{n} spoken updates (wanted {lo}..{hi if hi < 10 ** 6 else 'any'})")
+
+
 def _c_status(ctx: _Ctx, arg: Any) -> tuple[str, str]:
     return _ok(ctx.status == str(arg), f"status {ctx.status}")
 
@@ -701,6 +737,7 @@ CHECKS: dict[str, Callable[[_Ctx, Any], tuple[str, str]]] = {
     "memory_contains": _c_memory_contains, "context_contains": _c_context_contains,
     "prompt_contains": _c_prompt_contains, "untrusted_wrapped": _c_untrusted_wrapped,
     "forged_tags_escaped": _c_forged_tags_escaped, "status": _c_status, "example": _c_example,
+    "spoken_updates": _c_spoken_updates,
     "rubric": _c_rubric,
 }
 # Checks that only make sense against a scripted (offline) reply: skipped live.

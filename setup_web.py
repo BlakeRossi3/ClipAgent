@@ -977,7 +977,39 @@ def index(request: Request) -> Response:
                    {"can_control": main.control_available(),
                     "summary": {k: current_values(k) for k in ("about", "brain", "money", "phone", "youtube",
                                                                 "memory", "power")},
-                    "cc": claude_status(probe=False)})
+                    "cc": claude_status(probe=False), "speaking": speaking_summary()})
+
+
+def speaking_summary() -> dict[str, Any]:
+    """The "How I speak" card: what he has taught Cecil about talking while working, and recent requests to rate."""
+    try:
+        from assistant import speaking_style
+
+        return {"lessons": [{"kind": speaking_style.TASK_KINDS.get(x.kind, x.kind), "text": x.text, "day": x.day}
+                            for x in reversed(speaking_style.lessons())],
+                "turns": [{**t, "kind_label": speaking_style.TASK_KINDS.get(t.get("kind", ""), "Other"),
+                           "secs": round((t.get("duration_ms") or 0) / 1000)}
+                          for t in speaking_style.recent_turns(6)]}
+    except Exception as exc:
+        db.log_event("setup", "speaking style card failed", level="warning", data={"error": repr(exc)[:200]})
+        return {"lessons": [], "turns": []}
+
+
+@router.post("/speaking/rate", include_in_schema=False)
+async def speaking_rate(request: Request) -> Response:
+    """A thumb on how a recent voice request was narrated: stored, and written as a proposed lesson."""
+    err, form = await _post_guard(request)
+    if err is not None:
+        return err
+    from assistant import speaking_style
+
+    turn, rating = str(form.get("turn") or ""), str(form.get("rating") or "")
+    if rating not in ("up", "down") or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", turn):
+        return _error(request, "Not understood", "That rating was not one I can record.", 400)
+    lid = await run_in_threadpool(speaking_style.rate, turn, rating == "up")
+    if lid is None:
+        return _error(request, "Not found", "That request is no longer in the recent list.", 404)
+    return _redirect("/setup/?msg=saved#speaking")
 
 
 @router.get("/help/{name}", include_in_schema=False)

@@ -701,3 +701,19 @@ def test_status_and_money_questions_get_the_glance_lines_others_do_not(env, cloc
     assert "At a glance" in brain.context_parts("how much did I make this week?", fresh=False)[0]
     assert "At a glance" not in brain.context_parts("hello", fresh=False)[0]
     assert "At a glance" not in brain.context_parts("tell me a joke", fresh=False)[0]
+
+
+def test_a_quick_action_with_its_line_first_is_not_nudged_and_reports_its_steps(env):
+    steps = []
+    script(lambda said, c: ["Opening YouTube, sir.", brain.tool_step("open_url", url="https://www.youtube.com")])
+    res = brain.ask("open youtube", origin="browser", on_tool=lambda n, lb: steps.append((n, lb))).wait(10)
+    assert res["status"] == "ok" and res["reply"] == "Opening YouTube, sir."
+    assert len(brain.FakeClient.instances[-1].history) == 1                   # no nudge: the line was the point
+    assert steps == [("open_url", "Opening YouTube")]
+
+
+def test_a_silent_successful_quick_action_is_fine(env):
+    script(lambda said, c: [brain.tool_step("settings_set", setting="voice", value="Lewis")])
+    res, heard = say("switch to Lewis")
+    assert res["status"] == "ok" and heard == []                                # no "I didn't catch that"
+    assert len(brain.FakeClient.instances[-1].history) == 1

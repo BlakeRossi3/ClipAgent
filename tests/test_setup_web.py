@@ -202,7 +202,7 @@ def test_secrets_never_rendered_on_any_page(c, wiz):
 
 POSTS = ["/setup/about", "/setup/brain", "/setup/money", "/setup/phone", "/setup/power", "/setup/finish",
          "/setup/action/restart", "/setup/action/stop", "/setup/action/update", "/setup/youtube/connect",
-         "/setup/youtube/secret", "/setup/memory/import"]
+         "/setup/youtube/secret", "/setup/memory/import", "/setup/speaking/rate"]
 
 
 @pytest.mark.parametrize("path", POSTS)

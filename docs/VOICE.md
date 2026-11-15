@@ -41,8 +41,15 @@ and the work, with every power and the whole day's conversation (details in docs
 - Long work: "That'll take a few minutes, sir. I'll tell you when it's done." It runs in a parallel
   session; when it finishes Cecil says so once, on the page or laptop that asked.
 - Barge-in: speaking over him pauses him at once; if it was a real request he stops (and the answer in
-  flight is cancelled), if it was noise or his own echo he carries on. A filler line ("Running the
-  tests.") plays only when the first tool starts and nothing has been said yet.
+  flight is cancelled), if it was noise or his own echo he carries on.
+- Speaking while working is Cecil's judgement, not a timer: just the answer when he can answer now; one
+  line as he does a visible action ("Opening YouTube, sir."); a running commentary on a live lookup; a
+  start, the odd real milestone and the result on long work. He learns what the owner likes per kind of
+  task in the vault note `Agent/Speaking Style.md` (tool `speaking_style_note`; Settings, "How I speak",
+  has thumbs on recent requests). The page and the laptop only add a safety net for silence: one neutral
+  line after about 2 s of nothing, a visible action's own line if nobody announced it, and a "still
+  working" line only after a long silence whose length grows with the step's learned duration. The trail
+  under the ring always shows the running step, its seconds, finished steps and background tasks.
 - Fillers and noise ("um", "maybe, um", "thank you" from Whisper's imagination) get no reply; a sentence
   that trails off ("remind me to...") waits a moment for the rest.
 - The laptop voice process asks the same brain over `POST /voice/api/ask` (loopback, a local key from

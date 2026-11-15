@@ -6,6 +6,8 @@ engines (openwakeword, kokoro_onnx, sounddevice, faster_whisper...) are never im
 
 from __future__ import annotations
 
+import random
+
 import re
 import sys
 from pathlib import Path
@@ -107,7 +109,7 @@ class ManualExecutor:
 def make(*texts, **kw):
     clock = Clock()
     s = VoiceSettings(wake_mode=kw.pop("wake_mode", "hey_jarvis"), end_silence_sec=0.3, followup_sec=8.0,
-                      filler_delay_sec=0.7, listen_timeout_sec=6.0, **kw.pop("settings", {}))
+                      filler_delay_sec=2.0, listen_timeout_sec=6.0, **kw.pop("settings", {}))
     ex = ManualExecutor()
     history = []
     ctl = control.MemoryControl()
@@ -136,7 +138,9 @@ def test_full_cycle_wake_think_speak_followup_idle():
     assert a.state == va.LISTENING
     say_utterance(a, clock)
     assert a.state == va.THINKING and ex.calls[0][0] == "what is on today"
-    run(a, clock, QUIET, 12)                                      # ~1 s: one filler line, not two
+    run(a, clock, QUIET, 12)                                      # ~1 s: nothing extra yet
+    assert tts.said == []
+    run(a, clock, QUIET, 15)                                      # 2 s of nothing at all: one neutral line
     assert len(tts.said) == 1 and tts.said[0] in [speech.fill(x, "sir") for x in speech.WORKING]
     ex.calls[0][1].set_result("You have two meetings, sir. The first is at ten.")
     run(a, clock, QUIET)
@@ -170,13 +174,58 @@ def test_fast_answer_gets_no_filler():
     assert tts.said == ["Good evening, sir."]
 
 
-def test_second_filler_after_long_wait():
+def test_long_silence_gets_one_still_line_only_while_a_step_runs():
     a, clock, ex, tts, *_ = make("long job")
     run(a, clock, WAKE)
     say_utterance(a, clock)
-    clock.t += speech.STILL_AFTER_SEC + 1
+    parts = a.turn.parts
+    parts.put("Looking through the archive, sir.")            # Cecil's own line: no neutral ack
+    parts.put(("tool", "Grep", "Searching the code"))
+    run(a, clock, QUIET, 5)
+    assert tts.said == ["Looking through the archive, sir."]
+    clock.t += speech.STILL_AFTER_SEC + 1                     # a long silence while the step runs
     run(a, clock, QUIET, 3)
     assert len(tts.said) == 2 and tts.said[1] in [speech.fill(x, "sir") for x in speech.STILL]
+    clock.t += speech.STILL_AFTER_SEC + 1                     # the next one waits longer (patience doubles)
+    run(a, clock, QUIET, 3)
+    assert len(tts.said) == 2
+
+
+def test_visible_action_nobody_announced_is_named_once():
+    a, clock, ex, tts, *_ = make("open youtube")
+    run(a, clock, WAKE)
+    say_utterance(a, clock)
+    a.turn.parts.put(("tool", "open_url", "Opening YouTube"))
+    run(a, clock, QUIET, 40)
+    assert tts.said == ["Opening YouTube, sir."]
+
+
+def test_narrator_patience_scales_with_the_learned_step_duration():
+    n = speech.Narrator("sir", random.Random(1))
+    n.start(0.0)
+    n.sentence(0.5)
+    n.tool(0.5, "WebSearch")
+    quick = next(t for t in range(1, 400) if n.tick(0.5 + t))   # seeded web search: about 15 s
+    slow = speech.Narrator("sir", random.Random(1))
+    for _ in range(3):
+        slow.learn("WebSearch", 40.0)                             # it has been taking 40 s lately
+    slow.start(0.0)
+    slow.sentence(0.5)
+    slow.tool(0.5, "WebSearch")
+    later = next(t for t in range(1, 400) if slow.tick(0.5 + t))
+    assert later >= 2 * quick and later >= 80
+
+
+def test_narrator_says_nothing_for_a_quick_answer_or_a_fast_step():
+    n = speech.Narrator("sir", random.Random(2))
+    n.start(0.0)
+    n.tool(0.3, "memory_search")                                # fast: the answer is a moment away
+    assert n.tick(1.0) == [] and n.tick(1.9) == []
+    n.sentence(1.2)
+    assert all(n.tick(t) == [] for t in range(2, 120))         # answered: nothing more, ever
+    m = speech.Narrator("sir", random.Random(2))
+    m.start(0.0)
+    assert m.tick(1.9) == [] and len(m.tick(2.0)) == 1 and m.tick(60.0) == []   # one neutral line, no step running
 
 
 def test_barge_in_stops_speech_and_listens():
@@ -530,6 +579,13 @@ def test_voice_process_asks_with_its_local_key_and_streams_sentences(talk):
     heard = []
     out = vagent.remote_reply("what is on today", heard.append, post=lambda **kw: Resp())
     assert heard == [x["sentence"] for x in lines if "sentence" in x] and out["status"] == "ok"
+    r = c.post("/voice/api/ask", data={"text": "switch to Lewis", "origin": "voice"},
+               headers={"X-Voice-Key": key, "Accept": "application/x-ndjson"})   # a step: its line reaches the laptop
+    lines = [_json.loads(x) for x in r.text.splitlines() if x.strip()]
+    assert {"name": "settings_set", "label": "Changing the voice"} in [x.get("tool") for x in lines]
+    steps = []
+    vagent.remote_reply("switch to Lewis", heard.append, post=lambda **kw: Resp(), on_tool=lambda n, lb: steps.append(n))
+    assert steps == ["settings_set"]
 
 
 def test_page_tts_endpoint_and_voice_list(talk):

@@ -455,7 +455,9 @@ async def api_ask(request: Request) -> Response:
 
     lines: _q.SimpleQueue[str | None] = _q.SimpleQueue()
     turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge, timing=timing,
-                                                     on_sentence=lambda s: lines.put(json.dumps({"sentence": s}))))
+                                                     on_sentence=lambda s: lines.put(json.dumps({"sentence": s})),
+                                                     on_tool=lambda n, lb: lines.put(json.dumps({"tool": {"name": n,
+                                                                                                          "label": lb}}))))
     if turn.origin != origin:   # the other listener already asked this: it answers, this one stays quiet
         dup = {"done": True, "reply": "", "spoken": "", "status": "duplicate", "cost_usd": 0.0, "task": False,
                "first_sentence_ms": None, "turn": turn.id, "route": "brain"}

@@ -67,6 +67,8 @@
       </button>
     </div>
 
+    {# --- the live trail: what is happening right now, near the ring (static/jarvis.js renderTrail) --- #}
+    <div class="jv-trail" data-jv-trail aria-live="off" hidden><ol class="jv-trail-list" data-jv-trail-list></ol></div>
     <div class="jv-statusbar">
       <p class="cc-working" data-cc-working hidden><span class="cc-spinner" aria-hidden="true"></span><span data-cc-working-text>Working on it</span></p>
       <p class="jv-status" role="status" data-jv-status>{% if a.can_chat %}Tap to talk{% else %}{{ a.reason }}{% endif %}</p>

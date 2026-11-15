@@ -49,7 +49,11 @@ CONVS = [
 def make_zip(path: Path, members: dict[str, object]) -> Path:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in members.items():
-            z.writestr(name, data if isinstance(data, (str, bytes)) else json.dumps(data))
+            # a fixed timestamp: the same members make the same bytes (writestr(name) stamps the current
+            # time, so a rebuilt archive crossing a 2-second boundary got a new hash and "re-imported")
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, data if isinstance(data, (str, bytes)) else json.dumps(data))
     return path
 
 

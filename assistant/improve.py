@@ -650,7 +650,18 @@ def observe(days: int = 7) -> dict[str, Any]:
                            for r in sorted(runs, key=lambda r: r.cost_usd, reverse=True)[:3]],
         "agent_runs": dict(used), "agents_never_used": sorted(roster - set(used)),
         "evals": None if rep is None else rep.summary(), "eval_regressions": evals.regressions(),
+        "speaking_style": _speaking_digest(),
     }
+
+
+def _speaking_digest() -> dict[str, Any]:
+    """How much he was told per kind of task, his thumbs and style feedback, the current lessons."""
+    try:
+        from assistant import speaking_style
+
+        return speaking_style.digest()
+    except Exception:
+        return {}
 
 
 STUB_PATH = "skills/weekly-hours/SKILL.md"
@@ -678,6 +689,12 @@ def weekly_improvement(days: int = 7) -> dict[str, Any]:
     from assistant.settings import get_assistant_settings
 
     sync_decisions()
+    try:          # the Speaking Style note stays short: duplicates and contradicted lessons merged (newest wins)
+        from assistant import speaking_style
+
+        speaking_style.tidy()
+    except Exception as exc:
+        db.log_event("assistant", "speaking style tidy failed", level="warning", data={"error": repr(exc)[:200]})
     digest = observe(days)
     started = db.now_iso()
     before_ids = {p["id"] for p in list_proposals()}

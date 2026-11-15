@@ -78,6 +78,24 @@
   {{ tile("/dashboard/modes", "Desktop modes", "Gaming, Work, Wind down", "team") }}
   {{ tile("/dashboard/history", "Claude history", "Import your claude.ai chats into memory", "book") }}
 </div></section>
+{% if speaking is defined %}
+<section class="card s-speaking" id="speaking" aria-labelledby="g-speak">
+  <h2 class="sec-title" id="g-speak">How I speak</h2>
+  <p class="f-help">What {{ a.name }} says while working is his judgement, shaped by what you tell him ("too much", "keep me posted on these"). It lives in the vault note <a href="/dashboard/memory?note={{ 'Agent/Speaking Style.md' | urlencode }}">Agent/Speaking Style</a>; edit it any time.</p>
+  {% if speaking.lessons %}
+  <ul class="s-lessons">{% for l in speaking.lessons %}<li><b>{{ l.kind }}:</b> {{ l.text }}{% if l.day %} <span class="f-help">{{ l.day }}</span>{% endif %}</li>{% endfor %}</ul>
+  {% else %}<p class="f-help">Nothing learned yet: tell him out loud when he says too much or too little.</p>{% endif %}
+  {% if speaking.turns %}
+  <h3 class="mini-head">Recent requests: was that the right amount?</h3>
+  <ul class="s-turns">{% for t in speaking.turns %}
+    <li><span class="s-turn-text">"{{ t.heard }}" <span class="f-help">{{ t.kind_label }} · {{ t.updates }} spoken update{{ "" if t.updates == 1 else "s" }} · {{ t.secs }}s{% if t.feedback %} · you said "{{ t.feedback }}"{% endif %}</span></span>
+      <form method="post" action="/setup/speaking/rate" class="s-thumbs"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="turn" value="{{ t.turn }}">
+        <button type="submit" name="rating" value="up" class="hbtn hbtn-sm{% if t.rating == 1 %} hbtn-accent{% endif %}" aria-label="Right amount" title="Right amount">&#128077;&#xFE0E;</button>
+        <button type="submit" name="rating" value="down" class="hbtn hbtn-sm{% if t.rating == -1 %} hbtn-accent{% endif %}" aria-label="Wrong amount" title="Too much or too little">&#128078;&#xFE0E;</button></form></li>
+  {% endfor %}</ul>
+  {% endif %}
+</section>
+{% endif %}
 <section class="card s-maint">
   <h2 class="sec-title">Maintenance</h2>
   <div class="s-btnrow">

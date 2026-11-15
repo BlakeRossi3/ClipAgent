@@ -67,7 +67,7 @@
     var jobs = steps.length + tasks + staffBusy, working = busy || tasks > 0 || staffBusy > 0;
     root.classList.toggle('cc-busy', working);
     if (workingEl) {
-      workingEl.hidden = !working;
+      workingEl.hidden = !working || root.classList.contains('has-trail');   // the trail by the ring says it already
       var bits = ['Working on it'];
       if (st === 'thinking' && steps.length) bits.push(steps[steps.length - 1]);
       if (tasks) bits.push(tasks + ' background task' + (tasks === 1 ? '' : 's'));

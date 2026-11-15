@@ -14,6 +14,9 @@ description: How the engineer turns a week of evidence (owner corrections, ignor
 - One `lessons_propose` per clear pattern seen at least twice. One specific sentence plus the evidence
   ("said so twice: Tue, Thu"). Areas: tone, hours, meals, memory, briefs, studio, checkins.
 - Do not repeat a lesson that already exists; the owner approves lessons in one batch.
+- How he likes to be spoken to while you work: the digest's `speaking_style` (per kind of task: spoken
+  updates, thumbs, his feedback) and the Speaking Style note's lessons. The note is merged and capped by
+  code each week; record a clear new pattern with `speaking_style_note` (a few words, scoped to the kind of task).
 
 ## Proposals (at most three a week; prefer none over a weak one)
 1. Read the exact current text with `improvement_read` (or `skill_read`).

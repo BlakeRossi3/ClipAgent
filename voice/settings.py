@@ -51,7 +51,7 @@ class VoiceSettings:
     name_model: str = "tiny.en"            # the small model that listens for the assistant's name
     whisper_device: str = "auto"
     followup_sec: float = 8.0
-    filler_delay_sec: float = 0.7
+    filler_delay_sec: float = 2.0
     listen_timeout_sec: float = 6.0
     end_silence_sec: float = 1.2
     max_utterance_sec: float = 30.0
@@ -138,7 +138,7 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         name_model=s("VOICE_NAME_MODEL", "tiny.en"),
         whisper_device=base.whisper_device,
         followup_sec=_float(env.get("VOICE_FOLLOWUP_SEC"), 8.0, 0.0, 60.0),
-        filler_delay_sec=_float(env.get("VOICE_FILLER_DELAY_SEC"), 0.7, 0.0, 10.0),
+        filler_delay_sec=_float(env.get("VOICE_FILLER_DELAY_SEC"), 2.0, 1.0, 10.0),
         listen_timeout_sec=_float(env.get("VOICE_LISTEN_TIMEOUT_SEC"), 6.0, 2.0, 30.0),
         end_silence_sec=_float(env.get("VOICE_END_SILENCE_SEC"), 1.2, 0.3, 3.0),
         max_utterance_sec=_float(env.get("VOICE_MAX_UTTERANCE_SEC"), 30.0, 5.0, 120.0),

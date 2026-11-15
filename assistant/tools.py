@@ -129,6 +129,7 @@ PLANNED_TOOLS: dict[str, str] = {
     **{name: "assistant.hud" for name in (
         "show_map", "show_media", "show_data", "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset")},
     "selfcheck_run": "assistant.selfcheck",
+    "speaking_style_note": "assistant.speaking_style",
     "fast_search": "assistant.fast_search",
     "approval_rules_list": "assistant.approvals",
     "approval_rule_revoke": "assistant.approvals",
@@ -142,7 +143,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
-                     "assistant.skill_catalog")
+                     "assistant.skill_catalog", "assistant.speaking_style")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs

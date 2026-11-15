@@ -110,3 +110,12 @@
 .s-butler { background: radial-gradient(closest-side, var(--glow), transparent); }
 .s-actions + .fold { margin-top: 18px; }
 .s-grid > .s-tile { margin: 0; }
+
+/* "How I speak": learned speaking preferences + thumbs on recent voice requests */
+.s-speaking { margin-top: 6px; }
+.s-lessons, .s-turns { list-style: none; margin: 6px 0 10px; padding: 0; display: grid; gap: 6px; }
+.s-lessons li { padding: 6px 0; border-top: 1px solid var(--border); }
+.s-turns li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); min-width: 0; }
+.s-turn-text { min-width: 0; overflow-wrap: anywhere; }
+.s-turn-text .f-help { display: block; margin: 2px 0 0; }
+.s-thumbs { display: flex; gap: 6px; margin: 0; flex: none; }
