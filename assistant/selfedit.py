@@ -154,16 +154,10 @@ def ensure_branch() -> str:
     if br and br != "HEAD" and not _out("config", "--get", UPSTREAM_KEY):
         git("config", UPSTREAM_KEY, br)
     exists = git("rev-parse", "--verify", "--quiet", f"refs/heads/{target}").returncode == 0
-    # An existing branch is safe to switch to only when it already holds this HEAD's history. A stale one
-    # (left behind by an update) would swap the OLD app back onto disk: park it on a backup branch and
-    # restart the self-edit branch from the version that is running.
     if exists and git("merge-base", "--is-ancestor", "HEAD", target).returncode != 0:
-        backup = f"{target.rsplit('/', 1)[0]}/backup-{db.utcnow():%Y%m%d-%H%M%S}" if "/" in target \
-            else f"{target}-backup-{db.utcnow():%Y%m%d-%H%M%S}"
-        git("branch", "-f", backup, target)
-        db.log_event("assistant", f"stale {target} kept as {backup}; restarting it from the current version",
-                     level="warning")
-        r = git("checkout", "-B", target)
+        # The running version has updates the self-edit branch lacks: switch to the branch and merge them in,
+        # so the owner's updates and Cecil's own edits are combined. Never swap the old app back in.
+        r = _switch_and_merge(target, br)
     else:
         r = git("checkout", target) if exists else git("checkout", "-b", target)
     if r.returncode != 0:
@@ -173,6 +167,30 @@ def ensure_branch() -> str:
         git("config", "user.email", "sterling@clipagent.local")
     db.log_event("assistant", f"self-edit branch {target} in use", data={"from": br})
     return target
+
+
+def _backup_name() -> str:
+    return f"sterling/backup-{db.utcnow():%Y%m%d-%H%M%S}"
+
+
+def _switch_and_merge(target: str, src: str) -> subprocess.CompletedProcess[str]:
+    """Check out ``target`` and merge ``src`` (the version that was running) into it. On a conflict the
+    branch is kept as a backup (``recover()`` / Cecil can merge it by hand) and restarted from ``src``."""
+    head = _out("rev-parse", "HEAD")
+    r = git("checkout", target)
+    if r.returncode != 0:
+        return r
+    m = git(*GIT_ID, "merge", "--no-edit", "-m", f"Merge updates from {src or head[:8]}", head)
+    if m.returncode == 0:
+        db.log_event("assistant", f"merged the latest updates into {target}", data={"from": src or head})
+        return m
+    conflicts = _out("diff", "--name-only", "--diff-filter=U").splitlines()
+    git("merge", "--abort")
+    backup = _backup_name()
+    git("branch", "-f", backup, target)
+    db.log_event("assistant", f"my edits on {target} conflict with the update; kept them as {backup}",
+                 level="warning", data={"conflicts": conflicts[:20]})
+    return git("checkout", "-B", target, head)
 
 
 def changed_files() -> list[str]:
@@ -407,6 +425,113 @@ def undo() -> dict[str, Any]:
             "message": f"Undone: {target['title'].removeprefix('Sterling: ')}. Restarting."}
 
 
+# -- bringing set-aside edits back ---------------------------------------------------
+
+STASH_MARKERS = ("before-manual-update", "sterling-autosave-before-update", "cecil")
+
+
+def set_aside() -> dict[str, list[dict[str, Any]]]:
+    """Edits an update put aside: backup branches with commits the running version lacks, and stashes
+    the launcher or a manual update made. {"branches": [{name, commits}], "stashes": [{ref, message}]}."""
+    if not is_repo():
+        return {"branches": [], "stashes": []}
+    branches = []
+    for name in _out("for-each-ref", "--format=%(refname:short)", "refs/heads/sterling/backup-*").splitlines():
+        n = _out("rev-list", "--count", f"HEAD..{name}")
+        if n and n != "0":
+            branches.append({"name": name, "commits": int(n)})
+    stashes = []
+    for line in _out("stash", "list", "--format=%gd%x1f%gs").splitlines():
+        ref, _, msg = line.partition("\x1f")
+        if any(m in msg.lower() for m in STASH_MARKERS):
+            stashes.append({"ref": ref, "message": msg})
+    return {"branches": branches, "stashes": stashes}
+
+
+def recover(*, restart: bool = True) -> dict[str, Any]:
+    """Merge every set-aside edit back into the running version, test, keep (and restart) or undo.
+    Conflicting pieces are skipped and listed so Cecil (or the owner) can merge them by hand.
+    {ok, message, merged, conflicts}."""
+    if not is_repo():
+        return {"ok": False, "message": "This app folder is not a git checkout.", "merged": [], "conflicts": []}
+    if changed_files():
+        return {"ok": False, "message": "The app folder has uncommitted changes; commit or discard them first.",
+                "merged": [], "conflicts": []}
+    found = set_aside()
+    if not found["branches"] and not found["stashes"]:
+        return {"ok": True, "message": "Nothing was set aside; every edit is already in the running version.",
+                "merged": [], "conflicts": []}
+    ensure_branch()
+    start = _out("rev-parse", "HEAD")
+    merged: list[str] = []
+    conflicts: list[dict[str, Any]] = []
+    for b in found["branches"]:
+        r = git(*GIT_ID, "merge", "--no-edit", "-m", f"Sterling: bring back edits from {b['name']}", b["name"])
+        if r.returncode == 0:
+            merged.append(b["name"])
+        else:
+            files = _out("diff", "--name-only", "--diff-filter=U").splitlines()
+            git("merge", "--abort")
+            conflicts.append({"what": b["name"], "files": files[:20]})
+    applied: list[str] = []
+    for st in reversed(found["stashes"]):            # oldest first; refs shift as stashes are dropped
+        ref = st["ref"]
+        r = git("stash", "apply", ref)
+        if r.returncode == 0 and changed_files():
+            git("add", "-A")
+            c = git(*GIT_ID, "commit", "-q", "-m", f"Sterling: bring back unsaved edits ({st['message'][:60]})",
+                    "-m", TRAILER)
+            if c.returncode == 0:
+                merged.append(st["message"])
+                applied.append(st["ref"])
+                continue
+        files = _out("diff", "--name-only", "--diff-filter=U").splitlines()
+        git("reset", "-q", "--hard", "HEAD")
+        git("clean", "-fdq")
+        if r.returncode != 0:
+            conflicts.append({"what": f"{st['ref']} ({st['message']})", "files": files[:20]})
+    if _out("rev-parse", "HEAD") == start:
+        return {"ok": not conflicts, "merged": [], "conflicts": conflicts,
+                "message": _recover_message([], conflicts)}
+    passed, output = _tests(app_dir(), get_assistant_settings().self_edit_test_timeout_sec)
+    if not passed:
+        git("reset", "-q", "--hard", start)
+        return {"ok": False, "merged": [], "conflicts": conflicts,
+                "message": "I merged the set-aside edits but the tests failed, so I put things back as they were. "
+                           "What failed: " + _tail(output)}
+    for ref in sorted(applied, key=lambda x: -int(x.strip("stash@{}") or 0)):   # newest index first
+        git("stash", "drop", ref)
+    db.log_event("assistant", "brought set-aside edits back", data={"merged": merged, "conflicts": conflicts})
+    if restart:
+        db.kv_set(KV_PENDING, {"commit": _out("rev-parse", "HEAD"), "prev": start, "at": db.now_iso()})
+        _write_marker(start)
+        schedule_restart()
+    return {"ok": not conflicts, "merged": merged, "conflicts": conflicts,
+            "message": _recover_message(merged, conflicts) + (" Restarting to use them." if restart else "")}
+
+
+def _recover_message(merged: list[str], conflicts: list[dict[str, Any]]) -> str:
+    parts = []
+    if merged:
+        parts.append(f"Brought back {len(merged)} set-aside edit(s); the tests pass.")
+    for c in conflicts:
+        parts.append(f"{c['what']} conflicts with the current version in {', '.join(c['files']) or 'some files'}: "
+                     f"merge it by hand (git merge {c['what'].split(' ')[0]}), resolve, test, commit.")
+    return " ".join(parts) or "Nothing to bring back."
+
+
+def register_tools(register: Callable[..., None]) -> None:
+    from assistant.tools import Tool, _obj
+
+    register(Tool("self_edits_set_aside", "Edits of mine an update put aside (backup branches and stashes) that "
+                  "the running app does not have yet.", _obj({}, []), lambda ctx, a: set_aside(),
+                  owner="assistant.selfedit"), replace=True)
+    register(Tool("self_edits_recover", "Merge every set-aside edit of mine back into the running app (with the "
+                  "owner's latest updates), run the tests, keep and restart, or undo if they fail. Conflicts are "
+                  "listed for me to resolve by hand.", _obj({}, []), lambda ctx, a: recover(),
+                  owner="assistant.selfedit", side_effects=True), replace=True)
+
+
 # -- after a restart -------------------------------------------------------------
 
 def verify_after_restart(port: int, *, wait: float = 8.0, fetch: Callable[[str], bool] | None = None) -> str:
@@ -459,4 +584,5 @@ def powers_status() -> dict[str, Any]:
     return {"enabled": s.self_edit, "repo": repo, "branch": current_branch() if repo else "",
             "target_branch": s.self_edit_branch, "upstream": _out("config", "--get", UPSTREAM_KEY) if repo else "",
             "commits": self_commits(5) if repo else [], "last": last_outcome(),
-            "pending": json.dumps(db.kv_get(KV_PENDING)) if db.kv_get(KV_PENDING) else ""}
+            "pending": json.dumps(db.kv_get(KV_PENDING)) if db.kv_get(KV_PENDING) else "",
+            "set_aside": set_aside() if repo else {"branches": [], "stashes": []}}

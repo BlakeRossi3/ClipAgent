@@ -60,16 +60,56 @@ def test_commit_on_pass_then_undo(repo):
     assert not selfedit.undo()["ok"]                              # nothing of Sterling's left to undo
 
 
-def test_stale_self_branch_never_brings_the_old_app_back(repo):
+def test_updates_and_cecils_edits_are_merged_not_swapped(repo):
     r, _state, _restarts = repo
-    _git(r, "branch", "sterling/self")                           # the assistant's branch, at the old version
-    (r / "app.py").write_text("VERSION = 9\n")                   # an update moved the published branch on
+    _git(r, "checkout", "-q", "-b", "sterling/self")
+    (r / "cecil.py").write_text("by = 'cecil'\n")                  # Cecil's own edit on its branch
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "Sterling: cecil edit")
+    _git(r, "checkout", "-q", "main")
+    (r / "app.py").write_text("VERSION = 9\n")                   # an update on the published branch
     _git(r, "commit", "-qam", "update")
-    head = _git(r, "rev-parse", "HEAD")
     snap = selfedit.begin()
     assert snap.ok and selfedit.current_branch() == "sterling/self"
-    assert _git(r, "rev-parse", "HEAD") == head and (r / "app.py").read_text() == "VERSION = 9\n"
-    assert "sterling/backup-" in _git(r, "branch", "--list", "sterling/backup-*")   # old commits kept
+    assert (r / "app.py").read_text() == "VERSION = 9\n" and (r / "cecil.py").exists()   # both kept
+
+
+def test_conflicting_branch_is_backed_up_then_recovered_by_hand_list(repo):
+    r, _state, _restarts = repo
+    _git(r, "checkout", "-q", "-b", "sterling/self")
+    (r / "app.py").write_text("VERSION = 'cecil'\n")
+    _git(r, "commit", "-qam", "Sterling: cecil edit")
+    _git(r, "checkout", "-q", "main")
+    (r / "app.py").write_text("VERSION = 9\n")
+    _git(r, "commit", "-qam", "update")
+    selfedit.begin()
+    assert (r / "app.py").read_text() == "VERSION = 9\n"         # the update runs
+    aside = selfedit.set_aside()
+    assert [b["name"].startswith("sterling/backup-") for b in aside["branches"]] == [True]
+    res = selfedit.recover(restart=False)
+    assert not res["ok"] and res["conflicts"] and "app.py" in res["conflicts"][0]["files"]
+    assert not selfedit.changed_files()                          # nothing half-merged left behind
+
+
+def test_recover_brings_back_backups_and_stashes(repo):
+    r, state, restarts = repo
+    _git(r, "checkout", "-q", "-b", "sterling/backup-manual-2")
+    (r / "feature.py").write_text("x = 1\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "Sterling: feature")
+    _git(r, "checkout", "-q", "main")
+    (r / "notes.py").write_text("y = 2\n")                       # an unsaved edit set aside by the manual update
+    _git(r, "stash", "push", "--include-untracked", "-m", "before-manual-update")
+    aside = selfedit.set_aside()
+    assert len(aside["branches"]) == 1 and len(aside["stashes"]) == 1
+    state["pass"] = False
+    res = selfedit.recover(restart=False)                        # tests fail -> everything put back
+    assert not res["ok"] and not (r / "feature.py").exists() and len(selfedit.set_aside()["stashes"]) == 1
+    state["pass"] = True
+    res = selfedit.recover()
+    assert res["ok"] and (r / "feature.py").exists() and (r / "notes.py").exists()
+    assert selfedit.set_aside() == {"branches": [], "stashes": []} and restarts == ["scheduled"]
+    assert selfedit.recover()["message"].startswith("Nothing was set aside")
 
 
 def test_rollback_on_failing_tests(repo):

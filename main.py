@@ -1031,6 +1031,12 @@ def assistant_cli(args: argparse.Namespace) -> int:
         from assistant import heartbeat
 
         return heartbeat.main_cli(now=args.now)
+    if args.acmd == "recover":
+        from assistant import selfedit
+
+        res = selfedit.recover(restart=False)
+        print(res["message"])
+        return 0 if res["ok"] else 1
     if args.acmd == "selfcheck":
         from assistant import selfcheck
 
@@ -1271,6 +1277,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--schedule", choices=["weekly", "biweekly", "semimonthly", "monthly"])
     p.add_argument("--tax", type=float, help="tax set-aside, e.g. 0.2 or 20")
     asub.add_parser("plan", help="plan and show today's check-ins")
+    asub.add_parser("recover", help="merge Cecil's set-aside edits back in (backup branches + stashes), test, keep")
     asub.add_parser("selfcheck", help="run Cecil's acceptance suite on the real data (safe: undone, nothing sent)")
     p = asub.add_parser("heartbeat", help="heartbeat status (--now: run one tick now)")
     p.add_argument("--now", action="store_true", help="run one heartbeat now, even if nothing changed")
