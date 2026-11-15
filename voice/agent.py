@@ -51,6 +51,7 @@ HEARTBEAT_SEC = 5.0
 ANNOUNCE_POLL_SEC = 2.0        # how often finished background tasks are checked for (spoken when idle)
 RELOAD_POLL_SEC = 3.0          # how often a changed voice setting is looked for (Settings page / settings_set)
 MUTE_POLL_SEC = 0.5
+SHORT_SILENCE_SEC = 0.3        # Smart Turn is asked after this much quiet (then ends early or waits longer)
 
 Brain = Callable[[str], str]
 History = Callable[[str, str], None]
@@ -60,8 +61,14 @@ class Recorder:
     """One utterance: keeps a little audio from before the onset, confirms speech over two frames,
     ends after ``end_frames`` of quiet or ``max_frames`` in total."""
 
-    def __init__(self, end_frames: int, max_frames: int, preroll: int = 4, confirm: int = 2):
+    def __init__(self, end_frames: int, max_frames: int, preroll: int = 4, confirm: int = 2,
+                 endpointer: Callable[[np.ndarray], tuple[float | None, int]] | None = None):
         self.end_frames, self.max_frames, self.preroll, self.confirm = end_frames, max_frames, preroll, confirm
+        # Smart Turn (voice/smart_turn.py): asked once per pause, after SHORT_SILENCE_SEC of quiet, on the
+        # whole utterance so far; "finished" ends it there, "not finished" waits longer (up to a cap)
+        self.endpointer = endpointer
+        self.short_frames = max(1, round(SHORT_SILENCE_SEC / audio.FRAME_SEC))
+        self.eot: tuple[float | None, int] | None = None     # the last (probability, ms) for this utterance
         self.reset()
 
     def reset(self) -> None:
@@ -69,6 +76,8 @@ class Recorder:
         self.started = False
         self.run = 0
         self.quiet = 0
+        self.verdict: float | None = None
+        self.asked = False
 
     def prime(self, frames: list[np.ndarray]) -> None:
         """Start already in speech with these frames (barge-in: his first words are not lost)."""
@@ -83,11 +92,29 @@ class Recorder:
             self.run = self.run + 1 if is_speech else 0
             if self.run >= self.confirm:
                 self.started = True
+                self.eot = None
             else:
                 del self.frames[:-(self.preroll + self.confirm)]
             return False
         self.quiet = 0 if is_speech else self.quiet + 1
-        return self.quiet >= self.end_frames or len(self.frames) >= self.max_frames
+        if is_speech:
+            self.verdict, self.asked = None, False      # he went on: the next pause is judged afresh
+        end = self.end_frames
+        if self.endpointer is not None and self.quiet >= self.short_frames:
+            if not self.asked:
+                self.asked = True
+                try:
+                    self.eot = self.endpointer(np.concatenate(self.frames))
+                except Exception as exc:   # the timer decides
+                    log.warning("end-of-turn check failed: %s", exc)
+                    self.eot = (None, 0)
+                self.verdict = self.eot[0]
+            if self.verdict is not None:
+                from voice import smart_turn
+
+                wait = smart_turn.end_wait_ms(self.verdict, self.end_frames * audio.FRAME_SEC * 1000)
+                end = max(self.short_frames, round(wait / (audio.FRAME_SEC * 1000)))
+        return self.quiet >= end or len(self.frames) >= self.max_frames
 
     def take(self) -> np.ndarray:
         out = np.concatenate(self.frames) if self.frames else np.zeros(0, dtype=np.int16)
@@ -129,7 +156,8 @@ class VoiceAgent:
                  settings: VoiceSettings, name_stt: Any = None, history: History | None = None,
                  clock: Callable[[], float] = time.monotonic, executor: Executor | None = None,
                  rng: random.Random | None = None, announcer: Callable[[], list[str]] | None = None,
-                 tts_reloader: Callable[[], Any] | None = None):
+                 tts_reloader: Callable[[], Any] | None = None,
+                 endpointer: Callable[[np.ndarray], tuple[float | None, int]] | None = None):
         self.wake, self.vad, self.stt, self.tts, self.player = wake, vad, stt, tts, player
         self.name_stt = name_stt if settings.wake_mode in ("both", "name") or name_stt is not None else None
         self.brain, self.control, self.s = brain, control, settings
@@ -147,7 +175,7 @@ class VoiceAgent:
         self.pick_ack = speech.Picker(speech.ACKNOWLEDGE, rng)
         end = max(2, round(settings.end_silence_sec / audio.FRAME_SEC))
         mx = max(10, round(settings.max_utterance_sec / audio.FRAME_SEC))
-        self.rec = Recorder(end, mx)
+        self.rec = Recorder(end, mx, endpointer=endpointer)
         self.side = Recorder(end, round(6 / audio.FRAME_SEC))
         self.idle_rec = Recorder(end, round(NAME_MAX_SEC / audio.FRAME_SEC))
         self.barge_gate = audio.EnergyGate()
@@ -463,10 +491,15 @@ class VoiceAgent:
         log.info("request: %r", text[:120])
         self._conversing = True
         parts: queue.SimpleQueue[str] = queue.SimpleQueue()
+        kw: dict[str, Any] = {}
+        if self.rec.eot is not None and getattr(self.brain, "accepts_timing", False):
+            p, ms = self.rec.eot
+            kw["timing"] = {"smart_turn_p": None if p is None else round(p, 3), "smart_turn_ms": ms}
+        self.rec.eot = None
         if getattr(self.brain, "streams", False):  # sentences arrive while the rest is generated
-            fut = self.executor.submit(self.brain, text, parts.put)
+            fut = self.executor.submit(self.brain, text, parts.put, **kw)
         else:
-            fut = self.executor.submit(self.brain, text)
+            fut = self.executor.submit(self.brain, text, **kw)
         self.turn = Turn(text, fut, self.clock(), parts=parts)
         self.side.reset()
         self._set(THINKING)
@@ -615,17 +648,20 @@ class VoiceAgent:
 # the real brain and history (ClipAgent's assistant)
 # ---------------------------------------------------------------------------
 
-def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None) -> str:
+def assistant_brain(text: str, on_sentence: Callable[[str], None] | None = None, *,
+                    timing: dict[str, Any] | None = None) -> str:
     """Hand the transcript to Cecil's warm brain and return what was said. ``on_sentence``
-    receives each sentence as soon as it is ready (streamed speech)."""
-    return brain_reply(text, on_sentence, origin="voice")["spoken"]
+    receives each sentence as soon as it is ready (streamed speech); ``timing``: this process's
+    end-of-turn stages (Smart Turn), joined to the brain's timing event."""
+    return brain_reply(text, on_sentence, origin="voice", timing=timing)["spoken"]
 
 
 assistant_brain.streams = True  # type: ignore[attr-defined]
+assistant_brain.accepts_timing = True  # type: ignore[attr-defined]
 
 
 def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
-                origin: str = "voice") -> dict[str, Any]:
+                origin: str = "voice", timing: dict[str, Any] | None = None) -> dict[str, Any]:
     """One turn of the warm brain (``assistant/brain.py``) -> ``{"reply", "spoken", "status", "cost_usd",
     "task", "first_sentence_ms"}``. The laptop voice process is a separate process, so it asks the
     server that holds the brain (``POST /voice/api/ask``, streamed sentences); if the server is not
@@ -645,12 +681,12 @@ def brain_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
         return {"reply": "", "spoken": "", "status": "ignored", "cost_usd": 0.0, "task": None,
                 "first_sentence_ms": None}
     try:
-        return remote_reply(text, on_sentence, origin=origin)
+        return remote_reply(text, on_sentence, origin=origin, timing=timing)
     except _Unreachable as exc:
         log.info("brain server not reachable (%s); answering in-process", exc)
     from assistant import brain
 
-    return brain.ask(text, origin=origin, on_sentence=on_sentence).wait(brain.TURN_TIMEOUT_SEC + 30)
+    return brain.ask(text, origin=origin, on_sentence=on_sentence, timing=timing).wait(brain.TURN_TIMEOUT_SEC + 30)
 
 
 class _Unreachable(Exception):
@@ -661,7 +697,7 @@ _remote_post: Callable[..., Any] | None = None
 
 
 def remote_reply(text: str, on_sentence: Callable[[str], None] | None = None, *, origin: str = "voice",
-                 post: Callable[..., Any] | None = None) -> dict[str, Any]:
+                 post: Callable[..., Any] | None = None, timing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Ask the server's brain over HTTP (loopback, local key), reading its sentences as they arrive."""
     import json
 
@@ -673,6 +709,9 @@ def remote_reply(text: str, on_sentence: Callable[[str], None] | None = None, *,
     url = get_voice_settings().brain_url + "/voice/api/ask"
     headers = {"X-Voice-Key": web.local_key(), "Accept": "application/x-ndjson"}
     data = {"text": text, "origin": origin}
+    for k, v in (timing or {}).items():
+        if k in ("smart_turn_p", "smart_turn_ms") and v is not None:
+            data[k] = str(v)
     out: dict[str, Any] = {}
     stream = post or _remote_post or (lambda **kw: httpx.stream("POST", **kw))
     try:

@@ -392,7 +392,7 @@ def _status_of(nid: int) -> str:
 
 def _approval_sms_text(d: db.Decision) -> str:
     summary = d.summary if len(d.summary) <= 600 else d.summary[:597].rstrip() + "..."
-    return f"Approval needed (#{d.id}): {summary}\nReply YES {d.id} or NO {d.id}."
+    return f"Approval needed (#{d.id}): {summary}\nReply YES {d.id} or NO {d.id}." + _always_offer(d)
 
 
 def _fallback_sms(notification_id: int, kind: str, text: str, decision_id: int | None, reason: str) -> int | None:
@@ -483,8 +483,32 @@ def request_approval(kind: str, summary: str, payload: dict, *, expires_hours: i
     expires_at = db.to_iso(db.utcnow() + timedelta(hours=expires_hours))
     decision_id = db.add_decision(kind, summary, payload, expires_at=expires_at)
     db.log_event(MODULE, "approval requested", data={"decision_id": decision_id, "kind": kind, "summary": summary})
+    if _standing_approved(decision_id):
+        return decision_id
     _dispatch("call", "approval", summary, decision_id=decision_id)
     return decision_id
+
+
+def _standing_approved(decision_id: int) -> bool:
+    """A standing approval ("always allow this kind", assistant/approvals.py) covers it: approved now."""
+    try:
+        from assistant import approvals  # late import: the assistant imports notify
+
+        return approvals.auto_approve(decision_id)
+    except Exception as exc:  # never let the rule check break an approval request: ask as usual
+        db.log_event(MODULE, "standing-approval check failed; asking instead", level="warning",
+                     data={"decision_id": decision_id, "error": repr(exc)[:300]})
+        return False
+
+
+def _always_offer(d: db.Decision | None) -> str:
+    try:
+        from assistant import approvals
+
+        return approvals.offer_text(d)
+    except Exception:
+        log.debug("standing-approval offer unavailable", exc_info=True)
+        return ""
 
 
 @dataclass(frozen=True)
@@ -714,7 +738,7 @@ def _still_held(row: db.Notification) -> bool:
 
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 
-HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval, "
+HELP_TEXT = ("Commands: YES <id> / NO <id> to answer an approval (YES ALWAYS <id> = allow that kind from now on), "
              "STATUS, PAUSE (stop AI spending), RESUME, UNDO (assistant's last code change), STOP CECIL, "
              "START CECIL, HELP.")
 
@@ -795,16 +819,37 @@ def _is_machine(answered_by: str | None) -> bool:
 
 def _gather(resp: Any, decision_id: int, attempt: int, text: str) -> None:
     action = _url(f"/twilio/gather/{decision_id}", attempt=attempt)
-    g = resp.gather(num_digits=1, timeout=GATHER_TIMEOUT_SEC, action=action, method="POST")
+    g = resp.gather(num_digits=1, timeout=GATHER_TIMEOUT_SEC, action=action, method="POST", input="dtmf speech",
+                    hints="yes, no, always, approve, reject, repeat", speech_timeout="auto")
     _say(g, text)
     resp.redirect(action, method="POST")  # no key pressed -> same handler without Digits
 
 
 _PROMPT = "Press 1 to approve, 2 to reject, or 9 to hear this again."
+_ALWAYS_PROMPT = " Or press 3, or say always, to approve and allow this kind from now on."
+
+
+def _can_always(d: db.Decision | None) -> bool:
+    return bool(_always_offer(d))
 
 
 def _approval_prompt(d: db.Decision) -> str:
-    return speakable(f"I need your approval on request number {d.id}. {d.summary}") + " " + _PROMPT
+    return (speakable(f"I need your approval on request number {d.id}. {d.summary}") + " " + _PROMPT
+            + (_ALWAYS_PROMPT if _can_always(d) else ""))
+
+
+def _spoken_digit(speech: str) -> str:
+    """Map a spoken answer on the approval call to a keypad digit ('' when unclear)."""
+    words = set(re.findall(r"[a-z]+", (speech or "").lower()))
+    if "always" in words:
+        return "3"
+    if words & {"no", "reject", "nope", "don't", "dont", "stop"}:
+        return "2"
+    if words & {"yes", "approve", "approved", "yeah", "yep", "sure", "okay", "ok"}:
+        return "1"
+    if words & {"repeat", "again"}:
+        return "9"
+    return ""
 
 
 @router.post("/voice/{decision_id}")
@@ -868,7 +913,18 @@ async def gather_webhook(decision_id: int, request: Request, attempt: int = 1) -
         resp.hangup()
         return _xml(resp)
 
-    digits = (p.get("Digits") or "").strip()
+    digits = (p.get("Digits") or "").strip() or _spoken_digit(p.get("SpeechResult") or "")
+    if digits == "3" and _can_always(d):
+        from assistant import approvals
+
+        res = approvals.approve_always(decision_id, via="call")
+        if res.get("resolved") or res.get("rule"):
+            _say(resp, speakable(res["text"].replace("#", "request ")) + " Goodbye.")
+            resp.hangup()
+            return _xml(resp)
+        digits = "1"
+    if digits == "3":
+        digits = "1"
     if digits in ("1", "2"):
         approved = digits == "1"
         out = decide(decision_id, approved, via="call")
@@ -995,6 +1051,8 @@ async def message_status_webhook(request: Request, notification_id: int | None =
     return Response(status_code=204)
 
 
+_ALWAYS_RE = re.compile(r"^\s*(?:(?:yes|y|approve)\s+)?always\b[\s#:.,-]*([0-9]{1,9})?\s*[.!]?\s*$",
+                        re.IGNORECASE | re.ASCII)
 _ANSWER_RE = re.compile(r"^\s*(yes|y|approve|no|n|reject)\b[\s#:.,-]*([0-9]{1,9})?\s*[.!]?\s*$",
                         re.IGNORECASE | re.ASCII)
 
@@ -1003,6 +1061,17 @@ def handle_sms_command(body: str) -> str:
     """Execute an owner SMS command and return the reply text."""
     text = (body or "").strip()
     word = text.split()[0].upper() if text else ""
+    ma = _ALWAYS_RE.match(text)
+    if ma:
+        if not ma.group(1):
+            return "Please include the request number, e.g. YES ALWAYS 12. Nothing was changed."
+        try:
+            from assistant import approvals
+
+            return approvals.approve_always(int(ma.group(1)), via="sms")["text"]
+        except Exception as exc:
+            log.exception("YES ALWAYS failed")
+            return f"That did not work: {type(exc).__name__}. Nothing was made standing."
     m = _ANSWER_RE.match(text)
     if m:
         approved = m.group(1).lower() in ("yes", "y", "approve")
@@ -1022,8 +1091,10 @@ def handle_sms_command(body: str) -> str:
         if out.resolved:
             if not approved:
                 return f"#{decision_id} rejected. Nothing changes."
+            offer = _always_offer(db.get_decision(decision_id)).replace("Reply YES ALWAYS", "Reply ALWAYS")
             return (f"#{decision_id} approved and applied." if out.applied else
-                    f"#{decision_id} approved, but applying it failed, so nothing changed yet. See the dashboard.")
+                    f"#{decision_id} approved, but applying it failed, so nothing changed yet. See the dashboard.") \
+                + offer
         d = db.get_decision(decision_id)
         if d is None:
             return f"No request #{decision_id}. Reply STATUS to see pending ones."
@@ -1147,6 +1218,9 @@ def is_pipeline_command(body: str) -> bool:
     rule still answers it); with nothing pending it is ordinary conversation.
     """
     text = (body or "").strip()
+    ma = _ALWAYS_RE.match(text)
+    if ma and (ma.group(1) or db.list_decisions("pending", limit=1)):
+        return True
     m = _ANSWER_RE.match(text)
     if m:
         return bool(m.group(2)) or bool(db.list_decisions("pending", limit=1))
@@ -1169,8 +1243,11 @@ def assistant_inbound(body: str, media_params: dict[str, str] | None = None) -> 
 
             media = messaging.download_media(media_params)
             images = [m["path"] for m in media if m["type"].startswith("image/")]
-            note = messaging.media_note(media)
-            text = "\n\n".join(x for x in (body.strip(), note) if x) or "(sent an attachment)"
+            voice = messaging.transcribe_voice_notes(media)     # audio -> ffmpeg -> Whisper; text = his words
+            heard = {v["path"] for v in voice}
+            note = messaging.media_note([m for m in media if m["path"] not in heard])
+            said = messaging.voice_note_text(body, voice)
+            text = "\n\n".join(x for x in (said, note) if x) or "(sent an attachment)"
             runtime.run_turn(text, channel="sms", deliver=True, attachments=images or None)
             return
         if checkins.handle_reply(body):

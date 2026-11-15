@@ -364,7 +364,8 @@ def _sandbox(root: Path, *, live: bool, backend: Any) -> Iterator[None]:
                            owner_name=SANDBOX_IDENTITY["owner_name"])
     config.set_settings(cfg)
     a = asettings.load_assistant_settings().replace(
-        vault_dir=root / "vault", dry_run=True, fake=not live, enabled=True, **SANDBOX_IDENTITY)
+        vault_dir=root / "vault", dry_run=True, fake=not live, enabled=True, auto_memory=False,
+        **SANDBOX_IDENTITY)
     asettings.set_assistant_settings(a)
     runtime.set_backend(backend)
     try:

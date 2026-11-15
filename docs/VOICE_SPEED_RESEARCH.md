@@ -115,3 +115,69 @@ an immediate ack and an answer in 3-6 s. Item 7 brings simple chat under about 1
 
 *Not reached:* docs.livekit.io and huggingface.co were blocked in this session, so the LiveKit and model-card facts above
 come from search snippets and the [scancode licence record](https://scancode-licensedb.aboutcode.org/livekit-model-2024.html).
+
+## 5. Implemented: items 6-8 (2026-11-15)
+
+Items 1-5 and 10 were done first. This section covers 6 (lean session), 8 (Smart Turn) and 7 (fast lane).
+Item 9 (speculative start) was **not built**: the end of turn already comes after about 300 ms of silence when Smart
+Turn is confident, so starting early would save at most about 0.3 s, and every cancelled start costs plan usage.
+
+### Item 6: a lean, rolling voice session (`assistant/brain.py`, `ASSISTANT_VOICE_LEAN=true`)
+- **Built-in tools**: the voice session passes `tools=VOICE_BUILTINS` (Read, Glob, Grep, Edit, Write, Bash,
+  PowerShell, WebSearch, WebFetch, Agent, Skill, TaskStop). Background tasks (`start_task`) keep every built-in.
+- **Chrome and his MCP servers on demand**: the Agent SDK can switch a configured MCP server on and off in a live
+  session (`ClaudeSDKClient.toggle_mcp_server`). Tests here confirmed that a server switched off disappears from the
+  next request, comes back when switched on, and that nothing is written to the profile. His servers are configured,
+  switched off after connecting, and switched on in place by the new tool `need_tools(kind="my_servers")`, without a
+  reconnect. Claude in Chrome comes from the `--chrome` flag, so it cannot be toggled. `need_tools(kind="browser")`
+  therefore ends the turn, reconnects with `--chrome` while resuming the same session, and continues the request
+  automatically (timing field `escalated_ms`). A new session starts lean again.
+- **Rollover at about 60k** (`ASSISTANT_VOICE_SESSION_MAX_TOKENS`): the session size is now the context of the last
+  model call, read from the stream's `message_start`. A result's usage adds up every call in a multi-tool turn,
+  which overstated the size. A rollover writes the summary to the journal as before. It also leaves the summary in kv
+  (`claude_code.carry_over`), and the next session's first prompt opens with it.
+- **Keep-warm: not built.** Any ping into the Agent SDK session is a real turn. It costs plan usage and also writes a
+  turn into the conversation, so it fails the rule "free on the plan or negligible on the API". The fast lane covers
+  the cold-cache chit-chat case instead.
+
+Measured prompt sizes for one "hello" turn. Claude Code 2.1.323 (bundled with claude-agent-sdk 0.2.181) was pointed
+at a local capture server. These numbers exclude Chrome and his own servers, which this sandbox does not have:
+
+| | Before | After (lean) |
+|---|---|---|
+| Whole request (system + tools + messages) | ~44.6k tokens | ~27.7k tokens |
+| Tool definitions | 113 tools, ~33.0k | 91 tools, ~16.8k |
+| ...of which ClipAgent MCP tools | ~9.2k | ~9.3k (plus `need_tools`) |
+| Claude Code's own `/context` (`get_context_usage`), MCP excluded | 20.3k | 15.7k |
+| Chrome tools + his MCP servers | all, every turn | 0 until `need_tools` |
+
+The system prompt (~3.8k, of which ours is ~2.5k) and skills (~6.4k in `/context`) are unchanged. The skills listing
+is the next thing to trim. After it connects, the brain logs `voice brain context` (Claude Code's `/context`
+breakdown) and shows it in the D panel, so the figure from his laptop, with his servers, can be read there.
+
+### Item 8: Smart Turn v3 (`voice/smart_turn.py`, `VOICE_SMART_TURN=auto|off`)
+- Source: `pipecat-ai/smart-turn-v3`, file `smart-turn-v3.2-cpu.onnx` (int8, about 8 MB). BSD 2-Clause, Copyright
+  Daily. The input format was verified from the repo's `inference.py` and `audio_utils.py` (raw.githubusercontent.com):
+  16 kHz mono, the last 8 s, zero padding at the front, Whisper log-mel features of shape (1, 80, 800) as
+  `input_features`, and a sigmoid output where > 0.5 means complete. huggingface.co was blocked here. The file name
+  comes from search results, and the model downloads on first run into `data/models/smart_turn/`, with progress.
+- The features are computed in numpy and match faster-whisper's Whisper extractor to within 2e-7 (tested). The
+  runtime is onnxruntime, which faster-whisper already installs.
+- **Laptop loop**: after 300 ms of quiet, the `Recorder` asks once per pause about the whole utterance. "Finished"
+  ends the turn after about 300 ms. "Not finished" waits up to 2 s. New speech resets the check.
+- **Jarvis page, server hearing**: the page cuts at 350 ms of silence (`smart_turn_ready`). `/talk` runs Smart Turn on
+  the whole turn, in parallel with Whisper (`cont=1` joins the clip that is still held). The audio verdict overrides
+  `holdFor`. The browser-hearing path has no audio on the server, so it keeps the timer. onnxruntime-web would need a
+  CDN or a vendored WASM build of about 10 MB, so it was skipped.
+- No model, or the model fails: `None`, and the timer decides as before.
+
+### Item 7: the fast lane (`assistant/fastlane.py`, `VOICE_FAST_LANE=auto|off`)
+The rules from section 4 are implemented as written. Routing uses local rules, and the quick model's own
+`<handoff/>` flag can hand off in the middle of a reply, after one acknowledgement. The quick model gets the brain's
+own context blocks (`brain.context_parts`) plus today's transcript. Every fast exchange goes into the brain's next
+prompt (`<fast_replies>`). The lane is off without an API key. Timing fields: `route`, `fast_first_token_ms`,
+`fast_ms`, `context_tokens`, `smart_turn_p`, `smart_turn_ms`.
+
+**Expected latency now** (est., not measured on his laptop): chit-chat on the fast lane is about 1-1.5 s from the end
+of speech to the first word. Plain chat on the brain is about 2.5-4.5 s, down from 3-6 s: a smaller prompt, and on
+the server path an end of turn 0.3-0.9 s earlier. Tool turns gain the same 1-2 s.

@@ -54,6 +54,8 @@ class AssistantSettings:
     voice_model: str = "sonnet"              # Claude Code model alias for conversation (ASSISTANT_VOICE_MODEL)
     voice_effort: str = "low"                # thinking effort for spoken turns
     voice_turn_timeout_sec: float = 900.0    # hard ceiling for one spoken turn (ASSISTANT_VOICE_TURN_TIMEOUT_SEC)
+    voice_lean: bool = True                  # slim voice session: fewer built-ins, browser/his servers on demand
+    voice_session_max_tokens: int = 60_000   # roll the voice session over once its context passes this
     cc_model: str = "opus"                   # Claude Code model alias for the main agent
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
@@ -77,6 +79,8 @@ class AssistantSettings:
     # --- the heartbeat (assistant/heartbeat.py): checklist Agent/Heartbeat.md, every N minutes
     heartbeat_minutes: int = 30              # 0 = off
     heartbeat_max_tasks_per_day: int = 6
+    # --- automatic memory (assistant/auto_memory.py): distil lasting facts after each conversation
+    auto_memory: bool = True                 # ASSISTANT_AUTO_MEMORY
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -119,6 +123,8 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         voice_effort=s("ASSISTANT_VOICE_EFFORT", "low").lower()
         if s("ASSISTANT_VOICE_EFFORT", "low").lower() in ("low", "medium", "high", "xhigh", "max") else "low",
         voice_turn_timeout_sec=min(900.0, max(60.0, float(s("ASSISTANT_VOICE_TURN_TIMEOUT_SEC", "900") or 900))),
+        voice_lean=config._bool(env.get("ASSISTANT_VOICE_LEAN"), True),
+        voice_session_max_tokens=max(20_000, int(s("ASSISTANT_VOICE_SESSION_MAX_TOKENS", "60000"))),
         cc_model=s("ASSISTANT_CC_MODEL", "opus"),
         cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
         cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),
@@ -140,6 +146,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         self_edit_test_timeout_sec=max(60, int(s("ASSISTANT_SELF_EDIT_TEST_TIMEOUT_SEC", "1200"))),
         heartbeat_minutes=max(0, int(s("HEARTBEAT_MINUTES", "30"))),
         heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),
+        auto_memory=config._bool(env.get("ASSISTANT_AUTO_MEMORY"), True),
     )
 
 

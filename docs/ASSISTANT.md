@@ -201,6 +201,17 @@ file, build a DRY_RUN upload request, Twilio diagnose, plan usage. Every change 
   never overwritten - the new text is appended under a "Merged" heading.
 * **Structured facts** (hours, income, meals, goals, check-ins) live in SQLite (`assistant/store.py`),
   because numbers need arithmetic and exactness; the vault holds context and preferences.
+* **Automatic memory** (`assistant/auto_memory.py`, `ASSISTANT_AUTO_MEMORY=true`): after each finished
+  voice, dashboard or SMS turn (and at session rollover) a background pass runs, debounced to one per
+  2 minutes per channel. It reads the exchanges since its cursor (`auto_memory:cursor:<channel>`), asks the
+  quick model (API key; else the warm brain's worker, else a tool-less `claude -p`) for lasting facts
+  (stated vs inferred), drops trivia and anything secret-looking in plain code, and files the rest with
+  `vault.remember` (provenance `auto-memory <channel> #<first>-<last>`). Each saved fact logs a
+  `Remembered: ...` event shown in the Cecil home's *Recently worked on*. A tight Claude plan defers it
+  (`usage.should_defer`).
+* **Voice notes**: WhatsApp/SMS audio (ogg/opus, amr, m4a...) is downloaded, decoded with ffmpeg and
+  transcribed by the faster-whisper engine (`messaging.transcribe_voice_notes`); the transcript is his
+  message, stored as `(voice note) <words>`. Tests inject `messaging.set_transcriber`.
 
 ## The staff as Invincible characters; the name Cecil
 
@@ -273,6 +284,15 @@ check every golden reply passes and every counter-example is caught and fixed.
   `notify` (owner's number, quiet hours, DRY_RUN), capped at `ASSISTANT_MAX_SMS_PER_DAY`.
 * **Approval**: anything irreversible goes through `request_approval` -> the phase-1 decision flow
   (call / SMS, `YES <id>`); only registered handlers can act on an approval.
+* **Standing approvals** (`assistant/approvals.py`): after approving he can say "always allow this kind"
+  (`YES ALWAYS <id>` / `ALWAYS <id>` by text, the dashboard's *Always allow* button, keypad 3 or "always"
+  on the approval call). The rule is keyed by action type + normalised target (Twilio fix action, trusted
+  skill repo, or the `action_type`/`target` the agent passed to `request_approval`). `notify.request_approval`
+  auto-approves identical later requests (`resolved_via='standing'`), logs them and announces them in one
+  line. Never standing: spending/budget, public posts, messaging anyone else, deleting files, third-party
+  code from unknown sources, strategy changes, improvement proposals and his heartbeat checklist. Review
+  and revoke under Settings -> Approvals (`/dashboard/approvals`) or with `approval_rules_list` /
+  `approval_rule_revoke`; Cecil can revoke but never create rules.
 * **Privacy**: the vault is outside git (`data/` and `vault/` are ignored; a test fails if the
   default vault path is not ignored). Only the empty `vault_template/` is committed.
 

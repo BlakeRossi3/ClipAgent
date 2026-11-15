@@ -417,13 +417,22 @@
     return 250;
   }
   var held = '', holdTimer = null, firstAt = 0;
-  function assemble(text, active) {
+  // Smart Turn (server STT path): the audio model's verdict beats the text rules. Finished -> send now (a
+  // dangling last word still gets a short grace); not finished -> wait up to EOT_WAIT_MS for the rest.
+  var EOT_WAIT_MS = 2000;
+  function waitFor(text, eot) {
+    var rule = holdFor(text);
+    if (eot === null || eot === undefined || eot === '') return rule;
+    if (eot >= 0.5) return rule >= 1600 ? 500 : 0;
+    return Math.max(rule, Math.round(EOT_WAIT_MS * (1 - eot)));
+  }
+  function assemble(text, active, eot) {
     held = (held + ' ' + text).replace(/\s+/g, ' ').trim();
     if (!firstAt) firstAt = Date.now();
     youEl.textContent = held;
     clearTimeout(holdTimer);
     if (active) { holdTimer = setTimeout(fire, 6000); return; }
-    var wait = Math.min(holdFor(held), Math.max(0, 6000 - (Date.now() - firstAt)));
+    var wait = Math.min(waitFor(held, eot), Math.max(0, 6000 - (Date.now() - firstAt)));
     if (!wait) fire(); else holdTimer = setTimeout(fire, wait);
   }
   function newSpeech() {    // strict single flight: his new words stop the voice at once; the server joins the texts
@@ -439,7 +448,7 @@
 
   /* ---- asking the brain ------------------------------------------------------------------- */
   var myTurns = {}, cancelled = {}, pending = null, turnKinds = {}, spokeIn = {}, filled = {};
-  var timing = {}, speechEndAt = 0, heardBy = '', heardSttMs = 0;
+  var timing = {}, speechEndAt = 0, heardBy = '', heardSttMs = 0, heardEot = null, heardEotMs = 0;
   function firstWord(turn) {            // end of his speech -> first spoken word, measured here
     var t = turn && timing[turn];
     if (!t || t.sent) return;
@@ -447,15 +456,19 @@
     var ms = Date.now() - t.end;
     diag.lastTurn = { ms: ms, how: t.how, ask: t.askMs, stt: t.sttMs, at: Date.now() };
     post('/voice/api/timing', { turn: turn, first_word_ms: ms, stt: t.how, ask_ms: t.askMs, stt_ms: t.sttMs || '',
-      tts: voiceCfg.web_tts || 'browser' }).catch(function () { /* diagnostics only */ });
+      tts: voiceCfg.web_tts || 'browser', smart_turn_p: t.eot === null ? '' : t.eot, smart_turn_ms: t.eotMs || '' })
+      .catch(function () { /* diagnostics only */ });
   }
   function ask(text) {
     youEl.textContent = text;
     acker.start(text);                 // within milliseconds of the end of his speech, before the request goes
     pending = 'asking'; render();
-    var askAt = Date.now(), t0 = { end: speechEndAt || askAt, how: heardBy || 'typed', sttMs: heardSttMs };
-    speechEndAt = 0; heardBy = ''; heardSttMs = 0;
-    post('/voice/api/ask', { text: text, origin: 'browser' }).then(getJSON).then(function (j) {
+    var askAt = Date.now(), t0 = { end: speechEndAt || askAt, how: heardBy || 'typed', sttMs: heardSttMs,
+      eot: heardEot, eotMs: heardEotMs };
+    speechEndAt = 0; heardBy = ''; heardSttMs = 0; heardEot = null; heardEotMs = 0;
+    var fields = { text: text, origin: 'browser' };
+    if (t0.eot !== null) { fields.smart_turn_p = t0.eot; fields.smart_turn_ms = t0.eotMs || 0; }
+    post('/voice/api/ask', fields).then(getJSON).then(function (j) {
       if (j.ok && j.turn) {
         t0.askMs = Date.now() - askAt; timing[j.turn] = t0;
         if (j.merged) { cancelled[j.merged] = 1; youEl.textContent = j.heard || text; }   // stitched onto the last breath
@@ -519,6 +532,7 @@
     var fd = new FormData();
     fd.append('csrf', csrf);
     fd.append('audio', blob, 'speech.' + (/mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm'));
+    if (held) fd.append('cont', '1');           // the same turn: Smart Turn hears all of it, not the last breath
     fetch('/voice/api/talk', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(getJSON).then(function (j) {
         if (!j.ok) {
@@ -529,9 +543,11 @@
         if (j.command) { speaker.cancel(); interrupt(); command(j.command); return; }
         var heard = j.heard || '';
         diag.heard = heard; diag.heardAt = Date.now(); heardSttMs = j.stt_ms || 0;
+        var eot = (j.eot === null || j.eot === undefined) ? null : j.eot;
+        heardEot = eot; heardEotMs = j.eot_ms || 0; diag.eot = eot; diag.eotMs = heardEotMs;
         if (speaker.busy() && isEcho(heard, speaker.now())) { speaker.resume(); return; }   // his own voice
         var busy = !!pending; newSpeech();
-        if (mode === 'ptt') { held = ''; ask(heard); } else if (busy) { assemble(heard, true); fire(); } else assemble(heard, !!rec);
+        if (mode === 'ptt') { held = ''; ask(heard); } else if (busy) { assemble(heard, true); fire(); } else assemble(heard, !!rec, eot);
       }).catch(function () { speaker.resume(); fail('The connection dropped. Try again.'); });
   }
   function command(cmd) {
@@ -665,6 +681,7 @@
   var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 }, firstInWindow = true;
   function endSilenceMs() {      // longer for the first thing he says after a reply (he draws breath mid-answer)
     if (speaker.busy()) return 650;
+    if (voiceCfg.smart_turn_ready) return 350;   // Smart Turn on the server decides whether he has finished
     var long = Math.round(1000 * (parseFloat(voiceCfg.end_silence_sec) || 1.2));
     return firstInWindow || (pending && pending !== 'asking' && !spokeIn[pending]) ? Math.max(650, long) : 650;
   }
@@ -682,6 +699,7 @@
         if (!vad.armed) { vad.armed = now; startRec('vad'); }
         else if (now - vad.armed >= 110) {
           vad.speaking = true; vad.lastLoud = now;
+          if (held) { clearTimeout(holdTimer); holdTimer = setTimeout(fire, 6000); }   // he went on: wait for this clip
           // barge-in: not in his own first syllable (350 ms); pause, decide once the words are in
           if (speaker.busy() && Date.now() - speaker.since() > 350) speaker.pause();
         }
@@ -989,7 +1007,8 @@
     },
     settings: function (e) {
       if (!e.voice) return;
-      voiceCfg = e.voice; cachedVoice = undefined;
+      voiceCfg = Object.assign({ smart_turn_ready: voiceCfg.smart_turn_ready && e.voice.smart_turn !== 'off' }, e.voice);
+      cachedVoice = undefined;
       if (always) { if (sttEngine() === 'browser') bsr.start(); else bsr.stop(); }
     },
     ui: function (e) { if (e.ui) applyUi(e.ui); if (e.effect) fireEffect(e.effect); },
@@ -1105,9 +1124,12 @@
     if (!b) return '—';
     function m(v) { return v == null ? '—' : v + ' ms'; }
     var tools = (b.tool_ms || []).map(function (t) { return t.name + ' ' + t.ms + ' ms'; }).join(', ');
-    return 'queued ' + m(b.queued_ms) + ' · first token ' + m(b.first_token_ms) + ' · first tool ' + m(b.first_tool_ms) +
+    var lane = b.route && b.route !== 'brain' ? b.route + ' (quick first token ' + m(b.fast_first_token_ms) + ', quick done ' +
+      m(b.fast_ms) + ') · ' : '';
+    var eot = b.smart_turn_p != null ? 'smart turn ' + b.smart_turn_p + ' in ' + m(b.smart_turn_ms) + ' · ' : '';
+    return eot + lane + 'queued ' + m(b.queued_ms) + ' · first token ' + m(b.first_token_ms) + ' · first tool ' + m(b.first_tool_ms) +
       (tools ? ' (' + tools + ')' : '') + ' · first sentence ' + m(b.first_sentence_ms) + ' · self-edit ' + m(b.selfedit_ms) +
-      ' · total ' + m(b.total_ms);
+      ' · total ' + m(b.total_ms) + (b.context_tokens ? ' · context ' + Math.round(b.context_tokens / 1000) + 'k' : '');
   }
   function diagRows() {
     var lvl = stream && micAnalyser ? Math.min(1, rms(micAnalyser) * 7) : -1, srv = diagServer || {}, b = srv.brain || {};
@@ -1119,7 +1141,10 @@
       ['Hearing', sttLabel() + (sttEngine() === 'browser' ? (diag.sttRunning ? ', running' : ', idle') + ' · ' + diag.sessions + ' sessions, ' + diag.restarts + ' restarts' : ''), !!sttBroken],
       ['Last heard', diag.heard ? '"' + diag.heard.slice(-80) + '" · ' + ago(diag.heardAt) : (diag.interim ? '… ' + diag.interim.slice(-60) : '—')],
       ['STT error', diag.sttError || 'none', !!diag.sttError && diag.sttError !== 'no-speech' && diag.sttError !== 'aborted'],
-      ['Brain link', link + (b.connected ? ' · session connected' : b.running ? ' · session starting' : ' · session idle') + (b.model ? ' · ' + b.model : ''), link !== 'live'],
+      ['Brain link', link + (b.connected ? ' · session connected' : b.running ? ' · session starting' : ' · session idle') + (b.model ? ' · ' + b.model : '') +
+        (b.context && b.context.total ? ' · fixed prompt ' + Math.round(b.context.total / 1000) + 'k tokens' : ''), link !== 'live'],
+      ['End of turn', voiceCfg.smart_turn_ready ? 'Smart Turn' + (diag.eot != null ? ' · last ' + diag.eot + ' in ' + diag.eotMs + ' ms' : '') :
+        (voiceCfg.smart_turn === 'off' ? 'silence timer (Smart Turn off)' : 'silence timer (Smart Turn not loaded' + (sttEngine() === 'browser' ? '; browser hearing uses the timer' : '') + ')')],
       ['Brain stages', brainStages(diag.brainTiming || ((srv.brain_timings || []).slice(-1)[0])), !!(diag.brainTiming && diag.brainTiming.total_ms > 8000)],
       ['Last turn', lt ? 'speech end → first word ' + lt.ms + ' ms (' + lt.how + (lt.ask != null ? ', ask ' + lt.ask + ' ms' : '') + (lt.stt ? ', whisper ' + lt.stt + ' ms' : '') + ') · ' + ago(lt.at) : '—', lt && lt.ms > 4000],
       ['Voice', diag.tts || (voiceCfg.web_tts === 'browser' ? 'browser: ' + ((pickVoice() || {}).name || 'default voice') : voiceCfg.web_tts), diag.ttsFailures > 0],

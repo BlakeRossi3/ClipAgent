@@ -127,13 +127,15 @@ PLANNED_TOOLS: dict[str, str] = {
         "show_map", "show_media", "show_data", "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset")},
     "selfcheck_run": "assistant.selfcheck",
     "fast_search": "assistant.fast_search",
+    "approval_rules_list": "assistant.approvals",
+    "approval_rule_revoke": "assistant.approvals",
 }
 # Provided by the runtime itself, not by this registry.
 RUNTIME_TOOLS = frozenset({"delegate", "web_search"})
 EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins", "assistant.improve", "assistant.usage",
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
-                     "assistant.hud", "assistant.selfcheck", "assistant.fast_search")
+                     "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 
 
@@ -456,8 +458,15 @@ def _request_approval(ctx: ToolContext, a: dict[str, Any]) -> Any:
     if handler != "note" and handler not in APPROVAL_HANDLERS:
         raise ToolError(f"unknown approval handler {handler!r}")
     summary = " ".join(a["summary"].split())[:300]
-    did = notify.request_approval("other", summary, {"action": "assistant_action", "handler": handler,
-                                                     "data": a.get("details") or {}, "agent": ctx.agent})
+    payload = {"action": "assistant_action", "handler": handler, "data": a.get("details") or {}, "agent": ctx.agent}
+    for key in ("action_type", "target"):   # the fingerprint a standing approval ("always allow") matches
+        if str(a.get(key) or "").strip():
+            payload[key] = " ".join(str(a[key]).split())[:200]
+    did = notify.request_approval("other", summary, payload)
+    d = db.get_decision(did)
+    if d is not None and d.status == "approved" and d.resolved_via == "standing":
+        return {"decision_id": did, "status": "approved",
+                "note": "approved now by his standing rule; go ahead and mention it in one line"}
     return {"decision_id": did, "status": "pending", "note": "the owner answers YES/NO " + str(did)}
 
 
@@ -587,7 +596,11 @@ def _builtin() -> list[Tool]:
         Tool("request_approval", "Ask the owner to approve something before it happens (he gets a call/SMS and "
                                  "answers YES/NO <id>). Use for spending, strategy changes, anything irreversible.",
              _obj({"summary": {"type": "string"}, "details": {"type": "object"},
-                   "handler": {"type": "string"}}, ["summary"]), _request_approval, side_effects=True),
+                   "handler": {"type": "string"},
+                   "action_type": {"type": "string", "description": "short stable label of the kind of action, "
+                                   "e.g. desktop_mode, staff_edit, skill_source (lets him 'always allow' it)"},
+                   "target": {"type": "string", "description": "the exact thing it acts on, e.g. the mode name, "
+                              "the staff member, the repo"}}, ["summary"]), _request_approval, side_effects=True),
         Tool("open_url", "Open a web page (e.g. a YouTube video, a claude.ai export link) in a new tab of the "
                          "owner's own default browser on his laptop, signed in as him.",
              _obj({"url": {"type": "string"}}, ["url"]), _open_url, side_effects=True),

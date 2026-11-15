@@ -92,13 +92,23 @@ def build_agent(s: VoiceSettings) -> Any:
     from voice.agent import VoiceAgent, assistant_brain, store_history
 
     models.ensure_models(s.models_dir, wake=s.wake_mode != "name", kokoro=s.tts_engine == "kokoro",
-                         say=lambda m: log.info("%s", m))
+                         smart_turn=s.smart_turn != "off", say=lambda m: log.info("%s", m))
     eng, problems = engines.build_engines(s)
     for p in problems:
         log.warning("%s", p)
     return VoiceAgent(wake=eng["wake"], vad=eng["vad"], stt=eng["stt"], name_stt=eng["name_stt"], tts=eng["tts"],
                       player=eng["player"], brain=assistant_brain, history=store_history, control=Control(),
-                      settings=s, announcer=_announcer(), tts_reloader=_tts_reloader())
+                      settings=s, announcer=_announcer(), tts_reloader=_tts_reloader(), endpointer=_endpointer(s))
+
+
+def _endpointer(s: VoiceSettings) -> Any:
+    """Smart Turn v3 on the turn's audio at a short silence (None = the silence timer alone)."""
+    from voice import smart_turn
+
+    if s.smart_turn == "off" or smart_turn.get_detector() is None:
+        log.info("end of turn: silence timer only (Smart Turn %s)", "off" if s.smart_turn == "off" else "not loaded")
+        return None
+    return smart_turn.predict
 
 
 def run_loop(agent: Any, s: VoiceSettings, *, open_mic: Any = None, sleep: Any = time.sleep) -> None:
@@ -168,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.download_models:
         from voice import models
 
-        return 1 if models.ensure_models(s.models_dir, say=print) else 0
+        return 1 if models.ensure_models(s.models_dir, smart_turn=s.smart_turn != "off", say=print) else 0
     if not s.enabled and not args.force:
         print("voice is off (VOICE_ENABLED=false); use --force to run anyway", file=sys.stderr)
         return 0

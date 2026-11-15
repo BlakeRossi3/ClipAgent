@@ -4,6 +4,7 @@
 * ``/dashboard/history`` - Claude history import: paste the export manifest (hands-free), upload any
   number of export zips, progress, distil a batch now.
 * ``/dashboard/twilio-check`` - Twilio doctor results with "Fix it" buttons.
+* ``/dashboard/approvals`` - standing approvals ("always allow this kind"): review and revoke.
 
 Auth, CSRF and page chrome come from :mod:`dashboard` (same token/cookie as every dashboard page).
 """
@@ -30,7 +31,8 @@ def _dash() -> Any:
 
 def _page(request: Request, page: str, ctx: dict[str, Any], status: int = 200) -> Response:
     defaults = dict.fromkeys(("run", "run_error", "modes_error", "saved", "save_error", "yaml_draft", "error",
-                              "distil", "manifest", "results", "fixed", "fix_error", "diag", "summary", "last"))
+                              "distil", "manifest", "results", "fixed", "fix_error", "diag", "summary", "last",
+                              "rules", "revoked"))
     return _dash()._render(request, "toolkit.html", {**defaults, "page": page, **ctx}, status_code=status,
                            nav="settings")
 
@@ -243,3 +245,38 @@ async def twilio_fix(request: Request) -> Response:
     d = await run_in_threadpool(td.diagnose)
     return _page(request, "twilio", {"diag": d.to_dict(), "summary": d.summary(), "fixed": msg, "last": _last_twilio()})
 
+
+
+# ---------------------------------------------------------------------------
+# standing approvals
+# ---------------------------------------------------------------------------
+
+def _approvals_ctx(**extra: Any) -> dict[str, Any]:
+    from assistant import approvals
+
+    rules = approvals.list_rules(include_revoked=True)
+    return {"rules": [r for r in rules if not r.get("revoked_at")],
+            "old_rules": [r for r in rules if r.get("revoked_at")][:20], **extra}
+
+
+@router.get("/approvals", include_in_schema=False)
+def approvals_page(request: Request) -> Response:
+    if (r := _get_guard(request)) is not None:
+        return r
+    return _page(request, "approvals", _approvals_ctx())
+
+
+@router.post("/approvals/revoke", include_in_schema=False)
+async def approvals_revoke(request: Request) -> Response:
+    from assistant import approvals
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    try:
+        rid = int(str(form.get("rule_id") or ""))
+    except ValueError:
+        return _page(request, "approvals", _approvals_ctx(error="No such rule."), 400)
+    ok = approvals.revoke_rule(rid, via="dashboard")
+    return _page(request, "approvals", _approvals_ctx(revoked=rid if ok else None,
+                                                      error=None if ok else "That rule was already revoked."))

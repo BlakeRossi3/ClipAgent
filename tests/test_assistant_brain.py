@@ -596,3 +596,85 @@ def test_his_mcp_servers_join_the_brain_and_their_keys_never_leak(env, tmp_path,
     asettings.set_assistant_settings(asettings.get_assistant_settings().replace(fake=False))
     assert set(b.options(mode="plan", resume=None).mcp_servers) == {"notion", "clipagent"}
     assert all(secret not in str(e.data) for e in db.list_events(limit=200))
+
+
+# -- fix 6: the lean voice session, tools on demand, rollover at ~60k --------------------------------
+
+def test_lean_voice_session_keeps_a_small_builtin_set_and_workers_keep_everything(env):
+    s = asettings.get_assistant_settings()
+    asettings.set_assistant_settings(s.replace(chrome=True))
+    b = brain.Brain()
+    table = b.tool_table()
+    assert "need_tools" in table and "need_tools" not in b.tool_table(worker=True)
+    opts = b.options(mode="plan", resume=None, table=table)
+    assert list(opts.tools) == list(brain.VOICE_BUILTINS) and "CronCreate" not in opts.tools
+    assert opts.extra_args == {"no-chrome": None}                       # Chrome waits for need_tools(browser)
+    assert "need_tools with kind=browser" in opts.system_prompt["append"]
+    worker = b.options(mode="plan", resume=None, worker=True)
+    assert worker.tools is None and worker.extra_args == {"chrome": None}
+    b.escalated.add("browser")
+    assert b.options(mode="plan", resume=None, table=table).extra_args == {"chrome": None}
+    asettings.set_assistant_settings(s.replace(voice_lean=False, chrome=True))
+    full = brain.Brain().options(mode="plan", resume=None)
+    assert full.tools is None and full.extra_args == {"chrome": None}
+
+
+def test_need_tools_browser_reconnects_with_chrome_and_carries_on(env):
+    s = asettings.get_assistant_settings()
+    asettings.set_assistant_settings(s.replace(chrome=True))
+
+    def reply(said, client):
+        if brain.ESCALATED[:30] in said:
+            return ["The form is filled in, sir."]
+        return [brain.tool_step("need_tools", kind="browser", why="fill a form")]
+
+    script(reply)
+    res, heard = say("fill in the form on that page")
+    assert heard == ["The form is filled in, sir."] and res["status"] == "ok"
+    first, second = brain.FakeClient.instances[0], brain.FakeClient.instances[-1]
+    assert first is not second and second.options.extra_args == {"chrome": None}
+    assert second.options.resume == first.session_id                     # the same conversation, now with Chrome
+    assert brain.get_brain().timing_for(res["turn"])["escalated_ms"] is not None
+
+
+def test_need_tools_my_servers_switches_his_servers_on_in_place(env, monkeypatch):
+    monkeypatch.setattr(brain.Brain, "lean_extras", lambda self: (False, ["notes"]))
+    script(lambda said, c: [brain.tool_step("need_tools", kind="my_servers"), "Found it in your notes, sir."]
+           if "notes" in said else ["Browser tools are not set up."])
+    res, heard = say("look in my notes app")
+    assert heard == ["Found it in your notes, sir."]
+    assert brain.FakeClient.instances[0].toggled == [("notes", True)] and len(brain.FakeClient.instances) == 1
+    assert "my_servers" in brain.get_brain().escalated
+    script(lambda said, c: [brain.tool_step("need_tools", kind="browser"), "Fine."])
+    res, heard = say("open the browser and click it")
+    assert len(brain.FakeClient.instances) == 1                         # Chrome not set up: no reconnect
+
+
+def test_voice_session_rolls_over_at_its_own_token_limit_with_a_summary(env):
+    script(lambda said, c: [f"Noted: {said}."])
+    say("my sister is called Ana")
+    st = claude_code.session_state("voice")
+    first = brain.FakeClient.instances[0]
+    assert 100 < st["tokens"] < 2000                                    # the context size, from message_start
+    db.kv_set(claude_code.KV_SESSION.format(channel="voice"), {**st, "tokens": 61_000})
+    say("what is my sister called")
+    new = brain.FakeClient.instances[-1]
+    assert new is not first and new.options.resume is None              # rolled over at ~60k, not 150k
+    assert "previous_conversation" in new.history[0] and "my sister is called Ana" in new.history[0]
+    assert claude_code.carry_over("voice") == ""                        # used once
+    from assistant import vault
+
+    assert "Conversation on voice closed (context full" in vault.read_note(vault.journal_path(db.local_today())).body
+    s = asettings.get_assistant_settings()
+    db.kv_set(claude_code.KV_SESSION.format(channel="dashboard"),
+              {"id": "x", "day": db.local_today().isoformat(), "turns": 1, "tokens": 61_000})
+    assert claude_code.session_for("dashboard") == "x" and s.session_max_tokens > 61_000   # other channels unchanged
+
+
+def test_smart_turn_timing_from_the_listener_joins_the_brain_timing(env):
+    script(lambda said, c: ["Yes, sir."])
+    turn = brain.ask("are you there", origin="voice", timing={"smart_turn_p": 0.93, "smart_turn_ms": 21, "x": 1})
+    turn.wait(10)
+    row = brain.get_brain().timing_for(turn.id)
+    assert row["smart_turn_p"] == 0.93 and row["smart_turn_ms"] == 21 and "x" not in row
+    assert row["route"] == "brain" and row["context_tokens"] > 0

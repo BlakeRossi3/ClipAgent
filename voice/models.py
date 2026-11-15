@@ -2,6 +2,8 @@
 
 * openWakeWord feature models + ``hey_jarvis`` (about 4 MB) from the openWakeWord GitHub release.
 * Kokoro-82M int8 + voices (about 120 MB) from the kokoro-onnx GitHub release.
+* Pipecat Smart Turn v3.2 (int8, about 8 MB; BSD-2) from Hugging Face, the end-of-turn model
+  (``voice/smart_turn.py``; skipped with VOICE_SMART_TURN=off).
 * faster-whisper models download themselves into the Hugging Face cache on first use (``small.en``
   is shared with the clip pipeline; ``tiny.en`` for the name spotter is about 75 MB).
 """
@@ -51,12 +53,18 @@ def download(url: str, dest: Path, say: Progress) -> None:
     part.replace(dest)
 
 
-def ensure_models(models_dir: Path, *, wake: bool = True, kokoro: bool = True, say: Progress | None = None) -> list[str]:
+def ensure_models(models_dir: Path, *, wake: bool = True, kokoro: bool = True, smart_turn: bool = False,
+                  say: Progress | None = None) -> list[str]:
     """Download what is missing. Returns problems (empty = all there). Never raises for network trouble."""
     say = say or (lambda m: log.info("%s", m))
+    extra: list[str] = []
+    if smart_turn:
+        from voice import smart_turn as st
+
+        extra = st.ensure_model(models_dir, say)
     todo = missing(models_dir, wake=wake, kokoro=kokoro)
     if not todo:
-        return []
+        return extra
     say(f"Downloading voice models into {models_dir} (one time, about "
         f"{(4 if wake else 0) + (120 if kokoro and any('kokoro' in str(p) for p in todo) else 0)} MB)...")
     problems = []
@@ -69,4 +77,4 @@ def ensure_models(models_dir: Path, *, wake: bool = True, kokoro: bool = True, s
             say(f"  could not download {dest.name}: {exc}")
     if not problems:
         say("Voice models ready.")
-    return problems
+    return problems + extra

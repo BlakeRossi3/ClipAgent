@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}{{ {"modes": "Desktop modes", "history": "Claude history", "twilio": "Twilio check"}[page] }}{% endblock %}
+{% block title %}{{ {"modes": "Desktop modes", "history": "Claude history", "twilio": "Twilio check", "approvals": "Approvals"}[page] }}{% endblock %}
 {% block content %}
 <div class="home">
 <div class="page-head-h">
-  <p class="muted"><a href="/setup/">Settings</a> · <a href="/dashboard/modes">Desktop modes</a> · <a href="/dashboard/history">Claude history</a> · <a href="/dashboard/twilio-check">Twilio check</a></p>
+  <p class="muted"><a href="/setup/">Settings</a> · <a href="/dashboard/modes">Desktop modes</a> · <a href="/dashboard/history">Claude history</a> · <a href="/dashboard/twilio-check">Twilio check</a> · <a href="/dashboard/approvals">Approvals</a></p>
 {% if page == "modes" %}
   <h1>Desktop modes</h1>
   <p class="lede-h">One click sets the PC up. {% if not windows %}This server is not Windows, so a run only shows the plan.{% endif %}</p>
@@ -57,6 +57,19 @@
   {% if results %}<ul class="plain">{% for r in results %}<li>{{ r.file }}: {{ r.status }}{% if r.get('error') %} — {{ r.error }}{% elif r.get('conversations') is not none %} ({{ r.conversations }} conversations, {{ r.messages }} messages{% if r.get('projects') %}, {{ r.projects }} projects{% endif %}{% if r.get('memories') %}, {{ r.memories }} memories{% endif %}){% endif %}</li>{% endfor %}</ul>{% endif %}
   {% if p.files %}<h3 class="mini-head">Imported files</h3><ul class="plain">{% for f in p.files %}<li>{{ f.filename }} <span class="muted">{{ f.category }}</span></li>{% endfor %}</ul>{% endif %}
 </section>
+
+{% elif page == "approvals" %}
+  <h1>Approvals</h1>
+  <p class="lede-h">Kinds of request you said "always allow" to. Matching requests are approved automatically and announced in one line. Spending, public posts, messaging anyone else, deleting files, unknown third-party code and strategy changes always ask.</p>
+</div>
+{% if revoked %}<p class="card voice">Revoked rule #{{ revoked }}. That kind asks you again from now on.</p>{% endif %}
+{% if error %}<p class="card voice">{{ error }}</p>{% endif %}
+<section class="card"><h2 class="sec-title">Standing approvals</h2>
+  {% if rules %}<ul class="plain">{% for r in rules %}<li><strong>{{ r.label }}</strong> <span class="muted">#{{ r.id }} · made {{ r.created_at | ago }} via {{ r.created_via }}{% if r.decision_id %} (request #{{ r.decision_id }}){% endif %} · used {{ r.uses }} time{{ "" if r.uses == 1 else "s" }}{% if r.last_used_at %}, last {{ r.last_used_at | ago }}{% endif %}</span>
+    <form method="post" action="/dashboard/approvals/revoke" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="rule_id" value="{{ r.id }}"><button class="hbtn" type="submit">Revoke</button></form></li>{% endfor %}</ul>
+  {% else %}<p class="muted">None yet. Answer an approval with YES ALWAYS &lt;id&gt;, the Always allow button, or press 3 on the approval call.</p>{% endif %}
+</section>
+{% if old_rules %}<section class="card"><h2 class="sec-title">Revoked</h2><ul class="plain">{% for r in old_rules %}<li>{{ r.label }} <span class="muted">#{{ r.id }} · revoked {{ r.revoked_at | ago }} via {{ r.revoked_via }}</span></li>{% endfor %}</ul></section>{% endif %}
 
 {% else %}
   <h1>Twilio check</h1>

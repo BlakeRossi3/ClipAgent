@@ -503,6 +503,7 @@ DENY_POWERSHELL = ("Remove-Item * -Recurse*", "Remove-Item -Recurse *", "Remove-
                    "git clean *", "Remove-ItemProperty *", "Invoke-Expression *", "iex *")
 SESSION_CHANNELS = ("dashboard", "sms", "whatsapp", "voice")
 KV_SESSION = "assistant:cc:session:{channel}"
+KV_CARRY = "assistant:cc:carry:{channel}"         # the last rollover's summary, for the next session's first prompt
 DEFAULT_USER_DIRS = ("Desktop", "Documents", "Downloads", "Pictures", "Videos")
 
 
@@ -837,8 +838,8 @@ def session_for(channel: str) -> str | None:
         reason = "new day"
     elif int(v.get("turns") or 0) >= s.session_max_turns:
         reason = "long conversation"
-    elif int(v.get("tokens") or 0) >= s.session_max_tokens:
-        reason = "context full"
+    elif int(v.get("tokens") or 0) >= (s.voice_session_max_tokens if channel == "voice" else s.session_max_tokens):
+        reason = "context full"   # voice rolls over early (~60k): a long context slows every spoken answer
     if reason is None:
         return str(v["id"])
     rollover(channel, reason)
@@ -861,13 +862,29 @@ def rollover(channel: str, reason: str = "manual") -> bool:
             vault.append_journal(f"Conversation on {channel} closed ({reason}; {len(msgs)} messages since "
                                  f"{v.get('started', '?')[:16]}Z). Last exchanges:\n" + "\n".join(lines),
                                  source="claude_code")
+            # the next session on this channel opens with the same short summary (carry_over)
+            db.kv_set(KV_CARRY.format(channel=channel), {"reason": reason, "at": db.now_iso(),
+                                                         "text": "\n".join(lines)[-1600:]})
     except Exception as exc:
         db.log_event("assistant", "session summary not written", level="warning", data={"error": repr(exc)[:300]})
     db.log_event("assistant", f"{channel} conversation rolled over", data={"reason": reason, "session": v.get("id")})
+    from assistant import auto_memory
+
+    auto_memory.on_rollover(channel)   # distil what is left of it into memory (debounced, never raises)
     return True
 
 
-def _record_session(channel: str, res: "CCResult", resumed: bool) -> None:
+def carry_over(channel: str) -> str:
+    """The summary the last rollover of ``channel`` left for the next session (read once, then gone)."""
+    key = KV_CARRY.format(channel=channel)
+    v = db.kv_get(key)
+    db.kv_delete(key)
+    return str(v.get("text") or "") if isinstance(v, dict) else ""
+
+
+def _record_session(channel: str, res: "CCResult", resumed: bool, *, context_tokens: int | None = None) -> None:
+    """``context_tokens``: the size of the session's context on its last model call, when the caller knows
+    it (a result's usage adds up every call of a multi-tool turn, which overstates the context)."""
     if channel not in SESSION_CHANNELS or not res.session_id:
         return
     prev = session_state(channel) if resumed else None
@@ -875,7 +892,8 @@ def _record_session(channel: str, res: "CCResult", resumed: bool) -> None:
         "id": res.session_id, "day": db.local_today().isoformat(),
         "started": (prev or {}).get("started") or db.now_iso(),
         "turns": int((prev or {}).get("turns") or 0) + 1,
-        "tokens": res.input_tokens + res.cache_read_tokens + res.cache_write_tokens})
+        "tokens": int(context_tokens) if context_tokens else
+        res.input_tokens + res.cache_read_tokens + res.cache_write_tokens})
 
 
 def build_argv(exe: str, *, model: str, system: str, allowed_tools: list[str], mcp_config: str | None,

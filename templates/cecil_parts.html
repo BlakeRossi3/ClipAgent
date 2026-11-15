@@ -45,7 +45,7 @@
   <li class="cc-work-item is-{{ w.status }} kind-{{ w.kind }}">
     <span class="cc-work-dot" aria-hidden="true"></span>
     <p><b>{{ w.who }}</b> {{ w.text | truncate(120) }}</p>
-    <p class="cc-meta">{{ {"run": "task", "task": "background", "code": "code change"}[w.kind] }}{% if w.status not in ("ok",) %} · {{ w.status }}{% endif %} · {{ w.ts | ago }}</p>
+    <p class="cc-meta">{{ {"run": "task", "task": "background", "code": "code change", "memory": "memory"}[w.kind] }}{% if w.status not in ("ok",) %} · {{ w.status }}{% endif %} · {{ w.ts | ago }}</p>
   </li>
   {% endfor %}
 </ol>

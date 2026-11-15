@@ -60,6 +60,8 @@ SANDBOX_NUMBER_HINT = "+14155238886"       # Twilio's shared sandbox number as w
 MAX_MEDIA_BYTES = 16 * 1024 * 1024
 MEDIA_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
              "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/amr": "amr", "audio/mp4": "m4a", "audio/aac": "aac",
+             "audio/opus": "opus", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/webm": "webm", "audio/wav": "wav",
+             "audio/x-wav": "wav", "audio/3gpp": "3gp", "audio/amr-wb": "awb",
              "video/mp4": "mp4", "application/pdf": "pdf"}
 
 K_WA_LAST_IN = "messaging:wa_last_in"
@@ -461,6 +463,70 @@ def download_media(params: dict[str, str]) -> list[dict[str, str]]:
     if out:
         db.log_event(MODULE, f"saved {len(out)} attachment(s) from the owner", data={"types": [m["type"] for m in out]})
     return out
+
+
+# ---------------------------------------------------------------------------
+# voice notes: inbound audio -> ffmpeg (16 kHz mono WAV) -> the faster-whisper engine (transcribe.py)
+# ---------------------------------------------------------------------------
+
+Transcriber = Callable[[Path], str]
+VOICE_NOTE_LABEL = "(voice note)"
+MAX_VOICE_NOTES = 3
+
+
+def is_audio(ctype: str) -> bool:
+    return (ctype or "").split(";")[0].strip().lower().startswith("audio/")
+
+
+def _default_transcriber(path: Path) -> str:
+    import transcribe
+
+    wav = path.with_name(path.stem + ".16k.wav")
+    try:
+        transcribe.extract_audio(path, wav)
+        data = transcribe.get_backend().transcribe(wav)
+    finally:
+        wav.unlink(missing_ok=True)
+    return " ".join(" ".join(str(s.get("text") or "").split()) for s in data.get("segments") or []).strip()
+
+
+_transcriber: Transcriber = _default_transcriber
+
+
+def set_transcriber(fn: Transcriber | None) -> None:
+    """Tests: replace ffmpeg + Whisper (``fn(path) -> text``); ``None`` = the real engine."""
+    global _transcriber
+    _transcriber = fn or _default_transcriber
+
+
+def transcribe_voice_notes(media: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Transcribe the audio attachments among ``media`` (ogg/opus, amr, m4a, mp3...).
+
+    Returns one ``{"path", "type", "transcript"}`` per audio file that produced words; failures are
+    logged and skipped (the file is then passed on as a plain attachment).
+    """
+    out: list[dict[str, str]] = []
+    for m in [m for m in media if is_audio(m.get("type", ""))][:MAX_VOICE_NOTES]:
+        try:
+            text = _transcriber(Path(m["path"]))
+        except Exception as exc:
+            db.log_event(MODULE, "voice note could not be transcribed", level="warning",
+                         data={"type": m.get("type"), "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            continue
+        text = " ".join((text or "").split())
+        if text:
+            out.append({**m, "transcript": text})
+    if out:
+        db.log_event(MODULE, f"transcribed {len(out)} voice note(s) from the owner",
+                     data={"chars": sum(len(x["transcript"]) for x in out)})
+    return out
+
+
+def voice_note_text(body: str, notes: list[dict[str, str]]) -> str:
+    """His message as the assistant sees it: typed text first, then each transcript marked (voice note)."""
+    parts = [body.strip()] if body and body.strip() else []
+    parts += [f"{VOICE_NOTE_LABEL} {n['transcript']}" for n in notes]
+    return "\n\n".join(parts)
 
 
 def media_note(media: list[dict[str, str]]) -> str:

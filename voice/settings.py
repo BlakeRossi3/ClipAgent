@@ -20,6 +20,7 @@ WEB_TTS_ENGINES = ("browser", "kokoro", "elevenlabs")  # the Jarvis page: the br
 WEB_STT_MODES = ("auto", "browser", "server")   # the Jarvis page: Chrome/Edge speech recognition or Whisper here
 ELEVENLABS_DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"      # adewaskar/jarvis's default ElevenLabs voice ("George")
 BARGE_IN_MODES = ("auto", "wake_only", "off")
+AUTO_OFF = ("auto", "off")
 KOKORO_VOICES = {   # the British voices in Kokoro v1.0 (bm_ = British male, bf_ = British female)
     "bm_george": "George - British male, warm and low (default)",
     "bm_lewis": "Lewis - British male, crisp",
@@ -59,6 +60,8 @@ class VoiceSettings:
     hotkey_mute: str = "<ctrl>+<alt>+m"
     tray: bool = True
     rescan_sec: float = 60.0               # look for a new/better microphone this often while idle
+    smart_turn: str = "auto"               # semantic end-of-turn model (voice/smart_turn.py): auto | off
+    fast_lane: str = "auto"                # quick model for chit-chat (assistant/fastlane.py; needs the API key)
     brain_url: str = "http://127.0.0.1:8000"   # the server holding the warm brain (CLIPAGENT_BRAIN_URL)
     assistant_name: str = "Cecil"
     honorific: str = "sir"
@@ -85,7 +88,7 @@ class VoiceSettings:
         return {"web_tts": self.web_tts, "web_voice": self.web_voice, "tts_engine": self.tts_engine,
                 "tts_voice": self.tts_voice, "kokoro_name": kokoro_name(self.tts_voice),
                 "elevenlabs": bool(self.elevenlabs_api_key), "end_silence_sec": self.end_silence_sec,
-                "stt": self.web_stt}
+                "stt": self.web_stt, "smart_turn": self.smart_turn}
 
 
 def _choice(raw: str, allowed: tuple[str, ...], default: str) -> str:
@@ -144,6 +147,8 @@ def load_voice_settings(environ: Mapping[str, str] | None = None) -> VoiceSettin
         hotkey_mute=s("VOICE_HOTKEY_MUTE", "<ctrl>+<alt>+m"),
         tray=config._bool(env.get("VOICE_TRAY"), True),
         rescan_sec=_float(env.get("VOICE_RESCAN_SEC"), 60.0, 0.0, 3600.0),
+        smart_turn=_choice(s("VOICE_SMART_TURN", "auto"), AUTO_OFF, "auto"),
+        fast_lane=_choice(s("VOICE_FAST_LANE", "auto"), AUTO_OFF, "auto"),
         brain_url=s("CLIPAGENT_BRAIN_URL", "http://127.0.0.1:8000").rstrip("/"),
         assistant_name=name,
         honorific=honorific,

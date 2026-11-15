@@ -70,6 +70,23 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     claude_code.set_claude_json(tmp_path / "no-claude.json")
     hud.reset()
+    # automatic memory passes never run on a real background timer in tests (tests drive them by hand)
+    from assistant import auto_memory
+
+    auto_memory.reset()
+    auto_memory.set_scheduler(lambda delay, fn: None)
+    # never ffmpeg + a Whisper model download for inbound voice notes (tests inject a fake transcriber)
+    from assistant import messaging
+
+    def _no_whisper(path: Any) -> str:
+        raise RuntimeError("no Whisper in tests")
+
+    messaging.set_transcriber(_no_whisper)
+    # never the Smart Turn model download (tests install a fake end-of-turn detector)
+    from voice import smart_turn
+
+    smart_turn.set_detector(None)
+    smart_turn.set_downloads(False)
     config.reset_settings()
     llm.reset()
     config.get_settings().ensure_dirs()
@@ -77,6 +94,10 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     selfedit.set_app_dir(None)
     claude_code.set_claude_json(None)
     hud.reset()
+    auto_memory.reset()
+    messaging.set_transcriber(None)
+    smart_turn.set_detector(None)
+    smart_turn.set_downloads(True)
     llm.reset()
     config.reset_settings()
 

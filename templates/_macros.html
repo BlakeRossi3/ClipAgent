@@ -97,6 +97,12 @@
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ next }}">
       <button type="submit" class="btn btn-primary">Approve</button>
     </form>
+    {% if d is standing_ok %}
+    <form method="post" action="/dashboard/decisions/{{ d.id }}/always">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ next }}">
+      <button type="submit" class="btn" title="Approve, and approve requests of exactly this kind automatically from now on">Always allow</button>
+    </form>
+    {% endif %}
     <form method="post" action="/dashboard/decisions/{{ d.id }}/reject">
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ next }}">
       <button type="submit" class="btn">Reject</button>

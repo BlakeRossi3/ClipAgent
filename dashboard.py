@@ -185,6 +185,9 @@ _FLASH = {
     "failed": ("critical", "Could not record the decision - see the log for details."),
     "unapplied": ("critical", "Approved, but the change could not be applied automatically, so nothing has "
                               "changed yet. See the log for why."),
+    "always": ("good", "Approved. Requests of this kind are now approved automatically (Settings, Approvals "
+                       "to revoke)."),
+    "always_refused": ("info", "Approved once. This kind always asks, so no standing rule was made."),
     "csrf": ("critical", "The form expired or came from another site. Reload the page and try again."),
     "loggedout": ("info", "Signed out."),
     "setup_done": ("good", "All set. Everything can be changed later under Settings."),
@@ -645,6 +648,17 @@ def _env():
             return (name or "assistant").capitalize()
 
     env.globals["agent_name"] = agent_name
+
+    def can_always(d: Any) -> bool:
+        """May this decision become a standing approval ("always allow this kind")?"""
+        try:
+            from assistant import approvals
+
+            return approvals.eligible(d)
+        except Exception:
+            return False
+
+    env.tests["standing_ok"] = can_always
     env.filters.update(
         compact=fmt_compact, int=fmt_int, usd=fmt_usd, pct=fmt_pct, duration=fmt_duration, hours=fmt_hours,
         dt=fmt_dt, date=fmt_date, ago=fmt_ago, pretty_json=fmt_json, ext_url=ext_url,
@@ -2317,7 +2331,7 @@ def decisions_page(request: Request) -> Response:
 
 @router.post("/decisions/{decision_id}/{action}")
 async def decide(request: Request, decision_id: int, action: str) -> Response:
-    if action not in ("approve", "reject"):
+    if action not in ("approve", "reject", "always"):
         return Response("not found", status_code=404, media_type="text/plain")
     resp, method = _guard(request, api=request.headers.get("authorization") is not None)
     if resp is not None:
@@ -2330,9 +2344,25 @@ async def decide(request: Request, decision_id: int, action: str) -> Response:
     d = db.get_decision(decision_id)
     if d is None:
         return _not_found(request, f"Decision {decision_id}")
+    if action == "always" and d.status in ("pending", "approved"):
+        try:
+            from assistant import approvals
+
+            res = approvals.approve_always(decision_id, via="dashboard")
+        except Exception as exc:
+            db.log_event("dashboard", f"standing approval for decision {decision_id} failed", level="error",
+                         data={"decision_id": decision_id, "error": repr(exc)[:500]})
+            return _security_headers(RedirectResponse(f"{nxt}{sep}msg=failed", status_code=303))
+        msg = "always" if res.get("rule") else ("always_refused" if res.get("ok") else "already")
+        if res.get("applied") is False:
+            msg = "unapplied"
+        if method == "bearer":
+            return _json({"ok": bool(res.get("ok")), "decision_id": decision_id, "status": msg,
+                          "rule_id": (res.get("rule") or {}).get("id")})
+        return _security_headers(RedirectResponse(f"{nxt}{sep}msg={msg}", status_code=303))
     if d.status != "pending":
         return _security_headers(RedirectResponse(f"{nxt}{sep}msg=already", status_code=303))
-    approved = action == "approve"
+    approved = action in ("approve", "always")
     try:
         import notify  # late import: notify is optional at import time and patched in tests
 

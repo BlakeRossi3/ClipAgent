@@ -779,6 +779,10 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
     else:
         out_id = store.add_message("out", store_channel, text, kind="reply", agent="main", cost_usd=r.turn.spent,
                                    reply_to=in_id)
+    if status == "ok":   # automatic memory: a debounced background pass over this conversation
+        from assistant import auto_memory
+
+        auto_memory.after_turn(store_channel)
     return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, in_id, out_id, raw)
 
 

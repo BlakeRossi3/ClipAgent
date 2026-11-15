@@ -70,6 +70,7 @@
   {{ tile("/setup/phone", "Your phone", (sm.phone.owner_phone or "Not set") ~ (" · Twilio set" if sm.phone.twilio_sid else ""), "chat") }}
   {{ tile("/setup/youtube", "YouTube", "Connected" if sm.youtube.has_token else ("Sign-in file saved, not connected" if sm.youtube.has_secret else "Not connected"), "film") }}
   {{ tile("/dashboard/twilio-check", "Twilio check", "Why texts fail, and the fix", "bell") }}
+  {{ tile("/dashboard/approvals", "Approvals", 'Standing "always allow" rules: review, revoke', "flag") }}
 </div></section>
 <section class="s-group" aria-labelledby="g-sys"><h2 class="sec-title" id="g-sys">This computer</h2><div class="s-grid">
   {{ tile("/setup/power", "Power & privacy", ("GPU" if sm.power.whisper_device == "cuda" else "CPU") ~ " · " ~ ("Practice (dry run)" if sm.power.dry_run else "Live") ~ (" · phone password set" if secrets.dashboard_token else ""), "sun") }}

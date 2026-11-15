@@ -355,8 +355,13 @@ async def api_talk(request: Request) -> Response:
         with _stt_lock:
             return _stt().transcribe(samples)
 
+    # Smart Turn on the whole turn so far (this clip, after the held one when the page says it continues),
+    # in parallel with Whisper: "finished" -> the page sends at once; "not finished" -> it waits for more
+    turn_audio = _turn_audio(samples, cont=str(form.get("cont") or "") == "1")
     try:
-        text = (await run_in_threadpool(hear) or "").strip()
+        text_raw, (eot, eot_ms) = await asyncio.gather(run_in_threadpool(hear),
+                                                       run_in_threadpool(end_of_turn, turn_audio))
+        text = (text_raw or "").strip()
     except Exception as exc:  # faster-whisper missing or the model failed to load
         db_log("speech recognition failed in the browser voice", exc)
         return _talk_err("stt", "Speech recognition is not working on the server; see the log. You can type instead.",
@@ -368,7 +373,31 @@ async def api_talk(request: Request) -> Response:
     if commands.is_noise(text):
         return d._json({"ok": False, "error": "no_speech", "quiet": True, "heard": text, "msg": ""})
     return d._json({"ok": True, "heard": text[: home.CHAT_MAX_CHARS], "name": a["name"], "fake": a["fake"],
-                    "stt_ms": stt_ms})
+                    "stt_ms": stt_ms, "eot": None if eot is None else round(eot, 3), "eot_ms": eot_ms})
+
+
+_turn_clip: dict[str, Any] = {"at": 0.0, "samples": None}
+TURN_CONT_SEC = 8.0     # a held clip this recent is the start of the same turn
+
+
+def _turn_audio(samples: Any, *, cont: bool) -> Any:
+    """This clip, or the turn so far when the page is still holding the previous clip's words (Smart Turn
+    wants the whole turn, not the last breath). Remembered for the next clip."""
+    import numpy as np
+
+    now = time.monotonic()
+    prev = _turn_clip["samples"]
+    if cont and prev is not None and now - _turn_clip["at"] < TURN_CONT_SEC:
+        samples = np.concatenate([prev, samples])[-RATE * 16:]
+    _turn_clip.update(at=now, samples=samples)
+    return samples
+
+
+def end_of_turn(samples: Any) -> tuple[float | None, int]:
+    """(probability he has finished, ms), or (None, 0) without the model (it downloads on first use)."""
+    from voice import smart_turn
+
+    return smart_turn.predict(samples, download=True)
 
 
 def ignore_reason(text: str) -> str | None:
@@ -416,15 +445,16 @@ async def api_ask(request: Request) -> Response:
             return d._json({"ok": True, "turn": None, "spoken": reason, "status": "off"})
         return d._json({"ok": False, "error": "off", "msg": reason, "reason": reason}, status_code=503)
     merge = form.get("typed") is None and origin != "text"     # spoken input: strict single flight
+    timing = _timing_fields(form)
     if "application/x-ndjson" not in request.headers.get("accept", ""):
-        turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge))
+        turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge, timing=timing))
         return d._json({"ok": True, "turn": turn.id, "heard": turn.heard, "merged": turn.merged_from,
                         "duplicate": turn.origin != origin, "name": a["name"]})
 
     import queue as _q
 
     lines: _q.SimpleQueue[str | None] = _q.SimpleQueue()
-    turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge,
+    turn = await run_in_threadpool(lambda: brain.ask(text, origin=origin, merge=merge, timing=timing,
                                                      on_sentence=lambda s: lines.put(json.dumps({"sentence": s}))))
     if turn.origin != origin:   # the other listener already asked this: it answers, this one stays quiet
         dup = {"done": True, "reply": "", "spoken": "", "status": "duplicate", "cost_usd": 0.0, "task": False,
@@ -450,6 +480,19 @@ async def api_ask(request: Request) -> Response:
             yield line + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+def _timing_fields(form: Any) -> dict[str, Any]:
+    """The listener's end-of-turn stages sent with an ask (Smart Turn probability and milliseconds)."""
+    out: dict[str, Any] = {}
+    for k, lo, hi in (("smart_turn_p", 0.0, 1.0), ("smart_turn_ms", 0.0, 60_000.0)):
+        try:
+            v = float(str(form.get(k) or ""))
+        except ValueError:
+            continue
+        if lo <= v <= hi:
+            out[k] = round(v, 3) if k.endswith("_p") else round(v)
+    return out
 
 
 @router.post("/api/interrupt", include_in_schema=False)
@@ -508,8 +551,20 @@ def activity() -> dict[str, Any]:
     for t in tasks.list_tasks():   # tasks from before this server started (kv) fill the gaps
         live.setdefault(t["id"], tasks.public(t))
     snap["tasks"] = sorted(live.values(), key=lambda x: x.get("started") or "")[-10:]
-    snap["voice"] = get_voice_settings().public()
+    snap["voice"] = {**get_voice_settings().public(), "smart_turn_ready": smart_turn_ready()}
     return snap
+
+
+def smart_turn_ready() -> bool:
+    """The page may cut its silence short and let the server's Smart Turn decide (the model is loaded).
+    The first look starts the one-time download when the model is missing."""
+    try:
+        from voice import smart_turn
+
+        return smart_turn.get_detector(download=True) is not None
+    except Exception as exc:
+        log.debug("smart turn unavailable: %s", exc)
+        return False
 
 
 @router.get("/api/activity", include_in_schema=False)
@@ -643,7 +698,7 @@ async def api_timing(request: Request) -> Response:
 
     row = {"turn": str(form.get("turn") or "")[:40], "stt": str(form.get("stt") or "")[:20],
            "speech_to_first_word_ms": num("first_word_ms"), "stt_ms": num("stt_ms"), "ask_ms": num("ask_ms"),
-           "tts": str(form.get("tts") or "")[:30]}
+           "tts": str(form.get("tts") or "")[:30], **_timing_fields(form)}
     import db
 
     row["ts"] = db.now_iso()
@@ -679,6 +734,7 @@ def diagnostics() -> dict[str, Any]:
         out["brain"] = {k: st.get(k) for k in ("running", "connected", "busy", "mode", "model", "recovering",
                                                "recoveries", "connects")}
         out["brain"]["last_error"] = (st.get("last_error") or "")[:160]
+        out["brain"]["context"] = brain.get_brain().context_usage if brain.running() else {}
     except Exception as exc:
         out["brain"] = {"running": False, "error": type(exc).__name__}
     try:

@@ -302,3 +302,45 @@ def test_doctor_detects_whatsapp_number_and_sms_block():
     ids = {c.id: c for c in d.checks}
     assert ids["wa_from"].action == "use_detected_whatsapp_number" and "wa_err_63016" in ids
     assert messaging.sms_state() == "blocked" and messaging.a2p_status() == "IN_PROGRESS"
+
+
+def test_inbound_voice_note_transcribed_as_his_message(live, client, monkeypatch, tmp_path):
+    messaging.set_media_fetcher(lambda url, auth: (b"OggS fake opus", "audio/ogg; codecs=opus"))
+    heard: list[str] = []
+
+    def fake_whisper(path):
+        heard.append(path.suffix)
+        if path.suffix == ".amr":
+            raise RuntimeError("ffmpeg could not decode")
+        return "  Remind me to call the dentist   tomorrow at nine. "
+
+    messaging.set_transcriber(fake_whisper)
+    turns: list[tuple[str, Any]] = []
+    from assistant import runtime
+
+    monkeypatch.setattr(notify, "_assistant_enabled", lambda: True)
+    monkeypatch.setattr(runtime, "run_turn", lambda text, **kw: turns.append((text, kw)))
+    data = wa_in("", sid="SMv", NumMedia="1",
+                 MediaUrl0="https://api.twilio.com/2010-04-01/Accounts/AC/Messages/MM/Media/v1",
+                 MediaContentType0="audio/ogg")
+    assert post(client, "/twilio/whatsapp", data).status_code == 200
+    text, kw = turns[0]
+    assert text == "(voice note) Remind me to call the dentist tomorrow at nine."
+    assert kw["attachments"] is None and heard == [".ogg"]
+    # typed text + a voice note that fails to decode: the file is passed on as an attachment instead
+    messaging.set_media_fetcher(lambda url, auth: (b"#!AMR fake", ""))
+    data = wa_in("listen", sid="SMv2", NumMedia="1",
+                 MediaUrl0="https://api.twilio.com/2010-04-01/Accounts/AC/Messages/MM/Media/v2",
+                 MediaContentType0="audio/amr")
+    post(client, "/twilio/whatsapp", data)
+    text, _ = turns[1]
+    assert text.startswith("listen") and "(voice note)" not in text and ".amr" in text
+    assert any(e.message == "voice note could not be transcribed" for e in db.list_events(module="messaging"))
+
+
+def test_voice_note_helpers():
+    assert messaging.is_audio("audio/ogg; codecs=opus") and messaging.is_audio("audio/amr")
+    assert not messaging.is_audio("image/png")
+    notes = [{"path": "/x.ogg", "type": "audio/ogg", "transcript": "hello there"}]
+    assert messaging.voice_note_text("hi", notes) == "hi\n\n(voice note) hello there"
+    assert messaging.voice_note_text("", []) == ""

@@ -187,8 +187,17 @@ def recent_work(limit: int = WORK_ITEMS) -> list[dict[str, Any]]:
         items.append({"ts": _iso(c.get("at")), "who": s.name, "agent": "main",
                       "text": "Changed its own code: " + friendly_title(str(c.get("title") or "")),
                       "kind": "code", "status": "undone" if c.get("reverted") else "ok"})
+    for e in _safe(_remembered, [], "auto-memory"):
+        items.append({"ts": e.ts, "who": s.name, "agent": "main", "text": e.message[:180], "kind": "memory",
+                      "status": "ok"})
     items.sort(key=lambda i: i["ts"] or "", reverse=True)
     return items[:limit]
+
+
+def _remembered() -> list[Any]:
+    from assistant import auto_memory
+
+    return auto_memory.recent_remembered(WORK_ITEMS)
 
 
 def _iso(value: Any) -> str:
