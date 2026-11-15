@@ -349,12 +349,17 @@
 
   /* ack:begin -- instant acknowledgement (docs/VOICE_SPEED_RESEARCH.md item 4). Pure (no DOM): the tests run
      this block in node. A task-like request gets a templated line the moment he stops (never the same line twice
-     in a row), and "Still working on it" once at 8 s with no answer. Plain chat gets nothing. */
+     in a row); plain chat gets one only if no answer has started after 1.5 s; then a progress line at 5 s and every
+     6 s after (naming the running step when known), so he is never left in silence. */
   var ACK = (function () {
     var TASK = /\b(open|search|find|look(ing)? up|google|log|change|switch|set|turn (on|off|up|down)|play|pause|show|check|start|stop the|run|fix|update|add|remind|schedule|send|text|email|message|call|write|make|create|delete|remove|book|order|read|summari[sz]e|pull up|bring up|download|install|test|record|save|compare|research|translate|calculate|score|scores|weather|forecast|news|headlines?|prices?|stocks?|latest|who won)\b/;
     var CHAT = /^(hi|hello|hey|hiya|yo|morning|evening|good (morning|afternoon|evening|night)|how are you|how's it going|how are things|what's up|thanks|thank you|cheers|ok|okay|cool|great|nice|perfect|yes|yeah|yep|no|nope|sure|fine|good|right|bye|goodbye|see you|never ?mind|i'm (good|fine|back|here|ok|okay)|are you there|you there)\b/;
     var LINES = ['One moment, {h}.', 'On it, {h}.', 'Right away, {h}.', 'Very good, {h}.'];
-    var STILL = 'Still working on it, {h}.', STILL_MS = 8000;
+    // Never leave him in silence: a task is acknowledged at once, anything else after LATE_MS without an
+    // answer, and while the work goes on a short progress line follows at FIRST_MS and then every EVERY_MS.
+    var STILL = 'Still working on it, {h}.';
+    var PROGRESS = [STILL, 'Nearly there, {h}.', 'Bear with me, {h}.', 'Still on it, {h}.'];
+    var LATE_MS = 1500, FIRST_MS = 5000, EVERY_MS = 6000, MAX_PROGRESS = 6;
     function words(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
     function kind(text) {                  // 'task' | 'chat'
       var w = words(text);
@@ -364,28 +369,40 @@
       if (CHAT.test(w)) return n <= 8 ? 'chat' : 'task';
       return n >= 7 ? 'task' : 'chat';     // anything that is not a short chat
     }
-    function make(o) {                     // o: { say(text), later(fn, ms) -> id, cancel(id), h, random }
-      var last = -1, timer = null, active = false, rnd = o.random || Math.random;
+    function make(o) {                     // o: { say(text), later(fn, ms) -> id, cancel(id), h, random, progress() }
+      var last = -1, timer = null, active = false, rnd = o.random || Math.random, said = '', count = 0;
       function fill(t) { return t.replace('{h}', o.h || 'sir'); }
       function line() { var i = last; while (i === last) i = Math.floor(rnd() * LINES.length) % LINES.length; last = i; return fill(LINES[i]); }
       function stop() { active = false; if (timer !== null) { o.cancel(timer); timer = null; } }
+      function speak(t) { said = t; o.say(t); }
+      function progress() {                // what he is waiting on if known (the running step), else a rotating line
+        timer = null;
+        if (!active || count >= MAX_PROGRESS) return;
+        var t = o.progress ? o.progress() : null;
+        if (!t || t === said) t = fill(PROGRESS[count % PROGRESS.length]);
+        if (t === said) t = fill(PROGRESS[(count + 1) % PROGRESS.length]);
+        count++; speak(t);
+        timer = o.later(progress, EVERY_MS);
+      }
+      function ack() { speak(line()); timer = o.later(progress, FIRST_MS); }
       return {
         start: function (text) {           // he has finished speaking: called synchronously, before the request goes
           if (active) return false;        // a further breath of the same request: one acknowledgement per request
-          if (kind(text) !== 'task') return false;
-          active = true; o.say(line());
-          timer = o.later(function () { timer = null; if (active) o.say(fill(STILL)); }, STILL_MS);
-          return true;
+          active = true; count = 0;
+          if (kind(text) === 'task') { ack(); return true; }
+          timer = o.later(function () { timer = null; if (active) ack(); }, LATE_MS);   // chat that turns out slow
+          return false;
         },
         answered: stop,                    // the first real sentence, the turn's end, a stop or an error
         busy: function () { return active; }
       };
     }
-    return { kind: kind, make: make, LINES: LINES, STILL: STILL, STILL_MS: STILL_MS };
+    return { kind: kind, make: make, LINES: LINES, STILL: STILL, PROGRESS: PROGRESS, LATE_MS: LATE_MS, FIRST_MS: FIRST_MS, EVERY_MS: EVERY_MS };
   })();
   /* ack:end */
   var acker = ACK.make({ h: H, later: function (f, ms) { return setTimeout(f, ms); }, cancel: function (id) { clearTimeout(id); },
-    say: function (t) { speaker.say(t, null, true, null, true); } });
+    say: function (t) { speaker.say(t, null, true, null, true); },
+    progress: function () { return working ? fillerFor(working) : null; } });
 
   /* ---- what he says: segments -> words -> one utterance (src/lib/voice.ts makeAssembler) ---- */
   var CONTINUES = /\b(and|or|but|so|because|since|if|when|while|that|which|who|to|of|in|on|at|by|for|with|from|about|into|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|do|does|did|have|has|had|can|could|would|should|will|might|must|like|than|then|as|very|really|just|some|any)$/i;

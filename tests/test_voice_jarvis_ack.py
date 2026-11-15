@@ -27,12 +27,19 @@ function advance(ms) {
   now = end;
 }
 var a = ACK.make({ h: 'sir', later: later, cancel: cancel, say: function (t) { out.timeline.push([now, t]); } });
-a.start('hello');                                  // chat: nothing
+a.start('hello'); advance(1000); a.answered();     // chat answered within 1.5 s: nothing
 a.start('search the web for the Ohio State score'); // task: ack at once
 a.start('and the Michigan one');                   // further breath: no second ack
-advance(9000);                                     // no answer: one "still working" at 8 s
-advance(20000);                                    // never twice
-a.answered();
+advance(18000);                                    // no answer: progress at 5 s, 11 s, 17 s
+a.answered(); advance(60000);                      // answered: silence
+out.mark = out.timeline.length;
+var c = ACK.make({ h: 'sir', later: later, cancel: cancel, say: function (t) { out.timeline.push([now, 'C:' + t]); } });
+var c0 = now; c.start('how are you'); advance(1600); out.lateAt = now - c0; c.answered(); advance(30000);  // slow chat: ack at 1.5 s
+var d = ACK.make({ h: 'sir', later: later, cancel: cancel, say: function (t) { out.timeline.push([now, 'D:' + t]); },
+                   progress: function () { return 'Searching the web, sir.'; } });
+d.start('open netflix'); advance(5100); d.answered();   // the running step is named
+var e = ACK.make({ h: 'sir', later: later, cancel: cancel, say: function (t) { out.timeline.push([now, 'E:' + t]); } });
+e.start('research everything about mars'); advance(300000); e.answered();   // capped
 for (var i = 0; i < 12; i++) { a.start('open youtube'); a.answered(); }
 var b = ACK.make({ h: 'sir', later: later, cancel: cancel, say: function (t) { out.timeline.push([now, 'B:' + t]); } });
 b.start('check my calendar'); advance(500); b.answered(); advance(10000);
@@ -64,15 +71,21 @@ def test_classifier_is_simple_and_local(result):
         assert result["kinds"][c] == "chat", c
 
 
-def test_ack_at_once_still_working_at_8s_once_and_never_the_same_line_twice(result):
+def test_ack_at_once_then_progress_lines_and_never_silent(result):
     tl = result["timeline"]
-    first, still = tl[0], tl[1]
-    assert first[0] == 0 and first[1] in ("One moment, sir.", "On it, sir.", "Right away, sir.", "Very good, sir.")
-    assert still == [8000, "Still working on it, sir."]
-    assert sum(1 for _, t in tl if t.startswith("Still")) == 1           # once, and not after an answer (B)
-    acks = [t for _, t in tl[2:] if not t.startswith("B:")]
+    a = tl[:result["mark"]]
+    assert a[0][0] == 1000 and a[0][1] in ("One moment, sir.", "On it, sir.", "Right away, sir.", "Very good, sir.")
+    assert [at - 1000 for at, _ in a[1:]] == [5000, 11000, 17000]         # progress while it works, then silence
+    assert a[1][1] == "Still working on it, sir." and all(x[1] != y[1] for x, y in zip(a, a[1:]))
+    c = [t for _, t in tl if t.startswith("C:")]
+    assert len(c) == 1 and result["lateAt"] == 1600                       # slow chat: one ack (at 1.5 s), no more once answered
+    d = [t for _, t in tl if t.startswith("D:")]
+    assert len(d) == 2 and d[1] == "D:Searching the web, sir."            # the running step is named
+    e = [t for _, t in tl if t.startswith("E:")]
+    assert len(e) == 1 + 6 and all(x != y for x, y in zip(e, e[1:]))      # capped, never the same line twice running
+    acks = [t for _, t in tl if not t[:2] in ("B:", "C:", "D:", "E:")][result["mark"]:]
     assert len(acks) == 12 and all(x != y for x, y in zip(acks, acks[1:]))
-    assert [t for _, t in tl if t.startswith("B:")] == [tl[-1][1]] and "Still" not in tl[-1][1]
+    assert [t for _, t in tl if t.startswith("B:")] and not any("Still" in t for _, t in tl if t.startswith("B:"))
 
 
 def test_page_wires_the_ack_and_single_flight():
