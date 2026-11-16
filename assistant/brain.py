@@ -1846,6 +1846,13 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                                 text = b.text
                     elif isinstance(msg, t.ResultMessage):
                         return msg
+                    elif isinstance(msg, t.RateLimitEvent):   # background work uses the plan too: keep the meters current
+                        try:
+                            from assistant import usage
+
+                            usage.record_window(dict(getattr(msg.rate_limit_info, "raw", None) or {}))
+                        except Exception as exc:
+                            log.debug("rate limit not recorded: %s", exc)
                 return None
 
             await client.query(brief)

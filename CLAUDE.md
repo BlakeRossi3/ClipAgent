@@ -625,6 +625,10 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
 - `home_live.plan_meters()` = the "Claude plan" chart (5-hour + weekly % left, no run count). `usage.usage_status()`
   windows now carry `stale`, `reset_was_text`, `as_of(_text)`, `left_at_least_pct`, `inferred_from`: a window that
   reset shows unknown (never 100%), and a non-rejected 5-hour/weekly reading bounds the other (`_infer_siblings`).
+  Readings: every `rate_limit_event` from all paths (brain, `brain.run_worker`, `claude_code.run_prompt`), incl.
+  `rate_limit_info.unifiedWindows` (both windows per event, CLI 2.1.3xx), plus `usage.poll_plan_usage()` (jobs
+  `assistant_usage_poll` 5 min + startup; zero tokens): SDK control request `get_usage` (`skip_behaviors`) ->
+  `rate_limits.{five_hour,seven_day,...}.{utilization 0-100, resets_at ISO}`; kv `assistant:usage:poll`; tests `usage.set_poller`.
 - `assistant/tiles.py` (store v8 `as_tiles`): short-lived tiles on the Jarvis stage (`tile_show|remove|list`, default
   60 min, `key` replaces, max 6), `POST /dashboard/tiles/{id}/dismiss`, home part `dyn_tiles`, `static/home.js` drops expired ones.
   Store v9 adds `as_tiles.rows` (JSON `{text, note, mark}` list, `tiles.show(rows=)`) = a wide scoreboard tile.

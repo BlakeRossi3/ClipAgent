@@ -340,7 +340,8 @@ def plan_meters() -> dict[str, Any]:
     limited, limited_text, queued}.
 
     A window that reset since its last reading shows as unknown ("reset at 3pm, new figure after the
-    next run"), never as 100% left. Refreshed with the rest of the Jarvis page (/api/cecil)."""
+    next run"), never as 100% left. Readings come from rate-limit events and the 5-minute zero-token
+    poll (``usage.poll_plan_usage``); the page refreshes them with /api/cecil."""
     from assistant import usage
 
     u = usage.usage_status()
@@ -354,8 +355,8 @@ def plan_meters() -> dict[str, Any]:
             other = dict(PLAN_METERS).get(w.get("inferred_from") or "", "other").lower()
             note = f"at least {w['left_at_least_pct']}% left; the {other} limit is the tighter one"
         elif left is None:
-            note = (f"reset {w['reset_was_text']}, new figure after the next run" if w.get("reset_was_text")
-                    else "no figure yet")
+            nxt = "new figure at the next usage check" if u.get("poll_ok") else "new figure after the next run"
+            note = f"reset {w['reset_was_text']}, {nxt}" if w.get("reset_was_text") else "no figure yet"
         else:
             note = f"resets {w['resets_text']}" if w.get("resets_text") else ""
         level = "unknown" if left is None else ("low" if left <= 10 else ("warn" if left <= 30 else "ok"))

@@ -5,9 +5,21 @@ What headless Claude Code tells us (verified against the installed CLI's SDK, cl
 ``{"type": "rate_limit_event", "rate_limit_info": {"status": "allowed|allowed_warning|rejected",
 "resetsAt": <unix>, "rateLimitType": "five_hour|seven_day|seven_day_opus|seven_day_sonnet|overage",
 "utilization": 0.0-1.0, ...}}`` *when the rate-limit state changes* (not necessarily every run).
-``claude_code.run_prompt`` hands every such event to :func:`record_events`. When no event has been
-seen we fall back to the daily run cap and to the reset time parsed from a "You've hit your ... limit
-· resets 4pm" error (``claude_code.parse_reset`` / the backoff).
+``claude_code.run_prompt`` hands every such event to :func:`record_events`; the voice brain and its
+background workers (``brain.run_worker``) hand theirs to :func:`record_window`. Newer CLIs (2.1.3xx)
+also put every general window's reading in each event (``rate_limit_info.unifiedWindows``:
+``{five_hour|seven_day: {utilization 0-1, resetsAt <unix>, status?}}``), so one event refreshes both.
+
+Events only come while something talks to Claude, and only when a reading changes, so on their own the
+meters went stale whenever the app was idle (the owner: "the Claude usage doesn't seem to be updating").
+:func:`poll_plan_usage` (job ``assistant_usage_poll``, every 5 min, zero model tokens) asks the CLI
+directly: the SDK control request ``{"subtype": "get_usage", "skip_behaviors": true}`` (what Claude
+Code's own /usage dialog reads; verified in the bundled CLI 2.1.323) answers ``{rate_limits_available,
+subscription_type, rate_limits: {five_hour|seven_day|seven_day_opus|seven_day_sonnet: {utilization
+0-100, resets_at ISO-8601} | null}}``. The CLI marks it experimental; a CLI without it (or an API-key
+login) leaves the event readings alone and the failure in kv ``assistant:usage:poll``.
+When no reading at all exists we fall back to the daily run cap and to the reset time parsed from a
+"You've hit your ... limit · resets 4pm" error (``claude_code.parse_reset`` / the backoff).
 
 Deferred work lives in ``as_deferred`` (assistant/store.py): ``after_reset`` rows run a few minutes
 after the plan's window resets, timed rows at ``run_after``. :func:`run_due` (scheduler, every
@@ -20,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -39,6 +52,11 @@ MAX_PER_RUN = 3               # deferred prompts run per scheduler tick (they co
 # Deferred kinds that are scheduler jobs (module:function), run as such when their time comes.
 JOB_FUNCS = {"improve": "assistant.improve:weekly_improvement"}
 NON_URGENT = ("history", "reflection", "evals", "reel", "improve", "distill", "prompt")
+KV_POLL = "assistant:usage:poll"   # last get_usage poll: {at, ok, error, available, subscription}
+POLL_MIN_GAP = timedelta(minutes=4)
+POLL_TIMEOUT_SEC = 45.0
+Poller = Callable[[], dict[str, Any]]
+_poller: Poller | None = None
 
 
 # -- recording -------------------------------------------------------------------
@@ -61,34 +79,159 @@ def record_events(stdout: str) -> int:
     return n
 
 
-def record_window(info: dict[str, Any]) -> None:
-    kind = str(info.get("rateLimitType") or "five_hour")
-    resets = info.get("resetsAt")
+def _iso_of(v: Any) -> str | None:
+    """A reset time as UTC ISO: unix seconds (events) or an ISO-8601 string (the usage endpoint)."""
+    if v is None or v == "":
+        return None
     try:
-        resets_iso = db.to_iso(datetime.fromtimestamp(int(resets), UTC)) if resets else None
-    except (TypeError, ValueError, OSError):
-        resets_iso = None
-    util = info.get("utilization")
+        if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit()):
+            return db.to_iso(datetime.fromtimestamp(int(float(v)), UTC))
+        dt = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+        return db.to_iso(dt if dt.tzinfo else dt.replace(tzinfo=UTC))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _fraction(v: Any, *, percent: bool = False) -> float | None:
     try:
-        util = None if util is None else max(0.0, min(1.0, float(util)))
+        f = None if v is None else float(v)
     except (TypeError, ValueError):
-        util = None
-    db.kv_set(KV_WINDOW.format(kind=kind), {"status": str(info["status"]), "utilization": util,
-                                             "resets_at": resets_iso, "seen_at": db.now_iso()})
-    _infer_siblings(kind, str(info["status"]), util)
-    if info.get("status") == "rejected" and resets_iso:
+        return None
+    if f is None or f != f:
+        return None
+    return max(0.0, min(1.0, f / 100.0 if percent else f))
+
+
+def _store(kind: str, status: str, util: float | None, resets_iso: str | None, source: str) -> None:
+    db.kv_set(KV_WINDOW.format(kind=kind), {"status": status, "utilization": util, "resets_at": resets_iso,
+                                             "seen_at": db.now_iso(), "source": source})
+
+
+def record_window(info: dict[str, Any]) -> None:
+    """One ``rate_limit_info`` from a rate_limit_event (the binding window, plus ``unifiedWindows``)."""
+    kind = str(info.get("rateLimitType") or "five_hour")
+    resets_iso = _iso_of(info.get("resetsAt"))
+    util = _fraction(info.get("utilization"))
+    status = str(info["status"])
+    _store(kind, status, util, resets_iso, "event")
+    _infer_siblings(kind, status, util)
+    peak = util or 0.0
+    uw = info.get("unifiedWindows")
+    for k, w in (uw.items() if isinstance(uw, dict) else ()):
+        if k not in WINDOW_KINDS or not isinstance(w, dict) or (k == kind and util is not None):
+            continue
+        u = _fraction(w.get("utilization"))
+        if u is None:
+            continue
+        st = str(w.get("status") or (status if k == kind else ("rejected" if u >= 1.0 else "allowed")))
+        _store(k, st, u, _iso_of(w.get("resetsAt")), "event")
+        peak = max(peak, u)
+    _after_reading(kind, status, peak, resets_iso)
+
+
+def _after_reading(kind: str, status: str, peak: float, resets_iso: str | None) -> None:
+    """A limit hit sets the backoff; nearly out writes the handoff for work in flight (plain code)."""
+    if status == "rejected" and resets_iso:
         from assistant import claude_code
 
         until = db.parse_iso(resets_iso)
         if until > db.utcnow():
             db.kv_set(claude_code.KV_BACKOFF, {"until": resets_iso, "reason": f"{kind} limit", "set_at": db.now_iso()})
-    if info.get("status") == "rejected" or (util is not None and util >= HANDOFF_THRESHOLD):
-        try:   # nearly out: write the handoff for work in flight before it stops (plain code, no tokens)
+    if status == "rejected" or peak >= HANDOFF_THRESHOLD:
+        try:
             from assistant import handoff
 
             handoff.on_usage_signal()
         except Exception as exc:
             log.warning("usage handoff failed: %s", exc)
+
+
+# -- polling (zero tokens) -------------------------------------------------------------
+
+def set_poller(fn: Poller | None) -> None:
+    """Tests: ``fn() -> get_usage response dict`` (or raise). None = ask the real CLI."""
+    global _poller
+    _poller = fn
+
+
+def _sdk_get_usage() -> dict[str, Any]:
+    """Start the CLI (no prompt, no tools, ClipAgent's plan profile), send the ``get_usage`` control
+    request, disconnect. No model call happens, so it costs no tokens or plan usage."""
+    import asyncio
+
+    from assistant import brain, claude_code
+
+    sdk = brain._sdk()
+    kw: dict[str, Any] = dict(env=brain.build_env("plan"), setting_sources=[], strict_mcp_config=True,
+                              mcp_servers={}, tools=[], cwd=str(claude_code.work_dir()),
+                              stderr=lambda line: log.debug("claude (usage poll): %s", line))
+    exe = claude_code.find_claude()
+    if exe is not None:
+        kw["cli_path"] = str(exe)
+
+    async def go() -> dict[str, Any]:
+        client = sdk.ClaudeSDKClient(options=sdk.ClaudeAgentOptions(**kw))
+        await asyncio.wait_for(client.connect(), POLL_TIMEOUT_SEC)
+        try:
+            q = getattr(client, "_query", None)
+            if q is None or not hasattr(q, "_send_control_request"):
+                raise RuntimeError("this claude_agent_sdk cannot send control requests")
+            return await q._send_control_request({"subtype": "get_usage", "skip_behaviors": True},
+                                                 timeout=POLL_TIMEOUT_SEC)
+        finally:
+            try:
+                await asyncio.wait_for(client.disconnect(), 10)
+            except Exception:
+                pass
+
+    return asyncio.run(go())
+
+
+def record_plan_usage(resp: dict[str, Any]) -> int:
+    """Store the windows of a ``get_usage`` answer (utilization in percent). Returns how many."""
+    limits = resp.get("rate_limits") if isinstance(resp, dict) else None
+    if not isinstance(limits, dict):
+        return 0
+    n, peak, top = 0, 0.0, ("five_hour", "allowed", None)
+    for k in WINDOW_KINDS:
+        w = limits.get(k)
+        u = _fraction(w.get("utilization"), percent=True) if isinstance(w, dict) else None
+        if u is None:
+            continue
+        status = "rejected" if u >= 1.0 else "allowed"
+        resets = _iso_of(w.get("resets_at"))
+        _store(k, status, u, resets, "poll")
+        n += 1
+        if u >= peak:
+            peak, top = u, (k, status, resets)
+    if n:
+        _after_reading(top[0], top[1], peak, top[2])
+    return n
+
+
+def poll_plan_usage(*, force: bool = False) -> dict[str, Any]:
+    """Scheduler job (every 5 min): refresh every plan window straight from Claude Code, zero tokens.
+    Skipped when the assistant is off, not on Claude Code, fake, or polled < 4 min ago."""
+    s = get_assistant_settings()
+    if not s.enabled or s.backend != "claude_code" or (s.fake and _poller is None):
+        return {"status": "skipped", "reason": "assistant off, not on Claude Code, or fake"}
+    last = db.kv_get(KV_POLL)
+    if not force and isinstance(last, dict) and last.get("ok") and last.get("at") \
+            and db.utcnow() - db.parse_iso(last["at"]) < POLL_MIN_GAP:
+        return {"status": "skipped", "reason": "polled recently"}
+    try:
+        resp = (_poller or _sdk_get_usage)()
+    except Exception as exc:
+        err = str(exc)[:300] or type(exc).__name__
+        if not (isinstance(last, dict) and last.get("error") == err):   # log a new failure once, not every 5 min
+            db.log_event("assistant", f"Claude plan usage check failed: {err}", level="warning")
+        db.kv_set(KV_POLL, {"at": db.now_iso(), "ok": False, "error": err})
+        return {"status": "error", "error": err}
+    available = bool((resp or {}).get("rate_limits_available"))
+    n = record_plan_usage(resp or {}) if available else 0
+    db.kv_set(KV_POLL, {"at": db.now_iso(), "ok": True, "error": None, "available": available, "windows": n,
+                        "subscription": (resp or {}).get("subscription_type")})
+    return {"status": "ok" if available else "unavailable", "windows": n}
 
 
 def _infer_siblings(kind: str, status: str, util: float | None) -> None:
@@ -171,9 +314,13 @@ def usage_status() -> dict[str, Any]:
                       "as_of_text": claude_code.friendly_time(seen) if seen else "",
                       "left_at_least_pct": (round(100 * (1 - w["at_most"]))
                                             if util is None and w.get("at_most") is not None else None),
-                      "inferred_from": w.get("inferred_from")}
+                      "inferred_from": w.get("inferred_from"), "source": w.get("source") or "event"}
     until = claude_code.backoff_until()
+    poll = db.kv_get(KV_POLL)
+    poll = poll if isinstance(poll, dict) else {}
     return {"windows": windows, "known": bool(windows), "runs_today": claude_code.turns_today(),
+            "polled_at": poll.get("at"), "poll_ok": bool(poll.get("ok") and poll.get("available")),
+            "poll_error": poll.get("error"),
             "runs_cap": s.max_turns_per_day, "limited": until is not None,
             "limited_until": db.to_iso(until) if until else None,
             "limited_text": claude_code.friendly_time(until) if until else "",
