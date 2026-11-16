@@ -676,6 +676,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "interval", {"minutes": 30}, "embed new or changed vault notes for memory search by meaning"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
+        JobSpec("assistant_publish", lambda: __import__("assistant.publish", fromlist=["x"]).push_now("periodic"),
+                "interval", {"minutes": 30}, "publish Cecil's branch to GitHub when it moved"),
         JobSpec("assistant_nfl_monday", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),
                 "cron", {"day_of_week": "mon", "hour": 8, "minute": 5}, "NFL scores tile after Sunday's games"),
         JobSpec("assistant_nfl_mnf", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),

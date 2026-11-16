@@ -467,6 +467,18 @@ def _remember(out: Outcome) -> None:
     level = "info" if out.status == "committed" else "warning"
     db.log_event("assistant", f"self-edit {out.status}", level=level,
                  data={"files": out.files[:30], "commit": out.commit})
+    if out.status == "committed":
+        _publish("self-edit")
+
+
+def _publish(reason: str) -> None:
+    """Put Cecil's branch on GitHub in the background (assistant/publish.py); never blocks or raises."""
+    try:
+        from assistant import publish
+
+        publish.push_async(reason)
+    except Exception as exc:
+        log.warning("publish not started: %s", exc)
 
 
 def schedule_restart(delay: float = 4.0) -> None:
@@ -655,6 +667,7 @@ def recover(*, restart: bool = True) -> dict[str, Any]:
     for ref in sorted(applied, key=lambda x: -int(x.strip("stash@{}") or 0)):   # newest index first
         git("stash", "drop", ref)
     db.log_event("assistant", "brought set-aside edits back", data={"merged": merged, "conflicts": conflicts})
+    _publish("recovered edits")
     if restart:
         db.kv_set(KV_PENDING, {"commit": _out("rev-parse", "HEAD"), "prev": start, "at": db.now_iso()})
         _write_marker(start)
@@ -695,6 +708,7 @@ def startup_recover(delay: float = 45.0) -> None:
                 if _out("rev-parse", "HEAD") != head:
                     db.kv_set(KV_PENDING, {"commit": _out("rev-parse", "HEAD"), "prev": head, "at": db.now_iso()})
                     _write_marker(head)
+                    _publish("start-up merge")
                     schedule_restart()
                 return
             res = recover(restart=True)
@@ -772,4 +786,5 @@ def powers_status() -> dict[str, Any]:
             "target_branch": s.self_edit_branch, "upstream": _out("config", "--get", UPSTREAM_KEY) if repo else "",
             "commits": self_commits(5) if repo else [], "last": last_outcome(),
             "pending": json.dumps(db.kv_get(KV_PENDING)) if db.kv_get(KV_PENDING) else "",
-            "set_aside": set_aside() if repo else {"branches": [], "stashes": []}}
+            "set_aside": set_aside() if repo else {"branches": [], "stashes": []},
+            "publish": __import__("assistant.publish", fromlist=["x"]).status()}

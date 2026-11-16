@@ -76,6 +76,8 @@ class AssistantSettings:
     session_max_tokens: int = 150_000        # ... or once a run's context passes this many input tokens
     self_edit: bool = True                   # test + commit (or roll back) its own code changes
     self_edit_branch: str = "sterling/self"
+    auto_push: bool = True                   # publish Cecil's branch to GitHub after his changes (assistant/publish.py)
+    push_branch: str = "cecil/self"          # the GitHub branch it is published to
     self_edit_test_timeout_sec: int = 1200
     # --- the heartbeat (assistant/heartbeat.py): checklist Agent/Heartbeat.md, every N minutes
     heartbeat_minutes: int = 30              # 0 = off
@@ -153,6 +155,8 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         session_max_tokens=max(10_000, int(s("ASSISTANT_SESSION_MAX_TOKENS", "150000"))),
         self_edit=config._bool(env.get("ASSISTANT_SELF_EDIT"), True),
         self_edit_branch=s("ASSISTANT_SELF_EDIT_BRANCH", "sterling/self"),
+        auto_push=config._bool(env.get("ASSISTANT_AUTO_PUSH"), True),
+        push_branch=s("ASSISTANT_PUSH_BRANCH", "cecil/self"),
         self_edit_test_timeout_sec=max(60, int(s("ASSISTANT_SELF_EDIT_TEST_TIMEOUT_SEC", "1200"))),
         heartbeat_minutes=max(0, int(s("HEARTBEAT_MINUTES", "30"))),
         heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),

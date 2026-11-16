@@ -675,4 +675,10 @@ Self-edit tests on his laptop: `pytest` is a RUNTIME requirement (requirements.t
 suite there. No pytest -> `NO_PYTEST`, the change is kept (the /healthz restart check still guards it); a failing test that
 also fails on the baseline commit (temporary `git worktree`, `_fails_without_change`; `recover` sets `_baseline_ref`) is
 deselected, so only failures the change caused roll it back.
+Auto-publish: `assistant/publish.py` pushes `sterling/self` to GitHub as `ASSISTANT_PUSH_BRANCH` (default `cecil/self`,
+force, `GIT_TERMINAL_PROMPT=0`) after every self-edit commit / recovery / start-up merge (`selfedit._publish`) and every
+30 min (job `assistant_publish`), only when the branch moved. Plain code - the model's `git push` stays denied. A local
+secret scan (`publish.scan`: config.env secret values + token shapes) blocks the push first; GitHub push protection is
+the backstop; refusals go to `publish.status()` (kv `publish:status`, in `selfedit.powers_status`) + a warning event.
+The build chat merges `origin/cecil/self`. Tests: `publish.set_runner`, `push_now(force_run=True)`.
 
