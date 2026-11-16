@@ -56,7 +56,7 @@ class AssistantSettings:
     voice_turn_timeout_sec: float = 900.0    # hard ceiling for one spoken turn (ASSISTANT_VOICE_TURN_TIMEOUT_SEC)
     voice_lean: bool = True                  # slim voice session: fewer built-ins, browser/his servers on demand
     tool_search: bool = True                 # Claude Code loads tool descriptions only when needed (fewer tokens/turn)
-    voice_session_max_tokens: int = 60_000   # roll the voice session over once its context passes this
+    voice_session_max_tokens: int = 40_000   # roll the voice session over once its context passes this (cheaper turns)
     cc_model: str = "opus"                   # Claude Code model alias for the main agent
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
@@ -128,7 +128,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         voice_turn_timeout_sec=min(900.0, max(60.0, float(s("ASSISTANT_VOICE_TURN_TIMEOUT_SEC", "900") or 900))),
         voice_lean=config._bool(env.get("ASSISTANT_VOICE_LEAN"), True),
         tool_search=config._bool(env.get("ASSISTANT_TOOL_SEARCH"), True),
-        voice_session_max_tokens=max(20_000, int(s("ASSISTANT_VOICE_SESSION_MAX_TOKENS", "60000"))),
+        voice_session_max_tokens=max(20_000, int(s("ASSISTANT_VOICE_SESSION_MAX_TOKENS", "40000"))),
         cc_model=s("ASSISTANT_CC_MODEL", "opus"),
         cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
         cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),

@@ -396,6 +396,7 @@
 .jv-cap-you:not(:empty)::before { content: "\203a  "; color: var(--jv); }
 .jv-cap-them { margin: 0; font-size: 1.22rem; line-height: 1.45; font-weight: 450; color: var(--jv-ink); overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.jv-cap-them.is-long { display: block; -webkit-line-clamp: unset; max-height: 8.8em; overflow-y: auto; font-size: 1.02rem; padding-right: 6px; }
 .jv-hint { margin: 8px 0 0; font-size: 0.8rem; color: var(--jv-dim); }
 .jv-hint kbd { font: 600 0.72rem var(--mono); border: 1px solid rgba(0, 229, 255, .3); border-radius: 4px; padding: 1px 6px; color: var(--jv-ink); }
 

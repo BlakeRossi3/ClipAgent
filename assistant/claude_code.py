@@ -870,7 +870,7 @@ def session_for(channel: str) -> str | None:
     elif int(v.get("turns") or 0) >= s.session_max_turns:
         reason = "long conversation"
     elif int(v.get("tokens") or 0) >= (s.voice_session_max_tokens if channel == "voice" else s.session_max_tokens):
-        reason = "context full"   # voice rolls over early (~60k): a long context slows every spoken answer
+        reason = "context full"   # voice rolls over early (~40k): a long context slows every spoken answer
     if reason is None:
         return str(v["id"])
     rollover(channel, reason)

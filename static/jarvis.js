@@ -800,6 +800,7 @@
   var GLYPHS = '/\\|<>[]{}=+*#%&0123456789ABCDEFGHJKLMNPQRSTUVWXYZ', capTimer = null, capShown = 0;
   function caption(text, keep) {
     clearInterval(capTimer);
+    themEl.classList.toggle('is-long', !!text && text.length > 220);   // long text scrolls instead of being cut off
     if (reduced || !text) { themEl.textContent = text; capShown = text.length; return; }
     var shown = keep ? Math.min(capShown, text.length) : 0, rate = Math.max(2, Math.ceil(text.length / 40));
     capTimer = setInterval(function () {
