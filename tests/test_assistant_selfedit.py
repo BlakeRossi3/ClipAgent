@@ -194,3 +194,21 @@ def test_full_turn_commits_its_own_edit(repo, monkeypatch, clock):
         claude_code.set_runner(None)
     assert "tests pass" in res.text and restarts == ["scheduled"]
     assert _git(r, "log", "-1", "--format=%s") == "Sterling: make the version 9"
+
+
+def test_startup_merges_cecils_own_branch_when_running_the_published_one(repo, monkeypatch):
+    r, _state, restarts = repo
+    _git(r, "checkout", "-q", "-b", "sterling/self")
+    (r / "usage_tile.py").write_text("tile = True\n")         # Cecil's saved work on his branch
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "Sterling: usage tile")
+    _git(r, "checkout", "-q", "main")                          # a manual update put the app on main
+    (r / "app.py").write_text("VERSION = 5\n")
+    _git(r, "commit", "-qam", "update")
+    monkeypatch.setattr(selfedit.time, "sleep", lambda s: None)
+    monkeypatch.setattr(selfedit.threading, "Thread",
+                        lambda target, **kw: type("T", (), {"start": lambda self: target()})())
+    selfedit.startup_recover()
+    assert selfedit.current_branch() == "sterling/self"
+    assert (r / "usage_tile.py").exists() and (r / "app.py").read_text() == "VERSION = 5\n"
+    assert restarts == ["scheduled"]

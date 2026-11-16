@@ -576,7 +576,20 @@ def startup_recover(delay: float = 45.0) -> None:
             if not is_repo() or in_flight():
                 return
             found = set_aside()
-            if not found["branches"] and not found["stashes"]:
+            target = get_assistant_settings().self_edit_branch
+            own_ahead = (current_branch() != target
+                         and git("rev-parse", "--verify", "--quiet", f"refs/heads/{target}").returncode == 0
+                         and _out("rev-list", "--count", f"HEAD..{target}") not in ("", "0"))
+            if not found["branches"] and not found["stashes"] and not own_ahead:
+                return
+            if own_ahead and not found["branches"] and not found["stashes"]:
+                head = _out("rev-parse", "HEAD")
+                save_unsaved("unsaved edits at start-up")
+                ensure_branch()                  # switch to Cecil's branch and merge the running version in
+                if _out("rev-parse", "HEAD") != head:
+                    db.kv_set(KV_PENDING, {"commit": _out("rev-parse", "HEAD"), "prev": head, "at": db.now_iso()})
+                    _write_marker(head)
+                    schedule_restart()
                 return
             res = recover(restart=True)
             db.log_event("assistant", "startup: set-aside edits " + ("brought back" if res.get("merged") else "checked"),
