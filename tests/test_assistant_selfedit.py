@@ -212,3 +212,35 @@ def test_startup_merges_cecils_own_branch_when_running_the_published_one(repo, m
     assert selfedit.current_branch() == "sterling/self"
     assert (r / "usage_tile.py").exists() and (r / "app.py").read_text() == "VERSION = 5\n"
     assert restarts == ["scheduled"]
+
+
+def test_missing_pytest_never_deletes_cecils_change(monkeypatch, tmp_path):
+    monkeypatch.setattr(selfedit, "_pytest", lambda root, args, timeout: (1, "No module named pytest"))
+    ok, out = selfedit._real_tests(tmp_path, 60)
+    assert ok and out == selfedit.NO_PYTEST
+
+
+def test_failures_this_machine_already_has_do_not_roll_back(monkeypatch, tmp_path):
+    runs = []
+
+    def fake(root, args, timeout):
+        runs.append(args)
+        if "--deselect" in args:
+            return 0, "5 passed"
+        return 1, "FAILED tests/test_e2e.py::test_needs_ffmpeg - boom\n1 failed"
+
+    monkeypatch.setattr(selfedit, "_pytest", fake)
+    monkeypatch.setattr(selfedit, "_fails_without_change", lambda root, t, timeout: True)
+    ok, out = selfedit._real_tests(tmp_path, 60)
+    assert ok and "fail on this machine anyway" in out and runs[-1][-1] == "tests/test_e2e.py::test_needs_ffmpeg"
+    monkeypatch.setattr(selfedit, "_fails_without_change", lambda root, t, timeout: False)
+    assert not selfedit._real_tests(tmp_path, 60)[0]          # a failure the change caused still rolls back
+
+
+def test_baseline_check_runs_in_a_worktree_of_the_old_commit(repo, monkeypatch):
+    r, _state, _ = repo
+    seen = []
+    monkeypatch.setattr(selfedit, "_pytest", lambda root, args, timeout: seen.append(root) or (1, "x"))
+    assert selfedit._fails_without_change(r, "tests/test_x.py::t", 60)
+    assert seen and seen[0] != r and not seen[0].exists()     # temporary, removed afterwards
+    assert "cecil-baseline" not in _git(r, "worktree", "list")

@@ -648,3 +648,8 @@ STATUS/BUILT/WHY/TESTS/LEFT -> done | open | blocked (+ commits, meta). Report: 
 `send_digest()` one text per away period (quiet >= 4 h), page `/dashboard/initiative` (nav next to Scheduled; add/edit/reorder/drop,
 work log with Undo = `undo_item` -> `selfedit.revert_commits`, refused while `busy()`), JSON `/dashboard/api/initiative`, card on the
 Scheduled page. Tools `backlog_list|add|update`, `initiative_status`; skill `skills/initiative`. Tests: `tests/test_assistant_initiative.py`.
+Self-edit tests on his laptop: `pytest` is a RUNTIME requirement (requirements.txt) because `selfedit._real_tests` runs the
+suite there. No pytest -> `NO_PYTEST`, the change is kept (the /healthz restart check still guards it); a failing test that
+also fails on the baseline commit (temporary `git worktree`, `_fails_without_change`; `recover` sets `_baseline_ref`) is
+deselected, so only failures the change caused roll it back.
+

@@ -27,6 +27,7 @@ breaks at runtime is caught by the health check, not by meaning.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import subprocess
 import sys
@@ -72,15 +73,64 @@ def set_app_dir(path: Path | None) -> None:
 TestRunner = Callable[[Path, float], tuple[bool, str]]   # (app_dir, timeout) -> (passed, output tail)
 
 
-def _real_tests(root: Path, timeout: float) -> tuple[bool, str]:
+#: Set by callers whose change is already committed (recover): the commit to compare failures against.
+_baseline_ref: str | None = None
+NO_PYTEST = "tests could not run here (pytest is not installed)"
+_FAILED = re.compile(r"^FAILED (\S+?)(?: - |$)", re.M)
+
+
+def _pytest(root: Path, args: list[str], timeout: float) -> tuple[int, str]:
+    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args], cwd=str(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                       check=False, **_nowin())
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def _fails_without_change(root: Path, test_id: str, timeout: float) -> bool:
+    """Does ``test_id`` also fail on the code from before the change (a problem of this machine, not of
+    the change)? Checked in a temporary worktree of the baseline commit; never touches the running app."""
+    base = _baseline_ref or _out("rev-parse", "HEAD")
+    if not base:
+        return False
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="cecil-baseline-"))
+    wt = tmp / "wt"
     try:
-        p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"], cwd=str(root),
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                           check=False, **_nowin())
+        if git("worktree", "add", "--detach", str(wt), base, timeout=120).returncode != 0:
+            return False
+        code, _ = _pytest(wt, ["-x", test_id], timeout)
+        return code != 0
+    except Exception:
+        return False
+    finally:
+        git("worktree", "remove", "--force", str(wt))
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _real_tests(root: Path, timeout: float) -> tuple[bool, str]:
+    """The offline suite, judged fairly: no pytest at all -> nothing to judge (kept, the /healthz check after
+    the restart still guards it); a test that also fails WITHOUT the change is this machine's problem and is
+    deselected (up to 5), so only failures the change caused roll it back."""
+    deselect: list[str] = []
+    try:
+        for _ in range(6):
+            code, out = _pytest(root, ["-x", *[a for t in deselect for a in ("--deselect", t)]], timeout)
+            if code == 0:
+                note = f" (ignored {len(deselect)} test(s) that fail on this machine anyway)" if deselect else ""
+                return True, out[-1500:] + note
+            if "No module named pytest" in out:
+                db.log_event("assistant", NO_PYTEST, level="warning")
+                return True, NO_PYTEST
+            m = _FAILED.search(out)
+            if not m or len(deselect) >= 5 or not _fails_without_change(root, m.group(1), timeout):
+                return False, out[-1500:]
+            deselect.append(m.group(1))
+        return False, "too many failing tests"
     except subprocess.TimeoutExpired:
         return False, f"the test suite took longer than {int(timeout)} s"
-    out = (p.stdout + p.stderr).strip()
-    return p.returncode == 0, out[-1500:]
 
 
 def _real_restart() -> bool:
@@ -375,8 +425,9 @@ def _finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
         commit = _out("rev-parse", "HEAD")
     db.kv_set(KV_PENDING, {"commit": commit, "prev": snap.head, "at": db.now_iso()})
     _write_marker(snap.head)
-    out = Outcome("committed", f"I changed my own code ({', '.join(files[:5]) or 'see history'}); the tests "
-                  "pass, so it is saved and I am restarting to use it. Text UNDO to reverse it.", files, commit,
+    tested = "the tests pass" if output != NO_PYTEST else "the tests could not run here, but the restart check guards it"
+    out = Outcome("committed", f"I changed my own code ({', '.join(files[:5]) or 'see history'}); {tested}, "
+                  "so it is saved and I am restarting to use it. Text UNDO to reverse it.", files, commit,
                   restart=True)
     _remember(out)
     return out
@@ -590,7 +641,12 @@ def recover(*, restart: bool = True) -> dict[str, Any]:
     if _out("rev-parse", "HEAD") == start:
         return {"ok": not conflicts, "merged": [], "conflicts": conflicts,
                 "message": _recover_message([], conflicts)}
-    passed, output = _tests(app_dir(), get_assistant_settings().self_edit_test_timeout_sec)
+    global _baseline_ref
+    _baseline_ref = start
+    try:
+        passed, output = _tests(app_dir(), get_assistant_settings().self_edit_test_timeout_sec)
+    finally:
+        _baseline_ref = None
     if not passed:
         git("reset", "-q", "--hard", start)
         return {"ok": False, "merged": [], "conflicts": conflicts,

@@ -18,6 +18,7 @@ python-dotenv>=1.0
 httpx>=0.27                  # scout.py (NASA / congress APIs), FastAPI TestClient
 tzdata>=2024.1               # zoneinfo data on platforms without a system tz database
 PyYAML>=6.0                  # assistant/ vault frontmatter, agent and skill files
+pytest>=8.3                  # assistant/selfedit.py tests Cecil's own code changes on the owner's machine
 claude-agent-sdk>=0.2.181    # assistant/brain.py: Cecil's warm voice session (bundles Claude Code)
 model2vec==0.10.0            # assistant/semantic.py: memory search by meaning (CPU, numpy; win_amd64 cp312/cp313 wheels)
 
