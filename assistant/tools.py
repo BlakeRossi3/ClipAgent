@@ -133,6 +133,8 @@ PLANNED_TOOLS: dict[str, str] = {
     "self_edits_set_aside": "assistant.selfedit",
     "needs_list": "assistant.needs",
     "usage_breakdown": "assistant.usage_report",
+    "capability_check": "assistant.capabilities",
+    "capability_record": "assistant.capabilities",
     "needs_dismiss": "assistant.needs",
     "checkin_answer": "assistant.needs",
     "meals_set_preferences": "assistant.meals",
@@ -150,7 +152,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
-                     "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report")
+                     "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs

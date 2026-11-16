@@ -88,7 +88,7 @@ TIMING_EXTRA = ("smart_turn_p", "smart_turn_ms")
 # skills. Claude Code's other built-ins (cron, worktrees, monitors, notebooks...) are about 16k tokens of tool
 # definitions sent with every spoken turn; background tasks (start_task) keep all of them.
 VOICE_BUILTINS = ("Read", "Glob", "Grep", "Edit", "Write", "Bash", "PowerShell", "WebSearch", "WebFetch",
-                  "Agent", "Skill", "TaskStop")
+                  "Agent", "Skill", "TaskStop", "ToolSearch")
 NEED_KINDS = ("browser", "my_servers")
 
 VOICE_PROMPT = """# Talking with {owner}, out loud

@@ -118,6 +118,7 @@ def env(tmp_path, monkeypatch):
     ts.reset_toolkit_settings()
     sv.set_skills_dir(skills)
     monkeypatch.setattr(registry, "SKILLS_DIR", skills)
+    monkeypatch.setattr(sc, "DEFAULT_REPOS", ("anthropics/skills",))   # tests fake only this one source
     commits: list[str] = []
     monkeypatch.setattr(sv, "committer", lambda summary, change: (change(), commits.append(summary),
                                                                  "committed test")[-1])

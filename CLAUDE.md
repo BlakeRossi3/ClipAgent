@@ -580,3 +580,9 @@ prices every `llm_usage` row at API rates to show what eats the plan allowance. 
 `sterling/self` (`selfedit.ensure_branch`); `selfedit.recover()` (tool `self_edits_recover`, `main.py assistant
 recover`) merges set-aside backup branches/stashes back. Tests must never open a real browser (conftest guard;
 `open_url` is a no-op in fake mode).
+Capability gaps: `assistant/capabilities.py` (tools `capability_check` -> use_existing | install_skill | build |
+ask_first, `capability_record`; kv `capabilities:log`, vault `Agent/Capabilities.md`); the toolsmith skill calls it
+first. Coding skills vendored from obra/superpowers (MIT, `LICENSE-superpowers` in each folder, instruction files
+only): systematic-debugging, test-driven-development, verification-before-completion, writing-skills;
+obra/superpowers is a default trusted catalog source. `ASSISTANT_TOOL_SEARCH` (default true) sets Claude Code's
+`ENABLE_TOOL_SEARCH` so tool descriptions load on demand (`ToolSearch` is in `brain.VOICE_BUILTINS`).

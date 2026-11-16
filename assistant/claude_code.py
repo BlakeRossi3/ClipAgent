@@ -237,6 +237,9 @@ def base_env(*, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env["ANTHROPIC_API_KEY"] = config.get_settings().anthropic_api_key  # the plan is limited: bill the API
     elif s.cc_oauth_token:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = s.cc_oauth_token
+    # Tool search: Claude Code sends tool NAMES and loads a tool's full description only when it is needed
+    # (about 7.7k tokens of our 88 tool descriptions otherwise ride along with every turn and every tool step).
+    env["ENABLE_TOOL_SEARCH"] = "true" if s.tool_search else "false"
     if extra:
         env.update(extra)
     return env

@@ -7,6 +7,15 @@ description: When the owner asks for something you cannot do yet, give yourself 
 
 Never answer "I can't" to something the owner asks. Work through these steps:
 
+0. **Call `capability_check(need)` first.** It searches your tools, your skills, skills from trusted
+   sources (anthropics/skills, obra/superpowers) and every past attempt, and returns `next_step`:
+   - `use_existing`: try what you already have before writing anything.
+   - `install_skill`: a published skill may cover it: `skill_request_install` (vetted; he approves).
+     A maintained skill beats code you write from scratch.
+   - `build`: nothing covers it: carry on below.
+   - `ask_first`: this was tried and failed twice: do NOT rebuild it blindly. Tell him what failed and ask.
+   When it is done (or abandoned), `capability_record(need, outcome, how)`. Never rewrite the same thing
+   over and over: if a similar module exists, extend it instead of starting again.
 1. **Check what you already have.** Existing tools (`mcp__clipagent__*`), skills, the shell
    (PowerShell/Bash), file tools, web fetch/search, and his own signed-in browser (`open_url`, or
    Claude in Chrome when connected) cover most requests: opening a link, downloading his own data,
@@ -20,6 +29,9 @@ Never answer "I can't" to something the owner asks. Work through these steps:
    - Or a skill: `skills/<name>/SKILL.md` with `name` and `description` front matter.
    - Follow CLAUDE.md (no import side effects, `db.utcnow()`, DRY_RUN, offline tests) and add
      `tests/test_assistant_<name>.py`. Run `python -m pytest -q -x` yourself before you finish.
+   While building, use the coding skills: `test-driven-development` (write the failing test first),
+   `systematic-debugging` (find the root cause before any fix), `verification-before-completion` (run the
+   tests and read the output before saying it works), `writing-skills` (when the capability is a skill).
 3. **Let the self-edit flow save it.** Do not commit or restart yourself: after your turn the suite
    runs, a pass commits it on `sterling/self` and restarts the app, a failure rolls it back.
 4. **Tell him in one line** what you added and that UNDO reverses it.

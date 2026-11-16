@@ -75,7 +75,7 @@ from assistant import skill_vetting as sv
 log = logging.getLogger(__name__)
 
 MODULE = "assistant.skill_catalog"
-DEFAULT_REPOS = ("anthropics/skills",)
+DEFAULT_REPOS = ("anthropics/skills", "obra/superpowers")
 CACHE_TTL = timedelta(hours=24)
 KV_CACHE = "skill_catalog:cache:{repo}"
 KV_REVIEWS = "skill_catalog:reviews"
