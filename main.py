@@ -666,6 +666,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "cron", {"day_of_week": "sun", "hour": 19, "minute": 25}, "weekly self-improvement proposals"),
         JobSpec("assistant_deferred", lambda: __import__("assistant.usage", fromlist=["x"]).run_due(),
                 "interval", {"minutes": 10}, "run scheduled tasks and prompts queued for after the plan resets"),
+        JobSpec("assistant_task_retry", lambda: __import__("assistant.tasks", fromlist=["x"]).retry_due(),
+                "interval", {"minutes": 5}, "retry background tasks that failed, ran out of time or were cut off"),
         JobSpec("assistant_evals", lambda: __import__("assistant.evals", fromlist=["x"]).run_evals_isolated(),
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
         JobSpec("assistant_history", lambda: __import__("assistant.history_import", fromlist=["x"]).nightly(),

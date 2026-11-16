@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -121,6 +122,9 @@ class Settings:
     # evidence (info.json) and transcripts are always kept.
     source_media_retention_days: int = 3
     render_retention_days: int = 14
+    # Jarvis page countdown tile (home_live.release_countdown): local release moment in TIMEZONE,
+    # "YYYY-MM-DD" (midnight) or "YYYY-MM-DDTHH:MM". Empty or unreadable = no tile.
+    gta6_release_date: str = "2026-11-19"
 
     def replace(self, **changes: Any) -> "Settings":
         """Return a copy with ``changes`` applied (handy in tests)."""
@@ -157,6 +161,18 @@ def _path(raw: str | None, default: Path, base: Path) -> Path:
         return default
     p = Path(raw).expanduser()
     return p if p.is_absolute() else (base / p)
+
+
+def _release_date(raw: str) -> str:
+    """Normalise ``GTA6_RELEASE_DATE`` to ``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:MM``; "" when empty or unreadable
+    (a typo hides the countdown tile rather than stopping the app)."""
+    raw = (raw or "").strip().replace(" ", "T")
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(raw, fmt).strftime(fmt)
+        except ValueError:
+            continue
+    return ""
 
 
 def _hhmm(raw: str) -> str:
@@ -269,6 +285,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         log_level=s("LOG_LEVEL", "INFO").upper(),
         source_media_retention_days=max(0, int(s("SOURCE_MEDIA_RETENTION_DAYS", "3"))),
         render_retention_days=max(0, int(s("RENDER_RETENTION_DAYS", "14"))),
+        gta6_release_date=_release_date(env.get("GTA6_RELEASE_DATE", "2026-11-19")),   # set but empty = no tile
     )
 
 

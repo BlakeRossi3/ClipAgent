@@ -14,7 +14,16 @@ finishes:
    speak it: "browser", "voice" or "any"). The page speaks it from the event stream; the laptop
    voice process from :class:`Announcer`.
 
-Task rows live in ``kv`` (:data:`KV_TASKS`, the newest :data:`TASK_KEEP`).
+Task rows live in ``kv`` (:data:`KV_TASKS`: every unfinished row plus the newest :data:`TASK_KEEP`
+finished ones).
+
+Nothing he asked for is left unfinished (``assistant.retry``): a conversation task (no ``on_finish``
+owner, not a self-edit) whose run ends ``error`` (incl. a timeout), ``stopped`` or ``rounds`` is parked as
+``retrying`` with a ``next_try`` (:func:`_schedule_retry`) and he hears once that it will be tried again;
+:func:`retry_due` (job ``assistant_task_retry``, every 5 minutes) restarts due rows one at a time with a
+``<retry>`` note in the brief, after first requeueing rows a restart cut off (:func:`_requeue_orphans`).
+A plan limit (``budget``) is not retried here: ``assistant.handoff`` resumes that work after the reset.
+Blockers he can fix are texted to him once.
 """
 
 from __future__ import annotations
@@ -23,10 +32,11 @@ import inspect
 import logging
 import threading
 import uuid
+from datetime import timedelta
 from typing import Any, Callable
 
 import db
-from assistant import events, persona, store
+from assistant import events, persona, retry, store
 from assistant.settings import get_assistant_settings
 
 log = logging.getLogger(__name__)
@@ -35,11 +45,17 @@ KV_TASKS = "assistant:tasks"
 KV_ANNOUNCED = "assistant:tasks:announced:{id}"
 TASK_KEEP = 12
 MAX_STEPS = 30
+UNFINISHED = ("running", "retrying")   # never trimmed from the kv list
+ORPHAN_GRACE_SEC = 600                 # a "running" row this long past the run timeout was cut off by a restart
+RETRY_STATUSES = ("error", "stopped", "rounds")   # budget -> assistant.handoff instead
+RESULT_CHARS = 4000   # full result kept on the row for the expanded rail view (History has all of it)
+CONVO_WINDOW_MIN = 30   # how far back the lead-up conversation reaches (detail)
+CONVO_KEEP = 10         # lines of lead-up shown
 
 _lock = threading.Lock()
 _threads: dict[str, threading.Thread] = {}
 _on_finish: dict[str, Callable[[dict[str, Any], str, str], None]] = {}   # task id -> callback (in memory)
-Runner = Callable[..., tuple[str, str]]   # runner(brief, context[, on_step]) -> (full_text, status)
+Runner = Callable[..., tuple]   # runner(brief, context[, on_step]) -> (full_text, status[, kind])
 _runner: Runner | None = None
 
 
@@ -66,17 +82,66 @@ def get_task(task_id: str) -> dict[str, Any] | None:
 
 
 def _save(task: dict[str, Any], *, publish: bool = True) -> None:
+    """Unfinished rows (running / retrying) are always kept; finished ones are trimmed to ``TASK_KEEP``."""
     with _lock:
         rows = [t for t in list_tasks() if t.get("id") != task["id"]]
-        rows.append(task)
-        db.kv_set(KV_TASKS, rows[-TASK_KEEP:])
+        rows.append(dict(task))
+        keep = {r.get("id") for r in [r for r in rows if r.get("status") not in UNFINISHED][-TASK_KEEP:]}
+        db.kv_set(KV_TASKS, [t for t in rows if t.get("status") in UNFINISHED or t.get("id") in keep])
     if publish:
         events.publish("task", task=public(task))
 
 
 def public(task: dict[str, Any]) -> dict[str, Any]:
+    """What the page sees. ``summary`` is the one-line collapsed view; ``result`` (the full answer,
+    capped at :data:`RESULT_CHARS`) and ``heard`` fill the row when he expands it."""
     return {k: task.get(k) for k in ("id", "task", "status", "started", "finished", "summary", "origin", "steps",
-                                     "meta")}
+                                     "meta", "heard", "result", "attempts", "next_try", "last_error")}
+
+
+def _msg_line(m: Any) -> dict[str, Any]:
+    return {"id": m.id, "ts": m.ts, "who": "you" if m.direction == "in" else "cecil", "channel": m.channel,
+            "kind": m.kind, "text": (m.body or "")[:2000]}
+
+
+def detail(task_id: str) -> dict[str, Any] | None:
+    """Everything about one task for the expanded rail row (``GET /voice/api/task/<id>``): the request,
+    what he said that led to it, every step, the full result and what was said when it finished.
+    ``None`` when unknown."""
+    row = get_task(task_id)
+    if row is None:
+        return None
+    out = {**public(row), "heard": row.get("heard") or "",
+           "brief": row.get("brief") or brief_for(row.get("task") or "", row.get("heard") or ""),
+           "result": row.get("result") or "", "announced": "", "conversation": [], "followups": []}
+    started = row.get("started") or db.now_iso()
+    try:
+        since = db.to_iso(db.parse_iso(started) - timedelta(minutes=CONVO_WINDOW_MIN))
+        msgs = sorted(store.list_messages(400, since=since), key=lambda m: (m.ts, m.id))
+    except Exception as exc:   # the row still opens without the transcript
+        log.warning("task conversation unreadable: %s", exc)
+        msgs = []
+
+    def tid_of(m: Any) -> Any:
+        return m.meta.get("task_id") if isinstance(m.meta, dict) else None
+
+    finished = row.get("finished")
+    for m in msgs:
+        if tid_of(m) == task_id:
+            if m.kind == "voice_detail":
+                out["result"] = m.body or ""
+            elif m.kind == "task_done":
+                out["announced"] = m.body or ""
+            continue
+        if m.channel not in ("voice", "dashboard", "sms") or m.kind in ("voice_detail", "task_done"):
+            continue
+        if m.ts <= started:
+            out["conversation"].append(_msg_line(m))
+        elif finished and m.ts <= finished and m.channel == "voice":
+            out["followups"].append(_msg_line(m))   # what was said while it ran
+    out["conversation"] = out["conversation"][-CONVO_KEEP:]
+    out["followups"] = out["followups"][-CONVO_KEEP:]
+    return out
 
 
 def brief_for(task: str, heard: str) -> str:
@@ -111,12 +176,23 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
         row["self_edit"] = True
     if on_finish is not None:
         _on_finish[tid] = on_finish
+    elif not self_edit:
+        row["retry"] = True     # a conversation task: retried until it finishes (assistant.retry)
     _save(row)
     db.log_event("assistant", "background task started", data={"task_id": tid, "task": row["task"][:200]})
-    th = threading.Thread(target=_run, args=(row,), name=f"task-{tid[:6]}", daemon=True)
-    _threads[tid] = th
-    th.start()
+    _start(row)
     return tid
+
+
+def _start(row: dict[str, Any]) -> None:
+    th = threading.Thread(target=_run, args=(row,), name=f"task-{row['id'][:6]}", daemon=True)
+    _threads[row["id"]] = th
+    th.start()
+
+
+def _alive(task_id: str) -> bool:
+    th = _threads.get(task_id)
+    return th is not None and th.is_alive()
 
 
 delegate = start   # heartbeat and older callers
@@ -130,12 +206,14 @@ def wait(task_id: str, timeout: float = 10.0) -> bool:
     return True
 
 
-def _call_runner(fn: Runner, brief: str, context: dict[str, Any], on_step: Callable[[str], None]) -> tuple[str, str]:
+def _call_runner(fn: Runner, brief: str, context: dict[str, Any],
+                 on_step: Callable[[str], None]) -> tuple[str, str, str]:
     try:
         n = len(inspect.signature(fn).parameters)
     except (TypeError, ValueError):
         n = 3
-    return fn(brief, context, on_step) if n >= 3 else fn(brief, context)
+    out = fn(brief, context, on_step) if n >= 3 else fn(brief, context)
+    return out[0], out[1], (out[2] if len(out) > 2 else "")
 
 
 def _run(row: dict[str, Any]) -> None:
@@ -154,22 +232,32 @@ def _run(row: dict[str, Any]) -> None:
         context = {"status": status.turn_context()[:800]}
     except Exception:
         context = {}
+    attempt = int(row.get("attempts") or 0) + 1
+    row["attempts"] = attempt
     brief = row.get("brief") or brief_for(row["task"], row["heard"] or row["task"])
+    if attempt > 1:
+        brief += retry.retry_note(attempt, row.get("last_error", ""))
     if row.get("model") or row.get("effort"):
         context.update(model=row.get("model"), effort=row.get("effort"))
     snap = _edit_begin() if row.get("self_edit") else None
+    kind = ""
     try:
         if _runner is not None:
-            full, st = _call_runner(_runner, brief, context, on_step)
+            full, st, kind = _call_runner(_runner, brief, context, on_step)
         else:
             from assistant import brain
 
-            full, st = brain.run_worker(brief, on_step=on_step, model=row.get("model"), effort=row.get("effort"))
+            full, st, kind = brain.run_worker(brief, on_step=on_step, model=row.get("model"), effort=row.get("effort"),
+                                              with_kind=True)
     except Exception as exc:
         log.exception("background task failed")
         db.log_event("assistant", "background task failed", level="error", data={"error": repr(exc)[:300]})
         full, st = f"I couldn't finish that, {s.owner_honorific}: something went wrong on my side.", "error"
+        kind = getattr(exc, "kind", "") or "error"
     restart = _edit_finish(snap, row) if snap is not None else False
+    if row.get("retry") and st in RETRY_STATUSES:
+        _schedule_retry(row, full, st, kind)
+        return
     finish(row, full, st)
     if restart:
         from assistant import selfedit
@@ -204,12 +292,89 @@ def _edit_finish(snap: Any, row: dict[str, Any]) -> bool:
     return bool(out and out.restart)
 
 
+def _schedule_retry(row: dict[str, Any], full: str, status: str, kind: str) -> None:
+    """The run did not finish: park it as ``retrying`` (:func:`retry_due` starts it again), tell him once
+    on the first failure, and text him if the blocker is something he can fix."""
+    from assistant import claude_code
+
+    s = get_assistant_settings()
+    attempt = int(row.get("attempts") or 1)
+    nxt = retry.next_try(status, attempt, kind)
+    why = retry.describe(status, kind)
+    row.update(status="retrying", next_try=db.to_iso(nxt), last_error=why, last_status=status, finished=None,
+               summary=f"Retrying {claude_code.friendly_time(nxt)}: {why}"[:300])
+    _save(row)
+    db.log_event("assistant", "background task will be retried", level="warning",
+                 data={"task_id": row["id"], "attempt": attempt, "status": status, "kind": kind,
+                       "next_try": row["next_try"]})
+    try:
+        store.add_message("out", "dashboard", persona.polish(full or why, "dashboard"), kind="voice_detail",
+                          agent="main", meta={"task_id": row["id"], "task": row["task"], "attempt": attempt})
+        if attempt == 1 and row.get("announce", True):   # said once; later failures stay quiet unless he can fix them
+            say(f"I couldn't finish that yet, {s.owner_honorific}: {why}. I'll keep trying, next "
+                f"{claude_code.friendly_time(nxt)}.", origin=row.get("origin") or "any", task=row["task"],
+                task_id=row["id"])
+    except Exception as exc:
+        log.warning("retry notice not recorded: %s", exc)
+    try:
+        retry.report_blocker(status, kind, attempt, row["task"])
+    except Exception as exc:
+        log.warning("blocker report failed: %s", exc)
+
+
+def _requeue_orphans(now: Any = None) -> int:
+    """Retryable rows still "running" with no thread here, older than any run can last, were cut off by a
+    restart or a crash: park them as due now. Returns how many."""
+    s = get_assistant_settings()
+    now = now or db.utcnow()
+    stale = timedelta(seconds=s.cc_task_timeout_sec + ORPHAN_GRACE_SEC)
+    n = 0
+    for t in list_tasks():
+        if (t.get("status") == "running" and t.get("retry") and not _alive(t["id"])
+                and db.parse_iso(t["started"]) < now - stale):
+            t.update(status="retrying", next_try=db.to_iso(now), last_error="the app restarted mid-task",
+                     attempts=int(t.get("attempts") or 1))
+            _save(t)
+            n += 1
+    if n:
+        db.log_event("assistant", f"{n} interrupted background task(s) requeued", level="warning")
+    return n
+
+
+def retry_due(now: Any = None, *, limit: int = 1) -> int:
+    """Scheduler job: requeue orphans, then restart background tasks whose retry time has come. One at a
+    time, never while another task runs here, while switched off, or while the plan is limited.
+    Returns how many were started."""
+    from assistant import claude_code, runtime
+
+    s = get_assistant_settings()
+    if not s.enabled:
+        return 0
+    now = now or db.utcnow()
+    _requeue_orphans(now)
+    if runtime.is_stopped() or any(_alive(tid) for tid in list(_threads)) or claude_code.backoff_until() is not None:
+        return 0
+    due = [t for t in list_tasks() if t.get("status") == "retrying"
+           and (not t.get("next_try") or db.parse_iso(t["next_try"]) <= now)]
+    n = 0
+    for t in due[:limit]:
+        t.update(status="running", started=db.to_iso(now), next_try=None)
+        _save(t)
+        db.log_event("assistant", "background task retry started",
+                     data={"task_id": t["id"], "attempt": int(t.get("attempts") or 0) + 1})
+        _start(t)
+        n += 1
+    return n
+
+
 def finish(row: dict[str, Any], full: str, status: str) -> None:
+    polished = persona.polish(full or "", "dashboard")
+    result = polished if len(polished) <= RESULT_CHARS else polished[:RESULT_CHARS - 1].rstrip() + "…"
     row.update(status="done" if status == "ok" else status, finished=db.now_iso(),
-               summary=fallback_summary(full, 1)[:300])
+               summary=fallback_summary(full, 1)[:300], result=result)
     _save(row)
     try:
-        store.add_message("out", "dashboard", persona.polish(full or "", "dashboard"), kind="voice_detail",
+        store.add_message("out", "dashboard", polished, kind="voice_detail",
                           agent="main", meta={"task_id": row["id"], "task": row["task"]})
     except Exception as exc:
         log.warning("task result not recorded: %s", exc)

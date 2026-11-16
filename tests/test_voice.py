@@ -804,3 +804,39 @@ def test_sentence_stream_says_a_finished_sentence_without_waiting_for_more_text(
     assert st.feed("It costs 3.") == [] and st.feed("5 dollars, Mr.") == [] and st.feed(" Stark.") == \
         ["It costs 3.5 dollars, Mr. Stark."]
     assert st.feed("Plan B.") == [] and st.flush() == ["Plan B."]          # a lone letter may be an initial
+
+
+def test_whisper_stt_warms_the_gpu_once_and_falls_back_to_cpu(monkeypatch):
+    import sys as _sys
+    import types as _types
+
+    import numpy as _np
+
+    import transcribe
+    from voice.engines import WhisperSTT
+
+    calls, fail_gpu = [], {"on": False}
+
+    class StubModel:
+        def __init__(self, name, device, compute_type):
+            self.device = device
+
+        def transcribe(self, samples, **kw):
+            calls.append((self.device, len(samples)))
+            if self.device != "cpu" and fail_gpu["on"]:
+                raise RuntimeError("Library cublas64_12.dll is not found")
+            return iter([_types.SimpleNamespace(text=" hello ")]), None
+
+    monkeypatch.setitem(_sys.modules, "faster_whisper", _types.SimpleNamespace(WhisperModel=StubModel))
+    monkeypatch.setattr(transcribe, "register_cuda_dlls", lambda: [])
+    stt = WhisperSTT("tiny.en", device="auto")
+    assert stt.transcribe(_np.zeros(800, dtype=_np.float32)) == "hello"
+    assert calls == [("auto", 16000), ("auto", 800)]          # one warm-up, then the real clip
+    stt.transcribe(_np.zeros(800, dtype=_np.float32))
+    assert len(calls) == 3                                     # no second warm-up
+
+    calls.clear()
+    fail_gpu["on"] = True
+    broken = WhisperSTT("tiny.en", device="auto")
+    assert broken.transcribe(_np.zeros(800, dtype=_np.float32)) == "hello"
+    assert broken.device == "cpu" and calls[-1] == ("cpu", 800)

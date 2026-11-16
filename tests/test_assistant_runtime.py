@@ -33,6 +33,7 @@ def _tool_names(req):
 # ---------------------------------------------------------------------------
 
 def test_turn_searches_remembers_and_replies_in_persona(fake_model, clock):
+    _settings(max_turn_usd=1.0)   # three worst-case rounds with main's ~100 tool schemas sit right at the 0.50 default
     vault.ensure_vault()
     vault.remember("Saving for a motorbike, target $5,000", area="finance", source="sms")
     fake_model.queue(

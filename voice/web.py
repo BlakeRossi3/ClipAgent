@@ -602,6 +602,21 @@ def api_activity(request: Request) -> Response:
     return d._json(activity())
 
 
+@router.get("/api/task/{task_id}", include_in_schema=False)
+def api_task(request: Request, task_id: str) -> Response:
+    """One background task in full (``tasks.detail``): the expanded row on the Jarvis rail."""
+    from assistant import tasks
+
+    d = _d()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    info = tasks.detail(task_id[:40])
+    if info is None:
+        return d._json({"ok": False, "error": "unknown task"}, status_code=404)
+    return d._json({"ok": True, "task": info})
+
+
 def _sse(evt: dict[str, Any]) -> str:
     data = json.dumps({k: v for k, v in evt.items() if k != "t"}, ensure_ascii=False, default=str)
     return f"id: {evt['id']}\nevent: {evt['type']}\ndata: {data}\n\n"

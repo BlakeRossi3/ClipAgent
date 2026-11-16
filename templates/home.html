@@ -86,6 +86,8 @@
   {# --- Activity rail: what the assistant is doing right now, live over /voice/api/stream (static/jarvis.js) --- #}
   <aside class="jv-rail" data-jv-rail aria-label="What {{ a.name }} is doing">
     <section class="rail-sec rail-panels" data-jv-panels aria-live="polite" hidden></section>
+    {# dynamic tiles (assistant/tiles.py): short-lived, each leaves by itself (static/home.js) #}
+    <div class="jv-tiles" data-live="dyn_tiles">{{ p.dyn_tiles(h) }}</div>
     <section class="rail-sec" data-widget="now">
       <h2 class="rail-h">Now <span class="rail-live" data-jv-live hidden>live</span></h2>
       <ol class="rail-steps" data-jv-steps><li class="rail-empty">Standing by.</li></ol>
@@ -94,6 +96,12 @@
       <h2 class="rail-h">Tasks</h2>
       <ul class="rail-tasks" data-jv-tasks><li class="rail-empty">Nothing running in the background.</li></ul>
     </section>
+    {% if c.countdown %}
+    <section class="rail-sec cc-panel cc-countdown-panel" data-widget="countdown">
+      <h2 class="rail-h">{{ c.countdown.label }} release</h2>
+      <div data-cc-live="countdown">{{ cc.countdown(c) }}</div>
+    </section>
+    {% endif %}
     <section class="rail-sec cc-panel" data-widget="recent-work">
       <h2 class="rail-h">Recently worked on</h2>
       <div data-cc-live="work">{{ cc.work(c) }}</div>

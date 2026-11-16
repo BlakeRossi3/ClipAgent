@@ -1807,17 +1807,18 @@ def announce_task(row: dict[str, Any], full: str) -> bool:
 
 def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                timeout: float | None = None, model: str | None = None,
-               effort: str | None = None) -> tuple[str, str]:
+               effort: str | None = None, with_kind: bool = False) -> Any:
     """A parallel worker session for one background task (fresh, full powers, the main model unless
-    ``model``/``effort`` say otherwise, e.g. the cheap morning surprise). Returns (result text, status).
-    Runs in the calling thread."""
+    ``model``/``effort`` say otherwise, e.g. the cheap morning surprise). Returns (result text, status),
+    or with ``with_kind`` (result text, status, kind) where kind says why it did not finish
+    (limit | timeout | auth | ... | "" when ok; see ``assistant.retry``). Runs in the calling thread."""
     from assistant import claude_code
 
     s = get_assistant_settings()
     timeout = timeout or float(s.cc_task_timeout_sec)
     helper = Brain()
 
-    async def go() -> tuple[str, str]:
+    async def go() -> tuple[str, str, str]:
         t = _sdk()
         mode = billing()
         table = helper.tool_table(worker=True)
@@ -1855,17 +1856,22 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
             except Exception:
                 pass
         if r is None:
-            return "The work stopped before it finished.", "error"
+            return "The work stopped before it finished.", "error", "error"
         if r.is_error:
             msg_text = str(r.result or " ".join(r.errors or []) or r.subtype)
             kind = claude_code.classify_error(msg_text)
             if kind in ("limit", "model_limit"):
                 claude_code._set_backoff(msg_text, alert_channel="system")
-                return "I hit the Claude plan's limit before finishing.", "budget"
-            return f"The work failed: {msg_text[:200]}", "error"
-        return (r.result or text or "Done.").strip(), "ok"
+                return "I hit the Claude plan's limit before finishing.", "budget", "limit"
+            if "max_turns" in str(r.subtype or ""):
+                return f"The work needed more steps than one run allows: {msg_text[:200]}", "rounds", ""
+            return f"The work failed: {msg_text[:200]}", "error", kind or "error"
+        return (r.result or text or "Done.").strip(), "ok", ""
 
     try:
-        return asyncio.run(go())
+        out = asyncio.run(go())
     except asyncio.TimeoutError:
-        return "That took longer than I allow for one task, so I stopped it.", "error"
+        out = ("That took longer than I allow for one task, so I stopped it.", "error", "timeout")
+    if with_kind:
+        return out
+    return out[0], ("error" if out[1] == "rounds" else out[1])   # older callers know ok|budget|error

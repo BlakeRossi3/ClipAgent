@@ -31,7 +31,7 @@
     var kind = form.getAttribute('data-async');
     if (!kind || !window.fetch) return;
     ev.preventDefault();
-    var item = form.closest('[data-meal], .need');
+    var item = form.closest('[data-meal], .need, [data-dtile]');
     var prev = item ? item.className : '';
     if (kind === 'meal' && item) {
       var accept = /accept$/.test(form.action);
@@ -43,6 +43,7 @@
     }
     postForm(form).then(function (j) {
       if (!j.ok) throw new Error(j.msg || 'failed');
+      if (kind === 'tile' && item) dropTile(item);
       if (kind === 'answer' && item) {
         var p = document.createElement('p');
         p.className = 'need-thanks';
@@ -56,6 +57,23 @@
       form.classList.add('is-error');
     });
   });
+
+  /* ---- dynamic tiles (assistant/tiles.py): each leaves the screen by itself when its time is up ---- */
+  function dropTile(el) {
+    el.classList.add('is-leaving');
+    setTimeout(function () {
+      var list = el.parentNode;
+      if (el.parentNode) el.parentNode.removeChild(el);
+      if (list && !list.querySelector('[data-dtile]') && list.parentNode) list.parentNode.removeChild(list);
+    }, 400);
+  }
+  function expireTiles() {
+    var now = Date.now();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-dtile][data-expires]'), function (el) {
+      if (+el.getAttribute('data-expires') <= now && !el.classList.contains('is-leaving')) dropTile(el);
+    });
+  }
+  setInterval(expireTiles, 5000);
 
   /* ---- chat --------------------------------------------------------------- */
   var chat = document.querySelector('form[data-chat]');

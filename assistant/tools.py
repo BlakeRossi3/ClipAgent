@@ -94,6 +94,9 @@ class ToolResult:
 REGISTRY: dict[str, Tool] = {}
 # Names reserved for tools other modules will register -> the module expected to do it.
 PLANNED_TOOLS: dict[str, str] = {
+    "tile_show": "assistant.tiles",
+    "tile_remove": "assistant.tiles",
+    "tile_list": "assistant.tiles",
     "ledger_log_hours": "assistant.ledger",
     "ledger_summary": "assistant.ledger",
     "meals_suggest": "assistant.meals",
@@ -160,7 +163,8 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
                      "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities",
-                     "assistant.schedule", "assistant.handoff", "assistant.initiative")
+                     "assistant.schedule", "assistant.handoff", "assistant.initiative",
+                     "assistant.tiles")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs

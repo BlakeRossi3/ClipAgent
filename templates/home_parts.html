@@ -240,3 +240,21 @@
 <p class="voice">Nothing has happened yet. It will, {{ h.a.honorific }}.</p>
 {% endif %}
 {% endmacro %}
+
+{# Dynamic tiles: short-lived widgets the assistant puts up (assistant/tiles.py). Each one leaves by
+   itself at data-expires (ms since epoch; static/home.js removes it then) or when dismissed. #}
+{% macro dyn_tiles(h) %}
+{% if h.dyn %}
+<ul class="dtiles" aria-label="Tiles from {{ h.a.name }}">
+  {% for t in h.dyn %}
+  <li class="dtile dtile-{{ t.kind }}" data-dtile data-expires="{{ t.expires_ms }}">
+    <p class="dtile-title">{{ t.title }}</p>
+    {% if t.value %}<p class="dtile-value">{{ t.value }}</p>{% endif %}
+    {% if t.body %}<p class="dtile-body">{{ t.body }}</p>{% endif %}
+    <p class="dtile-left" title="Leaves the screen by itself">{{ t.left }} left</p>
+    <form class="dtile-x" method="post" action="/dashboard/tiles/{{ t.id }}/dismiss" data-async="tile"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Take down {{ t.title }}">&times;</button></form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endmacro %}

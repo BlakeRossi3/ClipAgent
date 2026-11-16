@@ -220,8 +220,12 @@ def turn_context() -> str:
     def running() -> list[str]:
         from assistant import tasks
 
-        return [f"Background task running (started {ago(t['started'])}): {t['task'][:160]}"
-                for t in tasks.running_tasks()]
+        out = [f"Background task running (started {ago(t['started'])}): {t['task'][:160]}"
+               for t in tasks.running_tasks()]
+        out += [f"Background task waiting to retry (attempt {t.get('attempts', 1)} did not finish: "
+                f"{t.get('last_error') or 'unknown'}): {t['task'][:160]}"
+                for t in tasks.list_tasks() if t.get("status") == "retrying"]
+        return out
 
     def approvals() -> list[str]:
         n = len(db.list_decisions("pending", limit=20))

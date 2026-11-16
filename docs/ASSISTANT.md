@@ -107,6 +107,11 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
 * **Plan usage** (`assistant/usage.py`, skill `usage-aware`): Claude Code's stream-json output carries
   `rate_limit_event` lines (`status`, `utilization`, `resetsAt`, `rateLimitType` five_hour / seven_day...)
   when the limit state changes; they are recorded and shown by `usage_status` and on the dashboard.
+  The CLI reports only the binding (most used) window, so once the weekly window is tighter the
+  5-hour one is never reported again: a weekly reading then replaces a reset/rejected 5-hour reading
+  with a bound (`at_most`, shown as `left_at_least_pct`, "at least N% left"), never a made-up figure.
+  A window that has reset since its last reading shows as unknown, not 100% left. The Jarvis page's
+  "Claude plan" chart (`home_live.plan_meters`) shows only the 5-hour and weekly windows.
   Non-urgent work (`usage.should_defer`) and his requests during a plan limit are queued in
   `as_deferred` and run oldest-first a few minutes after the reset (`assistant_deferred` job, every 10
   min); `schedule_prompt` queues a background task for a time ("in 2 hours", "tomorrow 9am", optional daily /
@@ -115,6 +120,15 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   handoff note (`Agent/Handoffs/`) and one resume task is scheduled for the next window (`assistant/handoff.py`,
   tool `usage_handoff`). Every morning (`ASSISTANT_MORNING_SURPRISE`, default 07:40) `assistant/surprise.py` has
   him make the owner something cool.
+* **Background tasks that fail** (`assistant/retry.py`): a task he asked for in conversation that ends in an
+  error, a timeout, the kill switch or too many steps is parked as `retrying` and started again (5, 15, 30, then
+  every 60 minutes; `assistant_task_retry` job) with a `<retry>` note, until it finishes; he hears once that it
+  will be retried, and a blocker only he can fix (sign-in, Claude Code not starting, switched off) is texted once.
+  Each task row on the Jarvis rail expands to the request, steps, full result and the conversation around it.
+* **Tiles** (`assistant/tiles.py`, tools `tile_show` / `tile_remove` / `tile_list`): small glanceable tiles on
+  the Jarvis stage (weather, a figure, a reminder) that disappear by themselves after `minutes` (default 60);
+  a `key` replaces the previous tile, at most 6 are up, the owner can close one with its x.
+* **GTA VI countdown**: a collapsible panel on the Jarvis rail counting down to `GTA6_RELEASE_DATE`.
 
 ### Guardrails for full powers
 

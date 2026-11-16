@@ -374,6 +374,7 @@ def test_status_text(make_upload, make_source, clock):
     assert "scout             11-13 10:00  ok" in text and "Scheduler: not running" in text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_doctor_reports_failures_with_fixes(monkeypatch, settings):
     monkeypatch.setattr(main, "_whisper_check", lambda s: main.Check("whisper model", "pass", "cached"))
     config.set_settings(settings.replace(dry_run=False, fake_llm=False, ffmpeg_bin="/nonexistent/ffmpeg"))

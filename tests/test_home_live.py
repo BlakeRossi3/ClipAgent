@@ -4,6 +4,7 @@ dropdown menus on every page, the staff as Invincible characters and the Sterlin
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -138,7 +139,7 @@ def test_home_has_strip_panels_charts_and_new_stuff(client):
     for hook in ("data-jarvis", "data-jv-core", "data-jv-ptt", "data-jv-status", "data-jv-steps", "data-jv-tasks",
                  "data-jv-panels", "data-jv-you", "data-jv-them", "data-jv-history", "data-chat-log", "data-jv-diag"):
         assert hook in html, hook
-    for label in ("Claude today", "Assistant spend", "Voice latency", "Money this week", "Shorts views"):
+    for label in ("Claude plan", "Assistant spend", "Voice latency", "Money this week", "Shorts views"):
         assert label in html
     assert "Add the cecil home" in html and "Fix the clock" in html                # friendly titles
     assert "Thirty-two, sir." in html and "How many hours this week?" in html
@@ -192,7 +193,78 @@ def test_charts_and_geometry():
     b = home_live.bars([0, 2, 4])
     assert b[2]["h"] > b[1]["h"] > b[0]["h"] >= 1
     c = home_live.charts()
-    assert set(c) == {"claude", "spend", "latency", "money", "views"} and c["claude"]["cap"] >= 1
+    assert set(c) == {"claude", "spend", "latency", "money", "views"}
+    assert [m["key"] for m in c["claude"]["meters"]] == ["five_hour", "seven_day"]
+
+
+def test_plan_tile_shows_five_hour_and_weekly_only(client, clock):
+    """The owner asked: no "19 out of 60 runs", just the 5-hour and weekly usage, live, and no fake 100%."""
+    from assistant import usage
+
+    in2h = int((db.utcnow() + timedelta(hours=2)).timestamp())
+    usage.record_window({"status": "allowed_warning", "rateLimitType": "five_hour", "utilization": 0.68, "resetsAt": in2h})
+    usage.record_window({"status": "allowed", "rateLimitType": "seven_day", "utilization": 0.3, "resetsAt": in2h + 86400 * 3})
+    m = {x["key"]: x for x in home_live.plan_meters()["meters"]}
+    assert m["five_hour"]["left_pct"] == 32 and m["five_hour"]["used_pct"] == 68 and m["five_hour"]["note"].startswith("resets")
+    assert m["seven_day"]["left_pct"] == 70 and m["seven_day"]["level"] == "ok"
+    parts = client.get("/dashboard/api/cecil").json()["html"]["charts"]
+    assert "Claude plan" in parts and "32% left" in parts and "70% left" in parts and "Weekly" in parts
+    assert "runs" not in parts and "Claude today" not in parts
+    assert "runs today" not in client.get("/dashboard/").text
+    # the 5-hour window resets with no new reading: unknown, never "100% left"
+    clock.advance(hours=3)
+    m = {x["key"]: x for x in home_live.plan_meters()["meters"]}
+    assert m["five_hour"]["left_pct"] is None and m["five_hour"]["level"] == "unknown"
+    assert "new figure after the next run" in m["five_hour"]["note"]
+    parts = client.get("/dashboard/api/cecil").json()["html"]["charts"]
+    assert "100% left" not in parts and "70% left" in parts
+    u = usage.usage_status()["windows"]["five_hour"]
+    assert u["stale"] and u["left_pct"] is None and u["reset_was_text"]
+
+
+def test_five_hour_refreshes_when_only_weekly_is_reported(client, clock):
+    """The CLI reports only the binding window. Once weekly is tighter, the 5-hour window stops being
+    reported; a stale or rejected 5-hour reading must give way to the bound weekly implies."""
+    from assistant import usage
+
+    now = int(db.utcnow().timestamp())
+    usage.record_window({"status": "rejected", "rateLimitType": "five_hour", "resetsAt": now + 3600})
+    clock.advance(hours=2)                       # 5-hour window resets; no 5-hour event ever comes again
+    usage.record_window({"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.75,
+                         "resetsAt": now + 86400 * 5})
+    w = usage.usage_status()["windows"]["five_hour"]
+    assert w["status"] == "allowed" and w["left_pct"] is None and not w["stale"]
+    assert w["left_at_least_pct"] == 25 and w["inferred_from"] == "seven_day" and w["as_of_text"]
+    m = {x["key"]: x for x in home_live.plan_meters()["meters"]}
+    assert m["five_hour"]["left_at_least_pct"] == 25 and "weekly limit is the tighter" in m["five_hour"]["note"]
+    assert m["seven_day"]["left_pct"] == 25
+    parts = client.get("/dashboard/api/cecil").json()["html"]["charts"]
+    assert "&ge;25% left" in parts and "100% left" not in parts
+    assert not usage.constrained(0.99)[0]       # a bound is not a rejection
+    # each further run refreshes the bound
+    usage.record_window({"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.8,
+                         "resetsAt": now + 86400 * 5})
+    assert usage.usage_status()["windows"]["five_hour"]["left_at_least_pct"] == 20
+    # a real 5-hour reading wins, and is not overwritten by later weekly events
+    usage.record_window({"status": "allowed", "rateLimitType": "five_hour", "utilization": 0.1, "resetsAt": now + 4 * 3600})
+    usage.record_window({"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.81,
+                         "resetsAt": now + 86400 * 5})
+    w = usage.usage_status()["windows"]["five_hour"]
+    assert w["left_pct"] == 90 and w["left_at_least_pct"] is None and w["inferred_from"] is None
+
+
+def test_no_inference_from_rejection_or_model_windows():
+    from assistant import usage
+
+    in1d = int((db.utcnow() + timedelta(days=1)).timestamp())
+    usage.record_window({"status": "rejected", "rateLimitType": "seven_day", "utilization": 1.0, "resetsAt": in1d})
+    usage.record_window({"status": "allowed", "rateLimitType": "seven_day_opus", "utilization": 0.2, "resetsAt": in1d})
+    assert "five_hour" not in usage.usage_status()["windows"]
+
+
+def test_plan_tile_before_any_reading():
+    m = home_live.plan_meters()["meters"]
+    assert [x["note"] for x in m] == ["no reading yet", "no reading yet"] and all(x["left_pct"] is None for x in m)
 
 
 # -- Sterling -> Cecil ---------------------------------------------------------------------------

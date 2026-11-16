@@ -71,7 +71,11 @@ Settings → Power & privacy.
   from the app folder. The reason is in `data\logs\clipagent-<date>.log`.
 * **GPU transcription**: Settings → Power & privacy → *Use my NVIDIA GPU*. It needs the NVIDIA
   driver plus the CUDA 12 cuBLAS/cuDNN libraries; if they are missing ClipAgent logs a warning and
-  switches back to the processor by itself, so nothing breaks.
+  switches back to the processor by itself, so nothing breaks. The simplest way to get them:
+  `.venv\Scripts\python -m pip install nvidia-cublas-cu12==12.8.4.1 nvidia-cudnn-cu12==9.10.2.21`;
+  ClipAgent finds their DLLs by itself (`transcribe.register_cuda_dlls`). On an RTX 5080 laptop this
+  took voice speech-to-text from about 1 s to 0.05 s per clip. The Kokoro voice stays on the
+  processor: its int8 model was 5-10x *slower* on the GPU with onnxruntime-gpu.
 * **Captions use a different font**: Windows has no Montserrat; captions fall back to Arial Black.
   Put `Montserrat-ExtraBold.ttf` (Google Fonts) into `app\assets\fonts\` or install it for your
   user, then restart.

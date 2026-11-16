@@ -1,4 +1,5 @@
-"""The Cecil home's live panels: recent chats, staff at work, recently worked on, "new stuff", charts.
+"""The Cecil home's live panels: recent chats, staff at work, recently worked on, "new stuff", charts,
+the GTA VI release countdown.
 
 Plain code over the database, the in-memory event bus and ``git log`` - no model call. Rendered into the
 home page (``templates/home.html`` via ``templates/cecil_parts.html``) and refreshed by
@@ -21,12 +22,13 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from fastapi import Request
 from fastapi.responses import Response
 
+import config
 import db
 
 log = logging.getLogger(__name__)
@@ -328,23 +330,52 @@ def _spend_by_day(today: date, days: int = 7) -> list[tuple[date, float]]:
     return out
 
 
+# The plan tile: only the two windows the owner cares about ("I just want to see the five hour usage
+# and the weekly usage"). No daily run count.
+PLAN_METERS = (("five_hour", "5-hour"), ("seven_day", "Weekly"))
+
+
+def plan_meters() -> dict[str, Any]:
+    """{meters: [{key, label, left_pct|None, left_at_least_pct, used_pct, resets_text, as_of_text, note, level}],
+    limited, limited_text, queued}.
+
+    A window that reset since its last reading shows as unknown ("reset at 3pm, new figure after the
+    next run"), never as 100% left. Refreshed with the rest of the Jarvis page (/api/cecil)."""
+    from assistant import usage
+
+    u = usage.usage_status()
+    meters = []
+    for key, label in PLAN_METERS:
+        w = (u.get("windows") or {}).get(key)
+        left = w.get("left_pct") if w else None
+        if w is None:
+            note = "no reading yet"
+        elif left is None and w.get("left_at_least_pct") is not None:
+            other = dict(PLAN_METERS).get(w.get("inferred_from") or "", "other").lower()
+            note = f"at least {w['left_at_least_pct']}% left; the {other} limit is the tighter one"
+        elif left is None:
+            note = (f"reset {w['reset_was_text']}, new figure after the next run" if w.get("reset_was_text")
+                    else "no figure yet")
+        else:
+            note = f"resets {w['resets_text']}" if w.get("resets_text") else ""
+        level = "unknown" if left is None else ("low" if left <= 10 else ("warn" if left <= 30 else "ok"))
+        meters.append({"key": key, "label": label, "left_pct": left,
+                       "left_at_least_pct": (w or {}).get("left_at_least_pct") if left is None else None,
+                       "used_pct": None if left is None else max(0, min(100, 100 - left)),
+                       "resets_text": (w or {}).get("resets_text") or "", "as_of_text": (w or {}).get("as_of_text") or "",
+                       "note": note, "level": level})
+    return {"meters": meters, "limited": bool(u.get("limited")), "limited_text": u.get("limited_text") or "",
+            "queued": int(u.get("queued") or 0)}
+
+
 def charts(today: date | None = None) -> dict[str, Any]:
-    """The five HUD charts: Claude usage today, assistant spend, voice latency, money this week, Shorts views."""
+    """The five HUD charts: Claude plan (5-hour + weekly), assistant spend, voice latency, money this week,
+    Shorts views."""
     h = _home()
     today = today or db.local_today()
     s = h._asettings()
-    # 1. Claude usage today (plan runs vs the daily cap; the 5-hour window when Claude Code reported it)
-    def claude() -> dict[str, Any]:
-        from assistant import usage
-
-        u = usage.usage_status()
-        cap = max(1, int(u.get("runs_cap") or s.max_turns_per_day or 1))
-        runs = int(u.get("runs_today") or 0)
-        five = (u.get("windows") or {}).get("five_hour") or {}
-        return {"runs": runs, "cap": cap, "pct": min(100.0, runs / cap * 100), "five_left": five.get("left_pct"),
-                "limited": bool(u.get("limited")), "limited_text": u.get("limited_text") or ""}
-    claude_d = _safe(claude, {"runs": 0, "cap": max(1, s.max_turns_per_day), "pct": 0.0, "five_left": None,
-                              "limited": False, "limited_text": ""}, "claude usage")
+    # 1. Claude plan: the 5-hour and weekly windows only (he asked for the daily run count gone)
+    claude_d = _safe(plan_meters, {"meters": [], "limited": False, "limited_text": "", "queued": 0}, "claude usage")
     # 2. assistant spend, 7 days
     spend = _safe(lambda: _spend_by_day(today), [], "assistant spend")
     spend_today = spend[-1][1] if spend else 0.0
@@ -373,6 +404,27 @@ def charts(today: date | None = None) -> dict[str, Any]:
                   "has_job": bool(money and money["has_job"]), "bars": bars(pay)},
         "views": {"week": sum(v14[-7:]) if v14 else 0, "spark": spark(v14) if any(v14) else None},
     }
+
+
+# ---------------------------------------------------------------------------
+# release countdown (GTA6_RELEASE_DATE); the page ticks it client-side (static/cecil.js)
+# ---------------------------------------------------------------------------
+
+def release_countdown(now: datetime | None = None) -> dict[str, Any] | None:
+    """{label, target_iso (UTC), target_text, days, hours, minutes, released} or None when no date is set.
+
+    The date is one config value, read in local time (``TIMEZONE``); the server renders the first
+    figures and ``static/cecil.js`` counts down from ``target_iso`` every second."""
+    raw = config.get_settings().gta6_release_date
+    if not raw:
+        return None
+    fmt = "%Y-%m-%dT%H:%M" if "T" in raw else "%Y-%m-%d"
+    when = datetime.strptime(raw, fmt).replace(tzinfo=db.local_tz())
+    left = max(0, int((when - (now or db.utcnow())).total_seconds()))
+    return {"label": "GTA VI", "target_iso": db.to_iso(when),
+            "target_text": f"{when.strftime('%a')} {when.day} {when.strftime('%b %Y')}",
+            "days": left // 86400, "hours": left % 86400 // 3600, "minutes": left % 3600 // 60,
+            "released": left == 0}
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +461,7 @@ def cecil_data() -> dict[str, Any]:
         "work": _safe(recent_work, [], "recent work"),
         "new": _safe(new_stuff, [], "new stuff"),
         "charts": _safe(lambda: charts(today), None, "charts"),
+        "countdown": _safe(release_countdown, None, "countdown"),
         "brain": brain,
         "working": sum(1 for x in staff if x["state"] == "working"),
         "tasks": len(_safe(_running_tasks, [], "tasks")),
@@ -416,7 +469,7 @@ def cecil_data() -> dict[str, Any]:
     }
 
 
-PARTS = ("chats", "staff", "work", "new", "charts")
+PARTS = ("chats", "staff", "work", "new", "charts", "countdown")
 
 
 def render_parts(request: Request, data: dict[str, Any]) -> dict[str, str]:

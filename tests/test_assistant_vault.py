@@ -62,8 +62,11 @@ def test_path_attacks_rejected(root, bad):
 def test_symlink_escape_rejected(root, tmp_path):
     secret = tmp_path / "secret.md"
     secret.write_text("top secret")
-    os.symlink(secret, root / "Inbox" / "link.md")
-    os.symlink(tmp_path, root / "escape")
+    try:
+        os.symlink(secret, root / "Inbox" / "link.md")
+        os.symlink(tmp_path, root / "escape")
+    except OSError:
+        pytest.skip("symlinks need extra privileges on this Windows machine")
     with pytest.raises(vault.VaultPathError):
         vault.read_note("Inbox/link.md")
     with pytest.raises(vault.VaultPathError):

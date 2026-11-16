@@ -528,6 +528,7 @@ def test_quota_limit_override(clock, settings):
     assert youtube_auth.daily_quota_limit() == 50_000
 
 
+@pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_save_credentials_0600(tmp_path):
     class C:
         def to_json(self):

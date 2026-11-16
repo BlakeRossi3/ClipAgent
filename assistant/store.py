@@ -55,6 +55,7 @@ MEAL_STATUSES = ("suggested", "accepted", "declined", "eaten")
 GOAL_STATUSES = ("active", "done", "dropped")
 RUN_STATUSES = ("running", "ok", "error", "budget", "denied")
 LESSON_STATUSES = ("proposed", "adopted", "retired")
+TILE_KINDS = ("info", "metric", "reminder", "alert")
 ASSISTANT_PURPOSE_PREFIX = db.ASSISTANT_PURPOSE_PREFIX
 ASSISTANT_TIER = "assistant"
 
@@ -190,6 +191,14 @@ MIGRATIONS: list[list[str]] = [
             attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, result TEXT, commits TEXT,
             finished_at TEXT, meta TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         "CREATE INDEX idx_as_backlog_status ON as_backlog(status, position)",
+    ],
+    [   # v8: dynamic tiles - short-lived widgets on the Jarvis page (assistant/tiles.py)
+        f"""CREATE TABLE as_tiles (
+            id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'info' {_in('kind', TILE_KINDS)},
+            title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', value TEXT, tile_key TEXT, source TEXT,
+            removed_at TEXT, removed_by TEXT)""",
+        "CREATE INDEX idx_as_tiles_live ON as_tiles(removed_at, expires_at)",
     ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -1180,3 +1189,64 @@ def move_backlog(item_id: int, delta: int, *, conn: sqlite3.Connection | None = 
             c.execute("UPDATE as_backlog SET position = ?, updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END "
                       "WHERE id = ?", (pos, item_id, now, rid))
         return True
+
+
+# ---------------------------------------------------------------------------
+# dynamic tiles (assistant/tiles.py)
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class Tile(_Row):
+    id: int
+    created_at: str
+    expires_at: str
+    kind: str
+    title: str
+    body: str
+    value: str | None = None
+    tile_key: str | None = None
+    source: str | None = None
+    removed_at: str | None = None
+    removed_by: str | None = None
+
+
+def add_tile(title: str, *, expires_at: str, body: str = "", kind: str = "info", value: str | None = None,
+             tile_key: str | None = None, source: str | None = None, conn: sqlite3.Connection | None = None) -> int:
+    _check(kind, TILE_KINDS, "kind")
+    with transaction(conn) as c:
+        return _insert(c, "as_tiles", {"created_at": db.now_iso(), "expires_at": expires_at, "kind": kind,
+                                       "title": title, "body": body, "value": value, "tile_key": tile_key,
+                                       "source": source})
+
+
+def get_tile(tile_id: int, *, conn: sqlite3.Connection | None = None) -> Tile | None:
+    with transaction(conn) as c:
+        return _one(c, Tile, "SELECT * FROM as_tiles WHERE id = ?", (tile_id,))
+
+
+def list_live_tiles(now_iso: str | None = None, *, tile_key: str | None = None, limit: int = 50,
+                    conn: sqlite3.Connection | None = None) -> list[Tile]:
+    """Tiles not removed and not yet expired, newest first."""
+    sql = "SELECT * FROM as_tiles WHERE removed_at IS NULL AND expires_at > ?"
+    params: list[Any] = [now_iso or db.now_iso()]
+    if tile_key is not None:
+        sql += " AND tile_key = ?"
+        params.append(tile_key)
+    with transaction(conn) as c:
+        return _many(c, Tile, sql + " ORDER BY created_at DESC, id DESC LIMIT ?", (*params, limit))
+
+
+def remove_tile(tile_id: int, *, by: str = "assistant", conn: sqlite3.Connection | None = None) -> bool:
+    """Take a live tile down. False when it does not exist or is already gone."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_tiles SET removed_at = ?, removed_by = ? WHERE id = ? AND removed_at IS NULL",
+                        (db.now_iso(), by, tile_id))
+        return cur.rowcount > 0
+
+
+def prune_tiles(before_iso: str, *, conn: sqlite3.Connection | None = None) -> int:
+    """Delete tiles that expired or were removed before ``before_iso``. Returns rows deleted."""
+    with transaction(conn) as c:
+        cur = c.execute("DELETE FROM as_tiles WHERE expires_at < ? OR (removed_at IS NOT NULL AND removed_at < ?)",
+                        (before_iso, before_iso))
+        return cur.rowcount

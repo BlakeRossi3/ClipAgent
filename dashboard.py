@@ -218,6 +218,7 @@ _FLASH = {
     "answer_empty": ("warning", "An empty answer was not saved."),
     "hours_bad": ("warning", "I could not find a number of hours (0-168) in that answer."),
     "gone": ("warning", "That item no longer exists."),
+    "tile_dismissed": ("info", "Tile taken down."),
     "meal_accepted": ("good", "Splendid. Noted for the menu."),
     "meal_declined": ("info", "Noted. I will suggest something else next time."),
     "job_saved": ("good", "Pay rate saved. I will keep the books from your weekly hours."),

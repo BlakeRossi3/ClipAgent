@@ -126,6 +126,27 @@
     if (stepsEl) mo.observe(stepsEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     if (tasksEl) mo.observe(tasksEl, { childList: true, subtree: true });
   }
+  /* release countdown ([data-countdown] = UTC target, home_live.release_countdown): ticks every second.
+     It is looked up afresh each tick because refresh() replaces the fragment. */
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+  function tickCountdowns() {
+    var tiles = document.querySelectorAll('[data-countdown]');
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i], target = Date.parse(t.getAttribute('data-countdown'));
+      if (isNaN(target)) continue;
+      var left = Math.max(0, Math.floor((target - Date.now()) / 1000));
+      var parts = { d: String(Math.floor(left / 86400)), h: pad(Math.floor(left % 86400 / 3600)),
+        m: pad(Math.floor(left % 3600 / 60)), s: pad(left % 60) };
+      for (var k in parts) { var el = t.querySelector('[data-cd="' + k + '"]'); setText(el, parts[k]); }
+      var live = t.querySelector('[data-cd-live]'), out = t.querySelector('[data-cd-out]');
+      if (live) live.hidden = left === 0;
+      if (out) out.hidden = left !== 0;
+      t.classList.toggle('is-out', left === 0);
+    }
+  }
+  tickCountdowns();
+  setInterval(tickCountdowns, 1000);
+
   staffBusy = document.querySelectorAll('[data-cc-live="staff"] .cc-agent.is-working:not(:first-child)').length;
   update();
   start();

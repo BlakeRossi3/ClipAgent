@@ -129,7 +129,8 @@ Owner-facing docs: `README.md` (install, go-live checklist, unverified-live list
   youtube_api_key, youtube_monetary_analytics=False, scout_cc_backend="ytdlp",
   scout_cc_api_max_searches_per_day=2, timezone="America/New_York", whisper_model="small.en",
   whisper_device="auto", whisper_compute_type="int8", ffmpeg_bin="ffmpeg", log_level,
-  source_media_retention_days=3, render_retention_days=14`.
+  source_media_retention_days=3, render_retention_days=14, gta6_release_date="2026-11-19"` (`GTA6_RELEASE_DATE`,
+  `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` local; empty/unreadable = no countdown tile).
 - Never read `os.environ` in modules: add a `Settings` field (+ `config.env.example` line,
   + conftest scrub if it has a new prefix) instead.
 - Env vars are documented in `config.env.example`. `CLIPAGENT_DATA_DIR`,
@@ -617,6 +618,22 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   `verify_after_restart` rolls back an unhealthy start). Refuses while busy (`selfedit.in_flight()`, pending restart
   check, running background task, a voice turn). `setup_web.update_app` delegates to it. Tests: temp repos with a local
   bare origin + `updater.set_runners(pip=...)`.
+
+### Jarvis page tiles, task rail, retries (rescued from Cecil's lost edits)
+- `home_live.release_countdown()` -> collapsible "GTA VI release" panel on the right rail (`data-widget="countdown"`,
+  part `countdown` of `/dashboard/api/cecil`), ticked every second by `static/cecil.js` (`tickCountdowns`).
+- `home_live.plan_meters()` = the "Claude plan" chart (5-hour + weekly % left, no run count). `usage.usage_status()`
+  windows now carry `stale`, `reset_was_text`, `as_of(_text)`, `left_at_least_pct`, `inferred_from`: a window that
+  reset shows unknown (never 100%), and a non-rejected 5-hour/weekly reading bounds the other (`_infer_siblings`).
+- `assistant/tiles.py` (store v8 `as_tiles`): short-lived tiles on the Jarvis stage (`tile_show|remove|list`, default
+  60 min, `key` replaces, max 6), `POST /dashboard/tiles/{id}/dismiss`, home part `dyn_tiles`, `static/home.js` drops expired ones.
+- `tasks.detail(id)` / `GET /voice/api/task/{id}` + jarvis.js `TASKROW`: task rows expand (request, steps, full
+  `result` <= 4000 chars, the conversation around it). `assistant/retry.py`: conversation tasks (no `on_finish`, not
+  self-edit; `row["retry"]`) ending error/timeout/stopped/rounds go `retrying` with backoff 5/15/30/60 min and
+  `tasks.retry_due()` (job `assistant_task_retry`, 5 min) restarts them; `budget` stays with `handoff`. Unfinished
+  rows are never trimmed from kv. Fixable blockers are texted once (`retry.report_blocker`).
+- `transcribe.register_cuda_dlls()` (Windows, pip `nvidia-*-cu12` wheels) before GPU Whisper loads; `voice.engines.
+  WhisperSTT` warms the GPU once at load. Chat messages: `home.CHAT_MAX_CHARS = 200_000` (no practical limit).
 
 ### Memory search by meaning
 `assistant/semantic.py` (`ASSISTANT_SEMANTIC_MEMORY=auto|on|off`, `AssistantSettings.semantic_memory`): model2vec `minishlab/potion-base-8M` chunk vectors in `as_vault_vec` (store v6, re-embedded by mtime/sha); `vault.search` = FTS5 (`vault.keyword_search`) fused with `semantic.search` by reciprocal rank, exactly keywords when off/unavailable/still loading.

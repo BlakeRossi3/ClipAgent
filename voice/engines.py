@@ -148,8 +148,17 @@ class WhisperSTT:
         if self._model is None:
             from faster_whisper import WhisperModel  # heavy optional import
 
+            if self.device != "cpu":
+                import transcribe
+
+                transcribe.register_cuda_dlls()
             log.info("loading faster-whisper %s (device=%s); the first run downloads it", self.model_name, self.device)
-            self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+            model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+            if self.device != "cpu":
+                # The first GPU decode compiles kernels (seconds); pay it at load, not on his first sentence.
+                list(model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1,
+                                      without_timestamps=True)[0])
+            self._model = model
         return self._model
 
     def transcribe(self, samples: np.ndarray) -> str:

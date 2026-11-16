@@ -593,7 +593,7 @@ def test_seeded_home_shows_everything(client, seeded):
         assert role in html
     assert "Black bean tacos" in html and "Emergency fund" in html
     j = client.get("/dashboard/api/home").json()
-    assert j["mood"] == "alert" and set(j["html"]) == {"needs", "tiles", "roster", "feed"}
+    assert j["mood"] == "alert" and set(j["html"]) == {"needs", "tiles", "roster", "feed", "dyn_tiles"}
     statuses = {a["name"]: a["status"] for a in j["agents"]}
     assert statuses["researcher"] == "error" and statuses["archivist"] == "working"
     note = client.get("/dashboard/memory?note=Profile/About.md")
@@ -776,3 +776,9 @@ def test_home_renders_messages_with_meta_but_no_attachments(client: TestClient) 
     r = client.get("/dashboard/")
     assert r.status_code == 200
     assert "Good evening, sir." in r.text
+
+
+def test_chat_length_is_not_a_practical_limit():
+    # The owner asked for no length limit on chat; only a large safety ceiling remains.
+    assert home.CHAT_MAX_CHARS >= 100_000
+    assert home.IMAGE_MAX_BYTES * home.IMAGE_MAX_COUNT + 65536 > home.CHAT_MAX_CHARS * 4

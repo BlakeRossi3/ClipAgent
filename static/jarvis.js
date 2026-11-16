@@ -896,6 +896,61 @@
       t.status === 'cancelled' ? 'Stopped' : 'Did not finish'));
     stepsEl.appendChild(li);
   }
+  /* taskrow:begin - pure: what one background-task row says, collapsed and expanded (tested in node) */
+  var TASKROW = (function () {
+    function dur(iso, until, nowMs) {
+      var t0 = Date.parse(iso || ''), t1 = until ? Date.parse(until) : nowMs;
+      if (!t0) return '';
+      var s = Math.max(0, Math.round((t1 - t0) / 1000));
+      return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+    }
+    function word(st) { return st === 'done' ? 'Done' : st ? st.charAt(0).toUpperCase() + st.slice(1) : 'Stopped'; }
+    function view(t, nowMs) {
+      t = t || {};
+      var st = t.status || 'running', steps = (t.steps || []).map(function (s) { return String(s && s.label || ''); })
+        .filter(Boolean), last = steps.length ? steps[steps.length - 1] : '';
+      var running = st === 'running', took = running ? dur(t.started, null, nowMs) : dur(t.started, t.finished, nowMs);
+      var line = running ? 'Working · ' + took + (last ? ' · ' + last : '')
+        : word(st) + ' · ' + took + (t.summary ? ' · ' + t.summary : '');
+      var task = String(t.task || 'Task'), heard = String(t.heard || '').trim();
+      return {
+        title: task, line: line, status: st,
+        detail: {
+          request: task,
+          heard: heard && heard !== task ? heard : '',
+          meta: (running ? 'Running for ' + took : word(st) + (took ? ' in ' + took : '')) + (steps.length ? ' · ' + steps.length + ' step' + (steps.length === 1 ? '' : 's') : ''),
+          steps: steps,
+          result: running ? '' : String(t.result || t.summary || '')
+        }
+      };
+    }
+    return { view: view };
+  })();
+  /* taskrow:end */
+  var openTasks = {};   // task id -> expanded; survives the once-a-second re-render
+  /* the full context of an opened task (GET /voice/api/task/<id>): what he said that led to it, the result,
+     what was said when it finished. Fetched on open and again when the task's status changes. */
+  var taskDetail = {}, taskDetailAt = {};
+  function loadTaskDetail(id, status) {
+    if (taskDetailAt[id] === status) return;
+    taskDetailAt[id] = status;
+    fetch('/voice/api/task/' + encodeURIComponent(id), { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.ok && j.task) { taskDetail[id] = j.task; if (openTasks[id]) renderTasks(); } })
+      .catch(function () { delete taskDetailAt[id]; });
+  }
+  function appendConvo(box, title, lines) {
+    if (!lines || !lines.length) return;
+    box.appendChild(el('p', 'rail-task-sub', title));
+    var ul = el('ul', 'rail-task-convo');
+    lines.forEach(function (m) {
+      var li = el('li', 'is-' + (m.who === 'you' ? 'you' : 'cecil'));
+      li.appendChild(el('b', '', m.who === 'you' ? 'You' : 'Cecil'));
+      li.appendChild(el('span', '', String(m.text || '')));
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
   function renderTasks() {
     renderTrail();
     var list = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; })
@@ -903,16 +958,47 @@
     tasksEl.textContent = '';
     if (!list.length) { tasksEl.appendChild(el('li', 'rail-empty', 'Nothing running in the background.')); return; }
     list.forEach(function (t) {
-      var li = el('li', 'rail-task is-' + (t.status || 'running'));
-      li.appendChild(el('b', '', t.task || 'Task'));
-      var steps = t.steps || [], lastStep = steps.length ? steps[steps.length - 1].label : '';
-      var line = t.status === 'running' ? 'Working · ' + elapsed(t.started) + (lastStep ? ' · ' + lastStep : '')
-        : (t.status === 'done' ? 'Done' : cap(t.status || 'stopped')) + ' · ' + elapsed(t.started, t.finished) + (t.summary ? ' · ' + t.summary : '');
-      var small = el('small', '', line); small.title = line;
-      li.appendChild(small);
+      var v = TASKROW.view(t, Date.now()), open = !!openTasks[t.id];
+      var li = el('li', 'rail-task is-' + v.status + (open ? ' is-open' : ''));
+      var head = el('button', 'rail-task-head');
+      head.type = 'button'; head.setAttribute('data-task-id', t.id || '');
+      head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      head.title = open ? 'Show less' : 'Show more';
+      head.appendChild(el('b', '', v.title));
+      var small = el('small', '', v.line); small.title = v.line;
+      head.appendChild(small);
+      li.appendChild(head);
+      if (open) {
+        var d = v.detail, box = el('div', 'rail-task-detail');
+        box.appendChild(el('p', 'rail-task-meta', d.meta));
+        box.appendChild(el('p', 'rail-task-req', d.request));
+        if (d.heard) box.appendChild(el('p', 'rail-task-heard', '“' + d.heard + '”'));
+        if (d.steps.length) {
+          var ol = el('ol', 'rail-task-steps');
+          d.steps.forEach(function (s) { ol.appendChild(el('li', '', s)); });
+          box.appendChild(ol);
+        }
+        loadTaskDetail(t.id, v.status);
+        var full = taskDetail[t.id];
+        var result = (full && full.result) || d.result;
+        if (result) box.appendChild(el('p', 'rail-task-result', result));
+        if (full && full.announced && t.status !== 'running') box.appendChild(el('p', 'rail-task-said', 'Said: ' + full.announced));
+        appendConvo(box, 'The conversation', full && full.conversation);
+        appendConvo(box, 'While it ran', full && full.followups);
+        if (!full) box.appendChild(el('p', 'rail-task-meta', 'Loading the conversation…'));
+        li.appendChild(box);
+      }
       tasksEl.appendChild(li);
     });
   }
+  if (tasksEl) tasksEl.addEventListener('click', function (ev) {
+    var head = ev.target && ev.target.closest ? ev.target.closest('.rail-task-head') : null;
+    if (!head || !tasksEl.contains(head)) return;
+    var id = head.getAttribute('data-task-id');
+    if (!id) return;
+    if (openTasks[id]) delete openTasks[id]; else openTasks[id] = true;
+    renderTasks();
+  });
   /* the live trail near the ring: he always SEES that work is going on, without a word being said.
      The running step with a spinner and its elapsed seconds, finished steps ticked, background tasks with a
      pulse and their elapsed time, then a clear end: a tick and "Done" that fades, or a red line. */

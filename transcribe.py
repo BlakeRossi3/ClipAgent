@@ -58,6 +58,51 @@ class Backend(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# NVIDIA libraries from pip (Windows)
+# ---------------------------------------------------------------------------
+
+_cuda_dirs_added: list[str] | None = None
+
+
+def nvidia_dll_dirs(search_paths: Iterable[str] | None = None) -> list[str]:
+    """The ``bin`` folders of pip-installed NVIDIA wheels (``nvidia-cublas-cu12``,
+    ``nvidia-cudnn-cu12``...), which hold the cuBLAS/cuDNN DLLs CTranslate2 needs for the GPU."""
+    if search_paths is None:
+        import importlib.util
+
+        spec = importlib.util.find_spec("nvidia")
+        search_paths = list(spec.submodule_search_locations or []) if spec else []
+    dirs: list[str] = []
+    for root in search_paths:
+        p = Path(root)
+        if p.is_dir():
+            dirs += [str(b) for b in sorted(p.glob("*/bin")) if b.is_dir()]
+    return dirs
+
+
+def register_cuda_dlls() -> list[str]:
+    """Make the pip NVIDIA DLLs loadable (Windows only; once per process). Call before the
+    first GPU model load. Returns the folders added; a no-op elsewhere or when none are installed."""
+    global _cuda_dirs_added
+    if _cuda_dirs_added is not None:
+        return _cuda_dirs_added
+    _cuda_dirs_added = []
+    if os.name != "nt":
+        return _cuda_dirs_added
+    for d in nvidia_dll_dirs():
+        try:
+            os.add_dll_directory(d)
+        except OSError:
+            continue
+        # ctranslate2 loads cuBLAS lazily with LoadLibrary, which also searches PATH.
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+        _cuda_dirs_added.append(d)
+    if _cuda_dirs_added:
+        log.info("NVIDIA libraries added from %s", ", ".join(_cuda_dirs_added))
+    return _cuda_dirs_added
+
+
+# ---------------------------------------------------------------------------
 # faster-whisper backend
 # ---------------------------------------------------------------------------
 
@@ -97,6 +142,8 @@ class FasterWhisperBackend:
         if self._model is None:
             from faster_whisper import WhisperModel  # heavy optional import
 
+            if self.device != "cpu":
+                register_cuda_dlls()
             log.info("loading faster-whisper model %s (device=%s, compute_type=%s)",
                      self.model_size, self.device, self.compute_type)
             self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)

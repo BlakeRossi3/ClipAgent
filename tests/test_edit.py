@@ -4,6 +4,7 @@ subprocess fakes, and one small real-ffmpeg integration test (skipped without ff
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -179,6 +180,7 @@ def test_resolve_framing(info, mode, expected):
     assert edit.resolve_framing(mode, info) == expected
 
 
+@pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_build_ffmpeg_cmd_center_crop(settings, tmp_path):
     cmd = edit.build_ffmpeg_cmd(Path("/m/src.mp4"), tmp_path / "1.ass", tmp_path / "1.mp4", 12.5, 57.25, settings,
                                 info=WIDE, framing="center_crop")

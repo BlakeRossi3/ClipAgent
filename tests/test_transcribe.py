@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -472,3 +473,31 @@ def test_gpu_failure_falls_back_to_cpu(monkeypatch, tmp_path, clock):
     monkeypatch.setattr(cpu, "_transcribe", lambda p: (_ for _ in ()).throw(RuntimeError("real bug")))
     with pytest.raises(RuntimeError, match="real bug"):       # CPU errors are not swallowed
         cpu.transcribe(tmp_path / "a.wav")
+
+
+def test_nvidia_dll_dirs_finds_wheel_bin_folders(tmp_path):
+    for name in ("cublas", "cudnn"):
+        (tmp_path / "nvidia" / name / "bin").mkdir(parents=True)
+    (tmp_path / "nvidia" / "cufft").mkdir()          # no bin -> ignored
+    dirs = transcribe.nvidia_dll_dirs([str(tmp_path / "nvidia"), str(tmp_path / "missing")])
+    assert [Path(d).parent.name for d in dirs] == ["cublas", "cudnn"]
+
+
+def test_register_cuda_dlls_adds_each_folder_once(monkeypatch, tmp_path):
+    added = []
+    d = tmp_path / "nvidia" / "cublas" / "bin"
+    d.mkdir(parents=True)
+    monkeypatch.setattr(transcribe, "_cuda_dirs_added", None)
+    monkeypatch.setattr(transcribe.os, "name", "nt")
+    monkeypatch.setattr(transcribe.os, "add_dll_directory", added.append, raising=False)
+    monkeypatch.setattr(transcribe, "nvidia_dll_dirs", lambda: [str(d)])
+    monkeypatch.setenv("PATH", "orig")
+    assert transcribe.register_cuda_dlls() == [str(d)]
+    assert transcribe.register_cuda_dlls() == [str(d)]   # cached: no second add
+    assert added == [str(d)] and os.environ["PATH"].startswith(str(d))
+
+
+def test_register_cuda_dlls_is_a_no_op_off_windows(monkeypatch):
+    monkeypatch.setattr(transcribe, "_cuda_dirs_added", None)
+    monkeypatch.setattr(transcribe.os, "name", "posix")
+    assert transcribe.register_cuda_dlls() == []

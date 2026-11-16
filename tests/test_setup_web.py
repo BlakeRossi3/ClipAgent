@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -435,6 +436,7 @@ def test_youtube_oauth_expired_and_denied(c, wiz, monkeypatch, clock):
 
 # --------------------------------------------------------------------------- maintenance
 
+@pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_restart_stop_and_update_buttons(c, wiz, monkeypatch):
     config_store.update({"SETUP_COMPLETE": "true"})
     csrf = _csrf(c)
@@ -487,6 +489,7 @@ def test_start_with_windows_shortcut(monkeypatch, tmp_path):
     assert setup_web.set_start_with_windows(False) is None and not setup_web.start_with_windows()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_startup_option_only_on_windows(c, monkeypatch):
     assert "Start ClipAgent when Windows starts" not in c.get("/setup/power").text
     monkeypatch.setattr(sys, "platform", "win32")

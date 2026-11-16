@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 KV_WINDOW = "assistant:usage:window:{kind}"
 WINDOW_KINDS = ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet")
+INFERABLE = ("five_hour", "seven_day")   # the general windows; one's reading bounds the other's (see _infer_siblings)
 DEFER_THRESHOLD = 0.80        # non-urgent work waits once a window is this full
 HANDOFF_THRESHOLD = 0.90      # work in flight is handed over to the next window (assistant/handoff.py)
 RESET_GRACE = timedelta(minutes=5)
@@ -74,6 +75,7 @@ def record_window(info: dict[str, Any]) -> None:
         util = None
     db.kv_set(KV_WINDOW.format(kind=kind), {"status": str(info["status"]), "utilization": util,
                                              "resets_at": resets_iso, "seen_at": db.now_iso()})
+    _infer_siblings(kind, str(info["status"]), util)
     if info.get("status") == "rejected" and resets_iso:
         from assistant import claude_code
 
@@ -87,6 +89,28 @@ def record_window(info: dict[str, Any]) -> None:
             handoff.on_usage_signal()
         except Exception as exc:
             log.warning("usage handoff failed: %s", exc)
+
+
+def _infer_siblings(kind: str, status: str, util: float | None) -> None:
+    """The CLI reports only the *binding* (most used) window per run, so once the weekly window is the
+    tighter one the 5-hour window is never reported again and its last reading goes stale for good
+    (the owner: "I've been sending messages and it hasn't refreshed"). A non-rejected reading of
+    ``kind`` at ``util`` still tells us the other general window is not rejected and at most ``util``
+    used, so a sibling whose reading has reset, was a rejection, or was itself inferred is replaced by
+    that bound (``at_most``; ``utilization`` stays None: a bound, never a made-up figure). A real,
+    current reading of the sibling is left alone."""
+    if status == "rejected" or util is None or kind not in INFERABLE:
+        return
+    for other in INFERABLE:
+        if other == kind:
+            continue
+        v = db.kv_get(KV_WINDOW.format(kind=other))
+        if isinstance(v, dict):
+            reset = bool(v.get("resets_at")) and db.parse_iso(v["resets_at"]) <= db.utcnow()
+            if not (reset or v.get("status") == "rejected" or v.get("inferred_from")):
+                continue
+        db.kv_set(KV_WINDOW.format(kind=other), {"status": "allowed", "utilization": None, "at_most": util,
+                                                  "inferred_from": kind, "resets_at": None, "seen_at": db.now_iso()})
 
 
 def _window(kind: str) -> dict[str, Any] | None:
@@ -119,8 +143,13 @@ def next_reset() -> datetime | None:
 
 
 def usage_status() -> dict[str, Any]:
-    """{windows: {kind: {left_pct|None, status, resets_at, resets_text}}, runs_today, runs_cap,
-    limited, limited_until, queued}. ``left_pct`` None = unknown (no event seen yet)."""
+    """{windows: {kind: {left_pct|None, status, resets_at, resets_text, stale, reset_was_text, as_of,
+    as_of_text, left_at_least_pct, inferred_from}}, runs_today, runs_cap, limited, limited_until, queued}.
+
+    ``left_pct`` None = unknown: no utilization reported, or the window has reset since the last
+    reading (Claude Code only reports on state changes, so a reset window is "no reading yet", never a
+    made-up 100% left; ``reset_was_text`` says when it reset). ``left_at_least_pct`` is a bound
+    inferred from the other general window (:func:`_infer_siblings`)."""
     from assistant import claude_code
 
     s = get_assistant_settings()
@@ -129,11 +158,20 @@ def usage_status() -> dict[str, Any]:
         w = _window(k)
         if w is None:
             continue
-        util = w.get("utilization")
-        resets = db.parse_iso(w["resets_at"]) if w.get("resets_at") and not w.get("stale") else None
+        stale = bool(w.get("stale"))
+        util = None if stale else w.get("utilization")
+        resets = db.parse_iso(w["resets_at"]) if w.get("resets_at") and not stale else None
+        was = db.parse_iso(w["resets_at"]) if w.get("resets_at") and stale else None
+        seen = db.parse_iso(w["seen_at"]) if w.get("seen_at") else None
         windows[k] = {"left_pct": None if util is None else round(100 * (1 - util)), "status": w.get("status"),
                       "resets_at": db.to_iso(resets) if resets else None,
-                      "resets_text": claude_code.friendly_time(resets) if resets else ""}
+                      "resets_text": claude_code.friendly_time(resets) if resets else "",
+                      "stale": stale, "reset_was_text": claude_code.friendly_time(was) if was else "",
+                      "as_of": db.to_iso(seen) if seen else None,
+                      "as_of_text": claude_code.friendly_time(seen) if seen else "",
+                      "left_at_least_pct": (round(100 * (1 - w["at_most"]))
+                                            if util is None and w.get("at_most") is not None else None),
+                      "inferred_from": w.get("inferred_from")}
     until = claude_code.backoff_until()
     return {"windows": windows, "known": bool(windows), "runs_today": claude_code.turns_today(),
             "runs_cap": s.max_turns_per_day, "limited": until is not None,

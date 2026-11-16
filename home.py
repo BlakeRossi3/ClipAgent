@@ -46,7 +46,7 @@ import db
 
 log = logging.getLogger(__name__)
 
-CHAT_MAX_CHARS = 1000
+CHAT_MAX_CHARS = 200_000            # safety ceiling only; the owner wants no practical limit
 CHAT_HISTORY = 14
 CHAT_LIMITS = ((60, 6), (3600, 60))          # (window seconds, max chat posts) per session
 POST_LIMITS = ((60, 30), (3600, 300))        # every other new POST, per session
@@ -738,7 +738,8 @@ def assistant_state() -> dict[str, Any]:
 
 
 def _usage_meter() -> dict[str, Any] | None:
-    """Plan usage for the chat card (only when Claude Code has reported something, or work is queued)."""
+    """Plan usage for the chat card (only when Claude Code has reported something, or work is queued).
+    No daily run count: the owner asked for it gone ("I don't know what 19 out of 60 runs is for")."""
     from assistant import usage
 
     u = usage.usage_status()
@@ -748,12 +749,13 @@ def _usage_meter() -> dict[str, Any] | None:
               "seven_day_sonnet": "week (Sonnet)"}
     parts = [f"{labels.get(k, k)}: {w['left_pct']}% left" + (f", resets {w['resets_text']}" if w["resets_text"] else "")
              for k, w in u["windows"].items() if w["left_pct"] is not None]
+    parts += [f"{labels.get(k, k)}: at least {w['left_at_least_pct']}% left"
+              for k, w in u["windows"].items() if w["left_pct"] is None and w.get("left_at_least_pct") is not None]
     if u["limited"]:
         parts.insert(0, f"plan limit reached, back {u['limited_text']}")
     if u["queued"]:
         parts.append(f"{u['queued']} queued for after the reset")
-    parts.append(f"{u['runs_today']}/{u['runs_cap']} runs today")
-    return {**u, "line": " · ".join(parts)}
+    return {**u, "line": " · ".join(parts) or "no figure yet"}
 
 
 def _ledger_summary() -> dict[str, Any] | None:
@@ -1205,6 +1207,13 @@ def setup_steps(a: Mapping[str, Any], money: Mapping[str, Any], memory: Mapping[
     ]
 
 
+def dyn_tiles_data() -> list[dict[str, Any]]:
+    """Dynamic tiles on the Jarvis stage (assistant/tiles.py): live ones only, newest first."""
+    from assistant import tiles
+
+    return tiles.view()
+
+
 def home_data() -> dict[str, Any]:
     today = db.local_today()
     a = assistant_state()
@@ -1220,6 +1229,7 @@ def home_data() -> dict[str, Any]:
     memory = _safe(memory_data, {"recent": [], "count": 0, "lessons": [], "exists": False}, "memory")
     feed = _safe(feed_data, [], "feed")
     history = _safe(chat_history, [], "chat")
+    dyn = _safe(dyn_tiles_data, [], "dynamic tiles")
     money_ok = money or {"has_job": False, "missing": ["pay_rate"], "series": [], "max_pay": 0, "jobs": [],
                          "week_pay": 0, "week_hours": 0, "last_week_pay": 0, "received_month": 0, "job_month": 0,
                          "reels_revenue": None, "reels_costs": 0, "reels_profit": None, "goal": None,
@@ -1228,7 +1238,7 @@ def home_data() -> dict[str, Any]:
     hello = greeting(db.local_now(), a, needs, money_ok, studio, tday, fresh)
     steps = setup_steps(a, money_ok, memory, studio)
     return {"a": a, "needs": needs, "money": money_ok, "studio": studio, "today": tday, "goals": goals,
-            "roster": roster, "memory": memory, "feed": feed, "history": history, "hello": hello,
+            "roster": roster, "memory": memory, "feed": feed, "history": history, "hello": hello, "dyn": dyn,
             "steps": steps, "steps_left": sum(1 for x in steps if not x["done"]), "fresh": fresh,
             "today_date": today, "refresh": REFRESH_SECONDS,
             "avatar": {"idle": sprite_svg("main", size=96, cls="avatar-idle"),
@@ -1322,7 +1332,7 @@ def _render_home_parts(request: Request, data: Mapping[str, Any]) -> dict[str, s
     d = _d()
     ctx = {"csrf": d.csrf_token(), "link": d._link_factory(request), "glyph": glyph}
     mod = d._env().get_template("home_parts.html").make_module(ctx)
-    return {name: str(getattr(mod, name)(data)) for name in ("needs", "tiles", "roster", "feed")}
+    return {name: str(getattr(mod, name)(data)) for name in ("needs", "tiles", "roster", "feed", "dyn_tiles")}
 
 
 def home_page(request: Request) -> Response:
@@ -1580,6 +1590,18 @@ def _week_for(checkin: Any) -> date:
         return store.week_start_of(db.local_today())
 
 
+async def tile_dismiss(request: Request, tile_id: int) -> Response:
+    """The owner closed a dynamic tile on the Jarvis page (assistant/tiles.py)."""
+    from assistant import tiles
+
+    err, _form = await _post_guard(request)
+    if err is not None:
+        return err
+    if not tiles.remove(tile_id, by="owner"):
+        return _post_reply(request, False, "gone", status=404, anchor="hero")
+    return _post_reply(request, True, "tile_dismissed", anchor="hero")
+
+
 async def checkin_answer(request: Request, checkin_id: int) -> Response:
     from assistant import store
 
@@ -1799,6 +1821,7 @@ def register(router: Any) -> None:
     router.add_api_route("/uploads/{name}", upload_get, methods=["GET"], include_in_schema=False)
     router.add_api_route("/sterling/{action}", sterling_control, methods=["POST"])
     router.add_api_route("/checkins/{checkin_id}/answer", checkin_answer, methods=["POST"])
+    router.add_api_route("/tiles/{tile_id}/dismiss", tile_dismiss, methods=["POST"])
     router.add_api_route("/needs/seen/{kind}", needs_seen, methods=["GET"], include_in_schema=False)
     router.add_api_route("/meals/{meal_id}/{action}", meal_feedback, methods=["POST"])
     router.add_api_route("/jobs", job_post, methods=["POST"])

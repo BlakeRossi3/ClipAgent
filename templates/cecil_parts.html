@@ -74,19 +74,18 @@
 {% set k = c.charts %}
 {% if k %}
 <div class="cc-charts">
-  {# 1. Claude usage today: a gauge #}
-  {% set cl = k.claude %}{% set C = 113.1 %}
-  <figure class="cc-chart">
-    <figcaption class="hud-label">Claude today</figcaption>
-    <div class="cc-gauge-row">
-      <svg class="cc-gauge" viewBox="0 0 44 44" role="img" aria-label="Claude runs today: {{ cl.runs }} of {{ cl.cap }}">
-        <circle cx="22" cy="22" r="18" class="cc-gauge-track"/>
-        <circle cx="22" cy="22" r="18" class="cc-gauge-fill{% if cl.pct >= 85 or cl.limited %} is-hot{% endif %}" stroke-dasharray="{{ '%.1f' | format(C * cl.pct / 100) }} {{ C }}" transform="rotate(-90 22 22)"/>
-        <text x="22" y="25.5" text-anchor="middle">{{ cl.pct | round(0) | int }}%</text>
-      </svg>
-      <p class="cc-big">{{ cl.runs }}<small> / {{ cl.cap }} runs</small></p>
+  {# 1. Claude plan: 5-hour and weekly windows, percent left (no daily run count) #}
+  {% set cl = k.claude %}
+  <figure class="cc-chart cc-plan">
+    <figcaption class="hud-label">Claude plan</figcaption>
+    {% for m in cl.meters %}
+    <div class="cc-meter is-{{ m.level }}" data-meter="{{ m.key }}">
+      <p class="cc-meter-head"><span>{{ m.label }}</span><b>{% if m.left_pct is not none %}{{ m.left_pct }}% left{% elif m.left_at_least_pct is not none %}&ge;{{ m.left_at_least_pct }}% left{% else %}&mdash;{% endif %}</b></p>
+      <div class="cc-meter-bar" role="img" aria-label="{{ m.label }} window: {% if m.left_pct is not none %}{{ m.left_pct }}% left{% else %}{{ m.note }}{% endif %}"><i style="width: {{ m.used_pct or 0 }}%"></i></div>
+      {% if m.note %}<p class="cc-sub">{{ m.note }}{% if m.as_of_text and m.left_pct is not none %} · as of {{ m.as_of_text | replace('at ', '', 1) }}{% endif %}</p>{% endif %}
     </div>
-    <p class="cc-sub">{% if cl.limited %}Plan limit · back {{ cl.limited_text }}{% elif cl.five_left is not none %}5-hour window: {{ cl.five_left }}% left{% else %}Plan usage not reported yet{% endif %}</p>
+    {% endfor %}
+    {% if cl.limited %}<p class="cc-sub cc-plan-limit">Plan limit · back {{ cl.limited_text }}</p>{% elif cl.queued %}<p class="cc-sub">{{ cl.queued }} queued for after the reset</p>{% endif %}
   </figure>
   {# 2. assistant spend, 7 days #}
   {% set sp = k.spend %}
@@ -135,5 +134,19 @@
     <p class="cc-sub"><a href="/dashboard/studio">14 days · open the Studio</a></p>
   </figure>
 </div>
+{% endif %}
+{% endmacro %}
+
+{# release countdown (GTA6_RELEASE_DATE, home_live.release_countdown), ticked every second by static/cecil.js #}
+{% macro countdown(c) %}
+{% set cd = c.countdown %}
+{% if cd %}
+<div class="cc-countdown{% if cd.released %} is-out{% endif %}" data-countdown="{{ cd.target_iso }}">
+  <p class="cc-cd" role="timer" aria-label="Time left until {{ cd.label }}" data-cd-live {% if cd.released %}hidden{% endif %}><span><b data-cd="d">{{ cd.days }}</b><small>days</small></span><span><b data-cd="h">{{ "%02d" | format(cd.hours) }}</b><small>hrs</small></span><span><b data-cd="m">{{ "%02d" | format(cd.minutes) }}</b><small>min</small></span><span><b data-cd="s">00</b><small>sec</small></span></p>
+  <p class="cc-cd-out" data-cd-out {% if not cd.released %}hidden{% endif %}>Out now</p>
+  <p class="cc-sub">{{ cd.label }} · {{ cd.target_text }}</p>
+</div>
+{% else %}
+<p class="rail-empty">No release date set (GTA6_RELEASE_DATE).</p>
 {% endif %}
 {% endmacro %}
