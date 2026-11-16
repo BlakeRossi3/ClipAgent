@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Initiative{% endblock %}
+{% set st = snap.status %}
+{% macro post_btn(id, action, label, cls="hbtn hbtn-sm") %}<form method="post" action="/dashboard/initiative/{{ id }}/{{ action }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="{{ cls }}" type="submit" title="{{ label }}">{{ label }}</button></form>{% endmacro %}
+{% block content %}
+<div class="home">
+<div class="page-head-h">
+  <h1>Initiative</h1>
+  <p class="lede-h">What {{ assistant_name }} works on by himself while you're away: things you said you want and things he should do better, top first. He builds, tests and keeps each change; every one can be undone below.</p>
+</div>
+{% if msg %}<p class="card voice" role="status">{{ msg }}</p>{% endif %}
+{% if error %}<p class="card voice" role="alert">{{ error }}</p>{% endif %}
+<div class="sched-grid">
+<div>
+  <section class="card"><h2 class="sec-title">Backlog</h2>
+    {% if snap.backlog %}
+    <ol class="sched-list init-list">
+      {% for it in snap.backlog %}
+      <li class="sched-item init-item">
+        <span class="sched-when">#{{ loop.index }}{% if it.status != "open" %} · <span class="init-st s-{{ it.status }}">{{ it.status | replace("_", " ") }}</span>{% endif %}</span>
+        <div>
+          <span class="sched-kind k-{{ it.source }}">{{ it.source }}</span>{% if it.priority > 0 %}<span class="sched-kind k-high">high</span>{% elif it.priority < 0 %}<span class="sched-kind">low</span>{% endif %}
+          <span class="sched-title">{{ it.title }}</span>
+          {% if it.detail and it.detail != it.title %}<span class="sched-meta">{{ it.detail[:300] }}</span>{% endif %}
+          {% if it.result %}<span class="sched-meta">{% if it.attempts %}Tried {{ it.attempts }}× · {% endif %}{{ it.result[:240] }}</span>{% endif %}
+          <details class="init-edit"><summary>Edit</summary>
+            <form class="sched-form" method="post" action="/dashboard/initiative/{{ it.id }}/edit">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input name="title" value="{{ it.title }}" maxlength="200" required aria-label="Title">
+              <textarea name="detail" rows="2" maxlength="4000" aria-label="Detail">{{ it.detail }}</textarea>
+              <div class="row"><select name="priority" aria-label="Priority"><option value="normal"{% if it.priority == 0 %} selected{% endif %}>Normal</option><option value="high"{% if it.priority > 0 %} selected{% endif %}>High</option><option value="low"{% if it.priority < 0 %} selected{% endif %}>Low</option></select><button class="hbtn hbtn-sm" type="submit">Save</button></div>
+            </form>
+          </details>
+        </div>
+        <div class="sched-actions">
+          {% if not loop.first %}{{ post_btn(it.id, "top", "Top") }}{{ post_btn(it.id, "up", "↑") }}{% endif %}
+          {% if not loop.last %}{{ post_btn(it.id, "down", "↓") }}{% endif %}
+          {% if it.status == "blocked" %}{{ post_btn(it.id, "reopen", "Reopen") }}{% endif %}
+          {% if it.status != "in_progress" %}{{ post_btn(it.id, "drop", "Drop") }}{% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}<p class="muted">Nothing on the list. Add something below, or just tell {{ assistant_name }} what you want.</p>{% endif %}
+  </section>
+  <section class="card"><h2 class="sec-title">Work log</h2>
+    {% if snap.work_log %}
+    <ul class="sched-list">
+      {% for it in snap.work_log %}
+      <li class="sched-item">
+        <span class="sched-when">{{ (it.finished_at or "")[:16] | replace("T", " ") }}</span>
+        <div>
+          <span class="sched-title">{{ it.built or it.title }}</span>
+          <span class="sched-meta"><span class="sched-outcome o-{{ 'done' if it.status == 'done' else 'failed' if it.undone else 'cancelled' }}">{{ 'undone' if it.undone else it.status | replace("_", " ") }}</span> · {{ it.title }}</span>
+          {% if it.why %}<span class="sched-meta"><strong>Why:</strong> {{ it.why }}</span>{% endif %}
+          {% if it.tests %}<span class="sched-meta"><strong>Tests:</strong> {{ it.tests }}</span>{% endif %}
+          {% if it.left %}<span class="sched-meta"><strong>Left:</strong> {{ it.left }}</span>{% endif %}
+          {% if it.commits %}<span class="sched-meta"><strong>Commits:</strong> {% for c in it.commits %}<code>{{ c[:8] }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% if it.files %} · {{ it.files[:6] | join(", ") }}{% endif %}</span>{% endif %}
+        </div>
+        <div class="sched-actions">{% if it.commits and not it.undone %}{{ post_btn(it.id, "undo", "Undo") }}{% endif %}</div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Nothing built yet. {{ assistant_name }} starts once you've been quiet for {{ st.idle_min }} minutes and the plan has room.</p>{% endif %}
+  </section>
+</div>
+<div>
+  <section class="card"><h2 class="sec-title">Right now</h2>
+    {% if not st.enabled %}<p class="muted">Initiative is off (setting <code>ASSISTANT_INITIATIVE</code>).</p>
+    {% elif st.running %}<p>Working on <strong>{{ st.running[0].title }}</strong>.</p>
+    {% elif st.can_start %}<p>Ready: the next item starts {{ st.next }}.</p>
+    {% else %}<p>Waiting: {{ st.waiting_for }}.{% if st.next %} Next chance {{ st.next }}.{% endif %}</p>{% endif %}
+    <p class="f-help">You were last active {{ st.quiet_for }}. He starts after {{ st.idle_min }} quiet minutes and uses at most {{ st.share_pct }}% of each Claude usage window, never once a window is 80% used.</p>
+    {% if st.share_used %}<ul class="plain">{% for w in st.share_used %}<li>{{ w.window }} window: initiative used ~{{ w.used_pct }}% of {{ w.share_pct }}% · window {{ w.window_used_pct }}% used{% if w.resets %} · resets {{ w.resets }}{% endif %}</li>{% endfor %}</ul>
+    {% else %}<p class="f-help">Plan usage not reported yet, so {{ st.fallback }}.</p>{% endif %}
+  </section>
+  <section class="card"><h2 class="sec-title">Add to the backlog</h2>
+    <form class="sched-form" method="post" action="/dashboard/initiative/add">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="f-help" for="init-title">What you want</label>
+      <input id="init-title" name="title" maxlength="200" required placeholder="Read my calendar out in the morning brief">
+      <label class="f-help" for="init-detail">Details (optional)</label>
+      <textarea id="init-detail" name="detail" rows="3" maxlength="4000"></textarea>
+      <div class="row"><select name="priority" aria-label="Priority"><option value="normal">Normal</option><option value="high">High (top of the list)</option><option value="low">Low</option></select><button class="hbtn hbtn-accent" type="submit">Add it</button></div>
+    </form>
+  </section>
+  {% if st.runs %}
+  <section class="card"><h2 class="sec-title">Recent runs</h2>
+    <ul class="plain">{% for r in st.runs %}<li>{{ r.title }} <span class="muted">· {{ (r.started or "")[:16] | replace("T", " ") }} · {{ r.status }}{% if r.edit and r.edit not in ("unchanged",) %} · {{ r.edit | replace("_", " ") }}{% endif %}</span></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+  {% if snap.dropped %}
+  <section class="card"><h2 class="sec-title">Dropped</h2>
+    <ul class="sched-list">{% for it in snap.dropped %}<li class="sched-item"><span class="sched-when">{{ it.source }}</span><div><span class="sched-title">{{ it.title }}</span></div><div class="sched-actions">{{ post_btn(it.id, "reopen", "Restore") }}</div></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+</div>
+</div>
+</div>
+{% endblock %}

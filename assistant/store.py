@@ -181,6 +181,16 @@ MIGRATIONS: list[list[str]] = [
             text TEXT NOT NULL, vec BLOB NOT NULL)""",
         "CREATE INDEX idx_as_vault_vec_path ON as_vault_vec(path)",
     ],
+    [   # v7: the initiative backlog (assistant/initiative.py): what he wants + what Cecil should do better
+        f"""CREATE TABLE as_backlog (
+            id INTEGER PRIMARY KEY, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL {_in('source', ("owner", "seed", "cecil", "lesson", "capability", "failure"))},
+            priority INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open' {_in('status', ("open", "in_progress", "done", "blocked", "dropped"))},
+            attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, result TEXT, commits TEXT,
+            finished_at TEXT, meta TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        "CREATE INDEX idx_as_backlog_status ON as_backlog(status, position)",
+    ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -1040,3 +1050,133 @@ def vector_counts(*, conn: sqlite3.Connection | None = None) -> tuple[int, int]:
         notes = c.execute("SELECT COUNT(*) FROM as_vault_vec_notes").fetchone()[0]
         chunks = c.execute("SELECT COUNT(*) FROM as_vault_vec").fetchone()[0]
         return int(notes), int(chunks)
+
+
+# ---------------------------------------------------------------------------
+# the initiative backlog (assistant/initiative.py)
+# ---------------------------------------------------------------------------
+
+BACKLOG_SOURCES = ("owner", "seed", "cecil", "lesson", "capability", "failure")
+BACKLOG_STATUSES = ("open", "in_progress", "done", "blocked", "dropped")
+BACKLOG_ACTIVE = ("open", "in_progress", "blocked")       # still on the list (reorderable)
+
+
+@dataclass(slots=True)
+class BacklogItem(_Row):
+    _JSON: ClassVar[tuple[str, ...]] = ("commits", "meta")
+    id: int
+    title: str
+    detail: str
+    source: str
+    priority: int
+    position: int
+    status: str
+    attempts: int
+    last_attempt_at: str | None
+    result: str | None
+    commits: Any                     # JSON list of commit shas made while working on it
+    finished_at: str | None
+    meta: Any                        # JSON: {"built", "why", "tests", "left", "task_id", "undone_at", ...}
+    created_at: str
+    updated_at: str
+
+
+_BACKLOG_EDITABLE = {"title", "detail", "source", "priority", "position", "status", "attempts", "last_attempt_at",
+                     "result", "commits", "finished_at", "meta"}
+
+
+def add_backlog(title: str, *, detail: str = "", source: str = "cecil", priority: int = 0, position: int | None = None,
+                conn: sqlite3.Connection | None = None) -> int:
+    """A new open item. ``position`` None = the end of the list (``priority > 0`` = the top)."""
+    title = " ".join((title or "").split())[:200]
+    if not title:
+        raise ValueError("a backlog item needs a title")
+    _check(source, BACKLOG_SOURCES, "source")
+    now = db.now_iso()
+    with transaction(conn) as c:
+        if position is None:
+            lo, hi = c.execute("SELECT MIN(position), MAX(position) FROM as_backlog").fetchone()
+            position = (int(lo or 0) - 1) if priority > 0 and lo is not None else int(hi or 0) + 1
+        return _insert(c, "as_backlog", {"title": title, "detail": (detail or "").strip()[:4000], "source": source,
+                                         "priority": int(priority), "position": int(position), "status": "open",
+                                         "created_at": now, "updated_at": now})
+
+
+def get_backlog(item_id: int, *, conn: sqlite3.Connection | None = None) -> BacklogItem | None:
+    with transaction(conn) as c:
+        return _one(c, BacklogItem, "SELECT * FROM as_backlog WHERE id = ?", (item_id,))
+
+
+def list_backlog(status: str | Sequence[str] | None = None, *, limit: int = 500,
+                 conn: sqlite3.Connection | None = None) -> list[BacklogItem]:
+    """In list order (position, then id). ``status`` None = every item."""
+    where, params = "1 = 1", []
+    if status is not None:
+        wanted = [status] if isinstance(status, str) else list(status)
+        for st in wanted:
+            _check(st, BACKLOG_STATUSES, "status")
+        where = f"status IN ({', '.join('?' for _ in wanted)})"
+        params = wanted
+    with transaction(conn) as c:
+        return _many(c, BacklogItem, f"SELECT * FROM as_backlog WHERE {where} ORDER BY position, id LIMIT ?",
+                     (*params, limit))
+
+
+def list_backlog_finished(since_iso: str | None = None, *, status: str | Sequence[str] = ("done",), limit: int = 50,
+                          conn: sqlite3.Connection | None = None) -> list[BacklogItem]:
+    """Finished items (default ``done``), most recently finished first, optionally after ``since_iso``."""
+    wanted = [status] if isinstance(status, str) else list(status)
+    for st in wanted:
+        _check(st, BACKLOG_STATUSES, "status")
+    where = f"status IN ({', '.join('?' for _ in wanted)}) AND finished_at IS NOT NULL"
+    params: list[Any] = list(wanted)
+    if since_iso:
+        where += " AND finished_at > ?"
+        params.append(since_iso)
+    with transaction(conn) as c:
+        return _many(c, BacklogItem, f"SELECT * FROM as_backlog WHERE {where} ORDER BY finished_at DESC, id DESC "
+                     "LIMIT ?", (*params, limit))
+
+
+def update_backlog(item_id: int, *, conn: sqlite3.Connection | None = None, **cols: Any) -> None:
+    """Change columns (``commits``/``meta`` JSON-encoded). Raises ``db.NotFound`` / ``ValueError``."""
+    if "status" in cols:
+        _check(cols["status"], BACKLOG_STATUSES, "status")
+    if "source" in cols:
+        _check(cols["source"], BACKLOG_SOURCES, "source")
+    if "title" in cols:
+        cols["title"] = " ".join(str(cols["title"] or "").split())[:200]
+        if not cols["title"]:
+            raise ValueError("a backlog item needs a title")
+    with transaction(conn) as c:
+        _update(c, "as_backlog", item_id, cols, _BACKLOG_EDITABLE, json_cols=("commits", "meta"))
+
+
+def claim_backlog(item_id: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """open -> in_progress, one more attempt (first caller wins)."""
+    now = db.now_iso()
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_backlog SET status = 'in_progress', attempts = attempts + 1, last_attempt_at = ?, "
+                        "updated_at = ? WHERE id = ? AND status = 'open'", (now, now, item_id))
+        return cur.rowcount > 0
+
+
+def move_backlog(item_id: int, delta: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """Move an item up (``delta`` < 0) or down among the items still on the list; positions are renumbered.
+    ``delta`` beyond the ends clamps (e.g. -10_000 = to the top). False when it did not move."""
+    with transaction(conn) as c:
+        rows = c.execute(f"SELECT id FROM as_backlog WHERE status IN ({', '.join(repr(s) for s in BACKLOG_ACTIVE)}) "
+                         "ORDER BY position, id").fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if item_id not in ids:
+            return False
+        i = ids.index(item_id)
+        j = max(0, min(len(ids) - 1, i + int(delta)))
+        if i == j:
+            return False
+        ids.insert(j, ids.pop(i))
+        now = db.now_iso()
+        for pos, rid in enumerate(ids, start=1):
+            c.execute("UPDATE as_backlog SET position = ?, updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END "
+                      "WHERE id = ?", (pos, item_id, now, rid))
+        return True

@@ -472,6 +472,56 @@ def undo() -> dict[str, Any]:
             "message": f"Undone: {target['title'].removeprefix('Sterling: ')}. Restarting."}
 
 
+def head() -> str:
+    """The checkout's HEAD sha ('' when this is not a git checkout)."""
+    return _out("rev-parse", "HEAD") if is_repo() else ""
+
+
+def commits_since(base: str) -> list[str]:
+    """Shas of Cecil's own commits (trailer) after ``base`` up to HEAD, oldest first. [] without git/base."""
+    if not base or not is_repo():
+        return []
+    raw = git("log", "--reverse", "--format=%H%x1f%b%x1e", f"{base}..HEAD").stdout
+    out = []
+    for rec in raw.split("\x1e"):
+        parts = rec.strip("\n").split("\x1f")
+        if len(parts) == 2 and TRAILER in parts[1]:
+            out.append(parts[0].strip())
+    return out
+
+
+def revert_commits(shas: list[str], *, label: str = "") -> dict[str, Any]:
+    """Revert these self-edit commits (newest first) in one go, then restart. {ok, message, reverted}.
+    Commits already reverted are skipped; anything that does not apply cleanly undoes the whole attempt."""
+    if not is_repo():
+        return {"ok": False, "message": "This app folder is not a git checkout, so there is nothing to undo.",
+                "reverted": []}
+    if changed_files():
+        return {"ok": False, "message": "There are uncommitted changes in the app folder; not undoing anything.",
+                "reverted": []}
+    mine = {c["sha"]: c for c in self_commits(200)}
+    todo = [s for s in shas if s in mine and not mine[s]["reverted"]]
+    if not todo:
+        return {"ok": False, "message": "Nothing left to undo for that (already undone, or not my change).",
+                "reverted": []}
+    start = _out("rev-parse", "HEAD")
+    order = [c["sha"] for c in self_commits(200) if c["sha"] in todo]   # newest first
+    for sha in order:
+        r = git(*GIT_ID, "revert", "--no-edit", sha)
+        if r.returncode != 0:
+            git("revert", "--abort")
+            git("reset", "--hard", start)
+            return {"ok": False, "reverted": [],
+                    "message": "Undo did not apply cleanly (a later change builds on it); nothing was changed. "
+                               + (r.stderr or r.stdout).strip()[:200]}
+    db.log_event("assistant", f"self-edits undone: {label[:80]}", level="warning", data={"shas": order})
+    db.kv_delete(KV_PENDING)
+    schedule_restart()
+    return {"ok": True, "reverted": order,
+            "message": f"Undone{': ' + label if label else ''} ({len(order)} change{'s' if len(order) != 1 else ''}). "
+                       "Restarting."}
+
+
 # -- bringing set-aside edits back ---------------------------------------------------
 
 STASH_MARKERS = ("before-manual-update", "sterling-autosave-before-update", "cecil")

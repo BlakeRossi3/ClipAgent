@@ -86,6 +86,10 @@ class AssistantSettings:
     morning_surprise: str = "07:40"
     # --- memory search by meaning (assistant/semantic.py): auto = when model2vec is installed
     semantic_memory: str = "auto"            # ASSISTANT_SEMANTIC_MEMORY auto|on|off
+    # --- initiative (assistant/initiative.py): build from the backlog by itself while he is away
+    initiative: bool = True                  # ASSISTANT_INITIATIVE
+    initiative_share: float = 0.35           # at most this share of each plan usage window
+    initiative_idle_min: int = 30            # he has been quiet this many minutes
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -155,6 +159,9 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         auto_memory=config._bool(env.get("ASSISTANT_AUTO_MEMORY"), True),
         morning_surprise=_hhmm(env.get("ASSISTANT_MORNING_SURPRISE"), "07:40"),
         semantic_memory=_auto_on_off(env.get("ASSISTANT_SEMANTIC_MEMORY")),
+        initiative=config._bool(env.get("ASSISTANT_INITIATIVE"), True),
+        initiative_share=min(1.0, max(0.0, float(s("ASSISTANT_INITIATIVE_SHARE", "0.35")))),
+        initiative_idle_min=max(0, int(s("ASSISTANT_INITIATIVE_IDLE_MIN", "30"))),
     )
 
 

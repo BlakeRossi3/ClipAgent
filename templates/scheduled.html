@@ -60,6 +60,14 @@
       <p><button class="hbtn hbtn-accent" type="submit">Schedule it</button></p>
     </form>
   </section>
+  {% if snap.initiative %}
+  <section class="card"><h2 class="sec-title">Initiative</h2>
+    {% if snap.initiative.running %}<p>Working on <strong>{{ snap.initiative.running }}</strong> while you're away.</p>
+    {% elif snap.initiative.waiting_for %}<p>Next backlog item {{ snap.initiative.next }} <span class="muted">({{ snap.initiative.waiting_for }})</span>.</p>
+    {% else %}<p>Next backlog item {{ snap.initiative.next }}.</p>{% endif %}
+    <p class="f-help">{{ snap.initiative.open }} open · {{ snap.initiative.done }} built · <a href="/dashboard/initiative">Backlog and work log</a></p>
+  </section>
+  {% endif %}
   <section class="card"><h2 class="sec-title">Morning surprise</h2>
     {% if snap.surprise %}
       <p><strong>{{ snap.surprise.title }}</strong> <span class="muted">· {{ snap.surprise.day }}{% if snap.surprise.kind %} · {{ snap.surprise.kind | replace("_", " ") }}{% endif %}</span></p>

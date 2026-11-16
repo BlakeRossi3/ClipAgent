@@ -90,12 +90,15 @@ def brief_for(task: str, heard: str) -> str:
 def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | None = None,
           model: str | None = None, effort: str | None = None, announce: bool = True,
           meta: dict[str, Any] | None = None,
-          on_finish: Callable[[dict[str, Any], str, str], None] | None = None) -> str:
+          on_finish: Callable[[dict[str, Any], str, str], None] | None = None, self_edit: bool = False) -> str:
     """Start ``task`` in the background; returns its id at once.
 
     Scheduled work (assistant/schedule.py) passes its own ``brief`` (the full prompt; ``task`` is then the
     short label), a cheaper ``model``/``effort``, ``announce=False`` to stay quiet when it finishes, ``meta``
-    (shown with the task) and ``on_finish(row, full_text, status)``."""
+    (shown with the task) and ``on_finish(row, full_text, status)``. ``self_edit=True`` (initiative work)
+    wraps the run in the self-edit guardrail (``selfedit.begin``/``finish``): code it changed is tested and
+    committed (or rolled back) before ``on_finish`` runs, which then sees ``row["edit"]`` = {status, summary,
+    files, commit, commits}; a committed change restarts the app afterwards."""
     tid = uuid.uuid4().hex[:10]
     row = {"id": tid, "task": " ".join(task.split())[:300], "heard": heard[:300], "origin": origin,
            "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": [],
@@ -104,6 +107,8 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
         row["brief"] = brief
     if model or effort:
         row["model"], row["effort"] = model, effort
+    if self_edit:
+        row["self_edit"] = True
     if on_finish is not None:
         _on_finish[tid] = on_finish
     _save(row)
@@ -152,6 +157,7 @@ def _run(row: dict[str, Any]) -> None:
     brief = row.get("brief") or brief_for(row["task"], row["heard"] or row["task"])
     if row.get("model") or row.get("effort"):
         context.update(model=row.get("model"), effort=row.get("effort"))
+    snap = _edit_begin() if row.get("self_edit") else None
     try:
         if _runner is not None:
             full, st = _call_runner(_runner, brief, context, on_step)
@@ -163,7 +169,39 @@ def _run(row: dict[str, Any]) -> None:
         log.exception("background task failed")
         db.log_event("assistant", "background task failed", level="error", data={"error": repr(exc)[:300]})
         full, st = f"I couldn't finish that, {s.owner_honorific}: something went wrong on my side.", "error"
+    restart = _edit_finish(snap, row) if snap is not None else False
     finish(row, full, st)
+    if restart:
+        from assistant import selfedit
+
+        selfedit.schedule_restart()
+
+
+def _edit_begin() -> Any:
+    try:
+        from assistant import selfedit
+
+        return selfedit.begin()
+    except Exception as exc:
+        log.warning("self-edit guard unavailable for a background task: %s", exc)
+        return None
+
+
+def _edit_finish(snap: Any, row: dict[str, Any]) -> bool:
+    """Test + commit (or roll back) what the task changed; record it on ``row["edit"]``. True = restart."""
+    from assistant import selfedit
+
+    try:
+        out = selfedit.finish(snap, summary=row["task"][:72])
+        commits = selfedit.commits_since(snap.head) if getattr(snap, "ok", False) else []
+    except Exception as exc:
+        log.warning("self-edit check after a background task failed: %s", exc)
+        row["edit"] = {"status": "error", "summary": repr(exc)[:300], "files": [], "commit": None, "commits": []}
+        return False
+    row["edit"] = {"status": out.status if out else "unchanged", "summary": (out.summary if out else "")[:600],
+                   "files": (out.files if out else [])[:30], "commit": out.commit if out else None,
+                   "commits": commits}
+    return bool(out and out.restart)
 
 
 def finish(row: dict[str, Any], full: str, status: str) -> None:

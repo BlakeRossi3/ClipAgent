@@ -630,3 +630,21 @@ commits move to `sterling/backup-<stamp>` and the update fast-forwards; `ensure_
 `sterling/self` and resets the published branch to origin (`_release_published`). `selfedit.startup_recover()` (from
 `main._start_selfedit_check`, 45 s after start) merges every backup branch/old stash back in, tests, restarts.
 
+
+### Initiative (works on himself while the owner is away)
+`assistant/initiative.py` + backlog `as_backlog` (store v7: `add_backlog`, `get_backlog`, `list_backlog(status)` (position
+order), `list_backlog_finished(since)`, `update_backlog`, `claim_backlog` (open -> in_progress, attempts+1), `move_backlog(id, delta)`;
+sources owner|seed|cecil|lesson|capability|failure; statuses open|in_progress|done|blocked|dropped). `seed()` adds `SEED_LIST` once;
+`harvest()` (job `assistant_initiative_harvest` 03:20, or from `tick` after 20 new owner messages) = quick model over his new inbound
+messages (`auto_memory._ask_model(agent="initiative")`, `usage.should_defer`) + failed/gave_up capability log + agents with >= 2
+failed runs + proposed lessons, deduped by `similar()` against every title (dropped too). `tick()` (job `assistant_initiative`, 20 min):
+gate = enabled + `ASSISTANT_INITIATIVE` + not stopped + quiet `ASSISTANT_INITIATIVE_IDLE_MIN` (last inbound `as_messages` row, no turn
+in progress) + nothing busy (`selfedit.in_flight`, `KV_PENDING`, live background task) + `usage_gate` (not `usage.constrained()`, every
+known window < 80 %, initiative runs started in each window used < `ASSISTANT_INITIATIVE_SHARE`: observed utilisation rise when a fresh
+event followed the run, else `EST_RUN_COST`; no window data -> max 2 runs / 5 h). Then the top open item (position; not tried in 6 h;
+< 3 attempts) runs via `tasks.start(..., self_edit=True, announce=False)` - `tasks` wraps `selfedit.begin/finish` around the worker,
+puts `row["edit"]` (status, commits via `selfedit.commits_since`) on the row and restarts after a commit. `on_finished` parses
+STATUS/BUILT/WHY/TESTS/LEFT -> done | open | blocked (+ commits, meta). Report: `announcement()` in the Jarvis boot briefing once,
+`send_digest()` one text per away period (quiet >= 4 h), page `/dashboard/initiative` (nav next to Scheduled; add/edit/reorder/drop,
+work log with Undo = `undo_item` -> `selfedit.revert_commits`, refused while `busy()`), JSON `/dashboard/api/initiative`, card on the
+Scheduled page. Tools `backlog_list|add|update`, `initiative_status`; skill `skills/initiative`. Tests: `tests/test_assistant_initiative.py`.

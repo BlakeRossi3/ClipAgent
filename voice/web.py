@@ -567,6 +567,14 @@ def activity() -> dict[str, Any]:
                 snap["briefing"] = (snap["briefing"] + " " + line).strip()
         except Exception as exc:
             log.warning("surprise line unavailable: %s", exc)
+        try:   # what was built while he was away, said once
+            from assistant import initiative
+
+            line = initiative.announcement()
+            if line:
+                snap["briefing"] = (snap["briefing"] + " " + line).strip()
+        except Exception as exc:
+            log.warning("initiative line unavailable: %s", exc)
     except Exception as exc:
         log.warning("briefing unavailable: %s", exc)
         snap["briefing"] = ""

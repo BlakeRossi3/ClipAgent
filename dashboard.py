@@ -131,6 +131,8 @@ def _menu_section(path: str) -> str:
         return "log"
     if path.startswith("/dashboard/scheduled"):
         return "scheduled"
+    if path.startswith("/dashboard/initiative"):
+        return "initiative"
     if path.rstrip("/") in ("/dashboard", ""):
         return "home"
     return "studio"
@@ -164,6 +166,7 @@ def main_menus(path: str) -> list[dict[str, Any]]:
         {"key": "memory", "label": "Memory", "items": items(MEMORY_MENU)},
         {"key": "settings", "label": "Settings", "items": items(SETTINGS_MENU), "right": True},
         {"key": "scheduled", "label": "Scheduled", "href": "/dashboard/scheduled"},
+        {"key": "initiative", "label": "Initiative", "href": "/dashboard/initiative"},
         {"key": "log", "label": "Log", "href": "/dashboard/events"},
     ]
     for m in menus:
@@ -714,7 +717,7 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
     except sqlite3.Error:  # pragma: no cover - unreadable DB still renders the error page
         demo = None
     flash = _FLASH.get(request.query_params.get("msg", ""))
-    if nav in ("home", "memory", "login", "settings", "staff", "scheduled"):
+    if nav in ("home", "memory", "login", "settings", "staff", "scheduled", "initiative"):
         section = nav
     else:
         section = "studio"

@@ -674,10 +674,23 @@ def assistant_job_specs() -> list[JobSpec]:
                 "interval", {"minutes": 30}, "embed new or changed vault notes for memory search by meaning"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
-    ] + _surprise_spec() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
+    ] + _surprise_spec() + _initiative_specs() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
                   "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
                   "heartbeat: check Agent/Heartbeat.md against the live status")]
          if get_assistant_settings().heartbeat_minutes > 0 else [])
+
+
+def _initiative_specs() -> list[JobSpec]:
+    """Initiative (assistant/initiative.py): build from the backlog while he is away; harvest wishes nightly."""
+    from assistant.settings import get_assistant_settings
+
+    if not get_assistant_settings().initiative:
+        return []
+    return [JobSpec("assistant_initiative", lambda: __import__("assistant.initiative", fromlist=["x"]).tick()["status"],
+                    "interval", {"minutes": 20}, "initiative: work on the backlog while he is away"),
+            JobSpec("assistant_initiative_harvest",
+                    lambda: __import__("assistant.initiative", fromlist=["x"]).harvest()["status"],
+                    "cron", {"hour": 3, "minute": 20}, "initiative: turn his recent messages into backlog items")]
 
 
 def _surprise_spec() -> list[JobSpec]:

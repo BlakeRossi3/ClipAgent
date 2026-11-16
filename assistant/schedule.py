@@ -53,6 +53,8 @@ JOB_LABELS = {
     "assistant_evals": "Nightly self-tests", "assistant_history": "Distil imported Claude chats",
     "assistant_reels_cleanup": "Delete old downloaded reels", "assistant_heartbeat": "Heartbeat check",
     "assistant_morning_surprise": "Make you something cool",
+    "assistant_initiative": "Build things from the backlog while you're away",
+    "assistant_initiative_harvest": "Turn what you said into backlog items",
 }
 
 _IN_RE = re.compile(r"^in\s+(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$")
@@ -375,7 +377,7 @@ def _cron_words(args: dict[str, Any]) -> str:
 
 def snapshot(now: datetime | None = None) -> dict[str, Any]:
     """Everything planned and recently done (see the module docstring)."""
-    from assistant import handoff, surprise, tasks
+    from assistant import handoff, initiative, surprise, tasks
 
     now = now or db.utcnow()
     reset_eta = _reset_eta()
@@ -407,7 +409,7 @@ def snapshot(now: datetime | None = None) -> dict[str, Any]:
             "routine": routine, "recent": recent,
             "handoff": _row_item(pend, now, reset_eta) if pend else None,
             "surprise": surprise.latest(), "surprise_time": surprise.configured_time(),
-            "usage": _usage_line()}
+            "initiative": initiative.schedule_summary(), "usage": _usage_line()}
 
 
 def _usage_line() -> str:

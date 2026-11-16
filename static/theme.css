@@ -484,3 +484,16 @@ body.section-home .page { padding-left: clamp(10px, 1.4vw, 36px); padding-right:
 .sched-form textarea, .sched-form input, .sched-form select { width: 100%; font: inherit; color: var(--ink); background: var(--inset);
   border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 10px; }
 .sched-form .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+/* Initiative page (templates/initiative.html) */
+.init-list { counter-reset: none; }
+.init-item .sched-actions .hbtn { min-width: 2.2rem; }
+.init-st { font: 600 0.7rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.init-st.s-in_progress { color: var(--accent); }
+.init-st.s-blocked { color: var(--warning-text); }
+.init-edit { margin-top: 4px; font-size: 0.8rem; color: var(--muted); }
+.init-edit summary { cursor: pointer; }
+.init-edit form { margin-top: 6px; }
+.sched-kind.k-owner { background: var(--accent-wash); color: var(--link); }
+.sched-kind.k-seed { background: rgba(240, 162, 74, 0.16); color: #f7c48a; }
+.sched-kind.k-cecil, .sched-kind.k-lesson { background: rgba(182, 148, 255, 0.16); color: #cdb8ff; }
+.sched-kind.k-capability, .sched-kind.k-failure, .sched-kind.k-high { background: var(--warning-bg); color: var(--warning-text); }

@@ -106,6 +106,10 @@ PLANNED_TOOLS: dict[str, str] = {
     "schedule_list": "assistant.schedule",
     "schedule_cancel": "assistant.schedule",
     "usage_handoff": "assistant.handoff",
+    "backlog_list": "assistant.initiative",
+    "backlog_add": "assistant.initiative",
+    "backlog_update": "assistant.initiative",
+    "initiative_status": "assistant.initiative",
     # assistant toolkit (each module also has a CLI: python -m assistant.<module>)
     "reel_watch": "assistant.reels",
     "desktop_modes_list": "assistant.desktop_modes",
@@ -156,7 +160,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
                      "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities",
-                     "assistant.schedule", "assistant.handoff")
+                     "assistant.schedule", "assistant.handoff", "assistant.initiative")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs

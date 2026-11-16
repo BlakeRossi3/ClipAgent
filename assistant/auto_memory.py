@@ -248,7 +248,7 @@ def parse_facts(text: str) -> list[dict[str, str]]:
     return out
 
 
-def _ask_model(req: Any) -> tuple[str, float]:
+def _ask_model(req: Any, *, agent: str = AGENT) -> tuple[str, float]:
     """(reply text, cost). API key or fake -> quick model; else the warm brain's worker if running."""
     import config
     from assistant import quick, runtime
@@ -270,7 +270,7 @@ def _ask_model(req: Any) -> tuple[str, float]:
     backend = quick.get_backend()
     runtime.check_budget(runtime.estimate_cost(req), runtime._TurnBudget(s.max_turn_usd), s)
     reply = quick.call(backend, req)
-    return reply.text, quick.record(AGENT, reply, bool(getattr(backend, "fake", False)))
+    return reply.text, quick.record(agent, reply, bool(getattr(backend, "fake", False)))
 
 
 def extract(channel: str) -> dict[str, Any]:

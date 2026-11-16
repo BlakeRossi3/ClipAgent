@@ -6,6 +6,7 @@
 * ``/dashboard/twilio-check`` - Twilio doctor results with "Fix it" buttons.
 * ``/dashboard/approvals`` - standing approvals ("always allow this kind"): review and revoke.
 * ``/dashboard/skills`` - the trusted skill installer: installed, available from trusted sources, review cards.
+* ``/dashboard/scheduled`` - everything planned; ``/dashboard/initiative`` - the backlog and the work log.
 
 Auth, CSRF and page chrome come from :mod:`dashboard` (same token/cookie as every dashboard page).
 """
@@ -483,6 +484,92 @@ async def scheduled_action(request: Request, item_id: int, action: str) -> Respo
             request, error="That one is not waiting any more (it already ran, is running, or was cancelled).",
             status=409))
     return _see_other(f"/dashboard/scheduled?done={'cancelled' if action == 'cancel' else 'started'}")
+
+
+# ---------------------------------------------------------------------------
+# Initiative: the backlog Cecil works through while he is away, and the work log (assistant/initiative.py)
+# ---------------------------------------------------------------------------
+
+_INIT_MSGS = {"added": "Added to the backlog.", "duplicate": "That is already on the backlog.", "moved": "Moved.",
+              "saved": "Saved.", "dropped": "Dropped. It won't be worked on (or harvested again).",
+              "reopened": "Back on the list.", "undone": "Undone. Restarting to use the previous version."}
+
+
+def _init_page(request: Request, *, msg: str | None = None, error: str | None = None, status: int = 200) -> Response:
+    from assistant import initiative
+
+    return _dash()._render(request, "initiative.html", {"snap": initiative.snapshot(), "msg": msg, "error": error},
+                           status_code=status, nav="initiative")
+
+
+@router.get("/initiative", include_in_schema=False)
+async def initiative_page(request: Request) -> Response:
+    if (r := _get_guard(request)) is not None:
+        return r
+    return await run_in_threadpool(_init_page, request, msg=_INIT_MSGS.get(str(request.query_params.get("done") or "")))
+
+
+@router.get("/api/initiative")
+def initiative_json(request: Request) -> Response:
+    d = _dash()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    from assistant import initiative
+
+    return d._json(initiative.snapshot())
+
+
+@router.post("/initiative/add", include_in_schema=False)
+async def initiative_add(request: Request) -> Response:
+    from assistant import initiative
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    title = " ".join(str(form.get("title") or "").split())[:200]
+    if not title:
+        return await run_in_threadpool(lambda: _init_page(request, error="Give it a title.", status=400))
+    prio = initiative.PRIORITIES.get(str(form.get("priority") or "normal"), 0)
+    _iid, added = await run_in_threadpool(lambda: initiative.add_item(title, str(form.get("detail") or "")[:4000],
+                                                                      source="owner", priority=prio))
+    return _see_other(f"/dashboard/initiative?done={'added' if added else 'duplicate'}")
+
+
+@router.post("/initiative/{item_id}/{action}", include_in_schema=False)
+async def initiative_action(request: Request, item_id: int, action: str) -> Response:
+    from assistant import initiative, store
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    it = store.get_backlog(item_id)
+    if it is None or action not in ("up", "down", "top", "edit", "drop", "reopen", "undo"):
+        return _dash()._not_found(request, "That backlog item or action")
+    if action in ("up", "down", "top"):
+        store.move_backlog(item_id, {"up": -1, "down": 1, "top": -10_000}[action])
+        return _see_other("/dashboard/initiative?done=moved")
+    if action == "undo":
+        res = await run_in_threadpool(initiative.undo_item, item_id, via="dashboard")
+        if not res.get("ok"):
+            return await run_in_threadpool(lambda: _init_page(request, error=res.get("message"), status=409))
+        return _see_other("/dashboard/initiative?done=undone")
+    if it.status == "in_progress":
+        return await run_in_threadpool(lambda: _init_page(
+            request, error="Cecil is working on that one right now; change it once the run has finished.", status=409))
+    if action == "edit":
+        try:
+            store.update_backlog(item_id, title=str(form.get("title") or it.title)[:200],
+                                 detail=str(form.get("detail") or "")[:4000],
+                                 priority=initiative.PRIORITIES.get(str(form.get("priority") or "normal"), 0))
+        except ValueError as exc:
+            return await run_in_threadpool(lambda: _init_page(request, error=str(exc), status=400))
+        return _see_other("/dashboard/initiative?done=saved")
+    if action == "drop":
+        store.update_backlog(item_id, status="dropped")
+        return _see_other("/dashboard/initiative?done=dropped")
+    store.update_backlog(item_id, status="open", attempts=0)    # reopen
+    return _see_other("/dashboard/initiative?done=reopened")
 
 
 @router.get("/surprises/{name}", include_in_schema=False)
