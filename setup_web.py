@@ -810,7 +810,14 @@ def memory_status() -> dict[str, Any]:
         count = len(vault.list_notes())
     except Exception:
         pass
-    return {"vault_dir": str(a.vault_dir), "notes": count}
+    search = "Memory search: keywords only"
+    try:
+        from assistant import semantic
+
+        search = semantic.status_line()
+    except Exception:
+        pass
+    return {"vault_dir": str(a.vault_dir), "notes": count, "search": search}
 
 
 # ===========================================================================

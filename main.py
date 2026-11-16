@@ -670,6 +670,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
         JobSpec("assistant_history", lambda: __import__("assistant.history_import", fromlist=["x"]).nightly(),
                 "cron", {"hour": 1, "minute": 37}, "distil the next batch of imported Claude chats"),
+        JobSpec("assistant_semantic_sync", lambda: __import__("assistant.semantic", fromlist=["x"]).scheduled_sync(),
+                "interval", {"minutes": 30}, "embed new or changed vault notes for memory search by meaning"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
     ] + _surprise_spec() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
@@ -1069,6 +1071,11 @@ def assistant_cli(args: argparse.Namespace) -> int:
     if args.acmd == "reindex":
         vault.ensure_vault()
         print(f"reindexed: {vault.reindex()}")
+        from assistant import semantic
+
+        if semantic.enabled():
+            semantic.reset_vectors()
+            print(f"meaning index: {semantic.scheduled_sync()}")
     elif args.acmd == "status":
         print(f"assistant {'ENABLED' if a.enabled else 'disabled'}  name {a.name}  fake {a.fake}  vault {a.vault_dir}")
         print(f"spend today ${store.assistant_spent_today():.4f} of ${a.daily_budget_usd:.2f}   "
@@ -1079,6 +1086,9 @@ def assistant_cli(args: argparse.Namespace) -> int:
             print("missing: " + "; ".join(s["missing"]))
         open_c = store.open_checkin()
         print(f"open check-in: #{open_c.id} {open_c.kind}: {open_c.question}" if open_c else "open check-in: none")
+        from assistant import semantic
+
+        print(semantic.status_line())
     elif args.acmd == "chat":
         res = runtime.run_turn(" ".join(args.message), channel="dashboard")
         print(res.text)

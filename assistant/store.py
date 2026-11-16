@@ -21,6 +21,7 @@ as_agent_runs       audit trail: one row per agent or sub-agent run (cost, statu
 as_lessons          self-improvement memory: proposed -> adopted -> retired
 as_vault_index      vault search index bookkeeping (path, mtime, sha) + FTS5 table
 as_deferred         prompts and scheduled tasks for later (assistant/usage.py, assistant/schedule.py)
+as_vault_vec*       memory search by meaning: chunk vectors + per-note state (assistant/semantic.py)
 ==================  ===================================================================
 
 Assistant LLM spend is written to the phase-1 ``llm_usage`` table with
@@ -170,6 +171,15 @@ MIGRATIONS: list[list[str]] = [
         "ALTER TABLE as_deferred ADD COLUMN recur TEXT",
         "ALTER TABLE as_deferred ADD COLUMN title TEXT",
         "ALTER TABLE as_deferred ADD COLUMN meta TEXT",
+    ],
+    [   # v6: memory search by meaning (assistant/semantic.py): per-note state + chunk vectors (float32 blobs)
+        """CREATE TABLE as_vault_vec_notes (
+            path TEXT PRIMARY KEY, mtime REAL NOT NULL, sha TEXT NOT NULL, model TEXT NOT NULL,
+            chunks INTEGER NOT NULL DEFAULT 0, embedded_at TEXT NOT NULL)""",
+        """CREATE TABLE as_vault_vec (
+            id INTEGER PRIMARY KEY, path TEXT NOT NULL, chunk INTEGER NOT NULL, heading TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL, vec BLOB NOT NULL)""",
+        "CREATE INDEX idx_as_vault_vec_path ON as_vault_vec(path)",
     ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -968,3 +978,65 @@ def set_deferred_status(did: int, status: str, *, result: str | None = None, mes
             cur = c.execute("UPDATE as_deferred SET status = ?, finished_at = ?, result = COALESCE(?, result), "
                             "message_id = COALESCE(?, message_id) WHERE id = ?", (status, now, result, message_id, did))
         return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# memory search by meaning (assistant/semantic.py): note state + chunk vectors
+# ---------------------------------------------------------------------------
+
+def vec_note_states(*, conn: sqlite3.Connection | None = None) -> dict[str, tuple[float, str, str]]:
+    """``{path: (mtime, sha, model)}`` for every embedded note."""
+    with transaction(conn) as c:
+        return {r["path"]: (r["mtime"], r["sha"], r["model"])
+                for r in c.execute("SELECT path, mtime, sha, model FROM as_vault_vec_notes")}
+
+
+def set_vec_note_mtime(path: str, mtime: float, *, conn: sqlite3.Connection | None = None) -> None:
+    with transaction(conn) as c:
+        c.execute("UPDATE as_vault_vec_notes SET mtime = ? WHERE path = ?", (mtime, path))
+
+
+def replace_note_vectors(path: str, *, mtime: float, sha: str, model: str,
+                         chunks: Sequence[tuple[str, str, bytes]], conn: sqlite3.Connection | None = None) -> None:
+    """Replace a note's chunks (``(heading, text, float32 bytes)``) and its state row."""
+    with transaction(conn) as c:
+        c.execute("DELETE FROM as_vault_vec WHERE path = ?", (path,))
+        c.executemany("INSERT INTO as_vault_vec (path, chunk, heading, text, vec) VALUES (?,?,?,?,?)",
+                      [(path, i, h, t, v) for i, (h, t, v) in enumerate(chunks)])
+        c.execute("INSERT INTO as_vault_vec_notes (path, mtime, sha, model, chunks, embedded_at) VALUES (?,?,?,?,?,?) "
+                  "ON CONFLICT (path) DO UPDATE SET mtime = excluded.mtime, sha = excluded.sha, model = excluded.model, "
+                  "chunks = excluded.chunks, embedded_at = excluded.embedded_at",
+                  (path, mtime, sha, model, len(chunks), db.now_iso()))
+
+
+def delete_note_vectors(path: str | None = None, *, conn: sqlite3.Connection | None = None) -> None:
+    """Forget one note's vectors (``None`` = all of them)."""
+    with transaction(conn) as c:
+        if path is None:
+            c.execute("DELETE FROM as_vault_vec")
+            c.execute("DELETE FROM as_vault_vec_notes")
+        else:
+            c.execute("DELETE FROM as_vault_vec WHERE path = ?", (path,))
+            c.execute("DELETE FROM as_vault_vec_notes WHERE path = ?", (path,))
+
+
+def vector_index_token(*, conn: sqlite3.Connection | None = None) -> tuple[int, int]:
+    """``(chunk count, max id)``: changes whenever any vector is added, replaced or removed."""
+    with transaction(conn) as c:
+        r = c.execute("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM as_vault_vec").fetchone()
+        return int(r["n"]), int(r["m"])
+
+
+def list_note_vectors(*, conn: sqlite3.Connection | None = None) -> list[tuple[str, str, str, bytes]]:
+    """Every chunk as ``(path, heading, text, float32 bytes)``."""
+    with transaction(conn) as c:
+        return [(r["path"], r["heading"], r["text"], r["vec"])
+                for r in c.execute("SELECT path, heading, text, vec FROM as_vault_vec ORDER BY id")]
+
+
+def vector_counts(*, conn: sqlite3.Connection | None = None) -> tuple[int, int]:
+    """``(notes, chunks)`` embedded."""
+    with transaction(conn) as c:
+        notes = c.execute("SELECT COUNT(*) FROM as_vault_vec_notes").fetchone()[0]
+        chunks = c.execute("SELECT COUNT(*) FROM as_vault_vec").fetchone()[0]
+        return int(notes), int(chunks)

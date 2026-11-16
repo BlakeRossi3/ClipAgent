@@ -84,6 +84,8 @@ class AssistantSettings:
     auto_memory: bool = True                 # ASSISTANT_AUTO_MEMORY
     # --- the morning surprise (assistant/surprise.py): local "HH:MM", "" = off
     morning_surprise: str = "07:40"
+    # --- memory search by meaning (assistant/semantic.py): auto = when model2vec is installed
+    semantic_memory: str = "auto"            # ASSISTANT_SEMANTIC_MEMORY auto|on|off
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -152,7 +154,18 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),
         auto_memory=config._bool(env.get("ASSISTANT_AUTO_MEMORY"), True),
         morning_surprise=_hhmm(env.get("ASSISTANT_MORNING_SURPRISE"), "07:40"),
+        semantic_memory=_auto_on_off(env.get("ASSISTANT_SEMANTIC_MEMORY")),
     )
+
+
+def _auto_on_off(raw: str | None) -> str:
+    """ASSISTANT_SEMANTIC_MEMORY: on/true/1 -> "on", off/false/0 -> "off", anything else -> "auto"."""
+    v = (raw or "").strip().lower()
+    if v in ("on", "true", "1", "yes"):
+        return "on"
+    if v in ("off", "false", "0", "no"):
+        return "off"
+    return "auto"
 
 
 def _hhmm(raw: str | None, default: str) -> str:

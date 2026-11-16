@@ -21,13 +21,15 @@ Safety (the LLM calls these as tools):
 
 Search: an SQLite FTS5 index (``as_vault_fts`` in the assistant store) kept in sync
 incrementally by mtime + sha (:func:`sync_index`, run before every search) with a full
-:func:`reindex`.
+:func:`reindex`. When semantic memory is on (assistant/semantic.py) :func:`search` also finds
+notes by meaning and fuses both rankings; :func:`keyword_search` is the FTS5 part alone.
 """
 
 from __future__ import annotations
 
 import difflib
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -651,7 +653,7 @@ def _fts_query(query: str) -> str:
     return " OR ".join(f'"{w}"' for w in words)
 
 
-def search(query: str, limit: int = 8) -> list[SearchHit]:
+def keyword_search(query: str, limit: int = 8) -> list[SearchHit]:
     """Full-text search over the vault (BM25 rank, title hits weighted x3)."""
     q = _fts_query(query)
     if not q or not vault_root().is_dir():
@@ -663,6 +665,38 @@ def search(query: str, limit: int = 8) -> list[SearchHit]:
             "bm25(as_vault_fts, 0.0, 3.0, 1.0) AS rank FROM as_vault_fts WHERE as_vault_fts MATCH ? "
             "ORDER BY rank LIMIT ?", (q, max(1, min(limit, 50)))).fetchall()
     return [SearchHit(r["path"], r["title"], " ".join(r["snip"].split()), -float(r["rank"])) for r in rows]
+
+
+def search(query: str, limit: int = 8) -> list[SearchHit]:
+    """Keyword search, plus notes that match by meaning when semantic memory is on.
+
+    The two rankings are merged by reciprocal-rank fusion (``semantic.fuse``); with semantic
+    memory off, unavailable or still loading this is exactly :func:`keyword_search`.
+    """
+    from assistant import semantic  # late: optional feature, imports this module
+
+    limit = max(1, min(limit, 50))
+    keyword = keyword_search(query, limit)
+    if not semantic.enabled() or not vault_root().is_dir():
+        return keyword
+    try:
+        meaning = semantic.search(query, limit)
+    except Exception:  # noqa: BLE001 - meaning search is a bonus; keywords must still answer
+        logging.getLogger(__name__).warning("semantic search failed", exc_info=True)
+        return keyword
+    if not meaning:
+        return keyword
+    by_kw = {h.path: h for h in keyword}
+    by_sem = {h.path: h for h in meaning}
+    out: list[SearchHit] = []
+    for path, score in semantic.fuse(keyword, meaning, limit):
+        if path in by_kw:
+            h = by_kw[path]
+            out.append(SearchHit(h.path, h.title, h.snippet, score))
+        else:
+            h2 = by_sem[path]
+            out.append(SearchHit(path, h2.title, h2.snippet, score))
+    return out
 
 
 # ---------------------------------------------------------------------------

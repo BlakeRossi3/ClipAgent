@@ -618,3 +618,7 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   check, running background task, a voice turn). `setup_web.update_app` delegates to it. Tests: temp repos with a local
   bare origin + `updater.set_runners(pip=...)`.
 
+### Memory search by meaning
+`assistant/semantic.py` (`ASSISTANT_SEMANTIC_MEMORY=auto|on|off`, `AssistantSettings.semantic_memory`): model2vec `minishlab/potion-base-8M` chunk vectors in `as_vault_vec` (store v6, re-embedded by mtime/sha); `vault.search` = FTS5 (`vault.keyword_search`) fused with `semantic.search` by reciprocal rank, exactly keywords when off/unavailable/still loading.
+Never blocks a turn on the model: cold start -> `warm_async()` background load + sync; job `assistant_semantic_sync` every 30 min; `semantic.status_line()` in `main.py assistant status` and Settings -> Memory.
+Tests: conftest makes model2vec look not installed; inject `semantic.set_embedder(fake)` + `semantic.set_spawner(lambda f: f())`.

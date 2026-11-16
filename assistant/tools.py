@@ -608,7 +608,8 @@ _AREA_HELP = ("about, work, projects, preferences, timeline, open_questions, fin
 
 def _builtin() -> list[Tool]:
     return [
-        Tool("memory_search", "Full-text search of the owner's memory vault. Returns note paths and snippets.",
+        Tool("memory_search", "Search the owner's memory vault by keywords and by meaning (a paraphrase finds the "
+             "note too). Returns note paths and snippets.",
              _obj({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
                   ["query"]), _memory_search),
         Tool("memory_read", "Read one vault note by its path (e.g. 'Profile/About.md' or 'Journal/2026/2026-11-13.md').",

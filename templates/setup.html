@@ -332,6 +332,7 @@
   <p class="voice">"Everything I learn about you lives in plain notes on this computer, {{ a.owner_honorific }}."</p>
   {{ result_box(result) }}
   <p>Your vault has <strong>{{ values.notes }}</strong> notes, in<br><code class="s-path">{{ values.vault_dir }}</code></p>
+  {% if values.search %}<p class="f-help">{{ values.search }}</p>{% endif %}
   <p class="f-help">You can open that folder in <a href="https://obsidian.md" target="_blank" rel="noopener">Obsidian</a> (Open folder as vault) to read or edit them. They never leave this computer except as context in a conversation.</p>
   <form method="post" action="/setup/memory/import" enctype="multipart/form-data" class="s-upload">
     <input type="hidden" name="csrf" value="{{ csrf }}">

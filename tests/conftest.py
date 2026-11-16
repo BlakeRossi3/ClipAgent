@@ -87,6 +87,11 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     smart_turn.set_detector(None)
     smart_turn.set_downloads(False)
+    # never the model2vec download for memory search by meaning: "not installed" unless a test injects an embedder
+    from assistant import semantic
+
+    semantic.reset()
+    monkeypatch.setattr(semantic, "_package_installed", lambda: False)
     config.reset_settings()
     llm.reset()
     config.get_settings().ensure_dirs()
