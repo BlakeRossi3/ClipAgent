@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Cecil Page Reader</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 520px; color: #222; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input { width: 100%; padding: 6px; box-sizing: border-box; }
+    button { margin-top: 16px; margin-right: 8px; padding: 6px 14px; }
+    #msg { margin-top: 12px; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h2>Cecil Page Reader</h2>
+  <p>Click the toolbar button (or press Alt+Shift+C) on any page to let Cecil read it. Nothing is read until you click.</p>
+  <label for="server">ClipAgent address</label>
+  <input id="server" placeholder="http://127.0.0.1:8000">
+  <label for="token">Dashboard token</label>
+  <input id="token" type="password" placeholder="leave empty if the dashboard opens without one on this laptop">
+  <small>Only needed if your dashboard asks for a password on this laptop.</small>
+  <div>
+    <button id="save">Save</button>
+    <button id="test">Test connection</button>
+  </div>
+  <div id="msg"></div>
+  <script src="options.js"></script>
+</body>
+</html>

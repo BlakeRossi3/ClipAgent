@@ -119,6 +119,12 @@ def create_app() -> FastAPI:
             app.include_router(toolkit_web.router)
         except Exception as exc:
             log.warning("toolkit pages unavailable: %s: %s", type(exc).__name__, exc)
+        try:  # Chrome "Cecil Page Reader" extension posts the page he clicked on (assistant/page_reader.py)
+            from assistant import page_reader
+
+            app.include_router(page_reader.router)
+        except Exception as exc:
+            log.warning("page reader unavailable: %s: %s", type(exc).__name__, exc)
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, Any]:

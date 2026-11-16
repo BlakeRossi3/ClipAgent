@@ -38,6 +38,9 @@ TITLE_MAX = 60
 BODY_MAX = 280
 VALUE_MAX = 24
 KEY_MAX = 40
+ROWS_MAX = 20
+ROW_MAX = 64
+ROW_NOTE_MAX = 28
 KINDS = store.TILE_KINDS
 
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -75,9 +78,31 @@ def _minutes(minutes: Any) -> int:
     return max(MIN_MINUTES, min(MAX_MINUTES, m))
 
 
+def _rows(rows: Any) -> list[dict[str, Any]]:
+    """A short list (a scoreboard): each row a string or ``{text, note, mark}``; at most ROWS_MAX."""
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise TileError("rows must be a list")
+    out: list[dict[str, Any]] = []
+    for r in rows[:ROWS_MAX * 3]:
+        if len(out) >= ROWS_MAX:
+            break
+        if isinstance(r, dict):
+            text, note, mark = r.get("text"), r.get("note"), bool(r.get("mark"))
+        else:
+            text, note, mark = r, "", False
+        t = _line(text, ROW_MAX)
+        if t:
+            out.append({"text": t, "note": _line(note, ROW_NOTE_MAX), "mark": mark})
+    return out
+
+
 def show(title: str, body: str = "", *, value: str | None = None, kind: str = "info",
-         minutes: Any = None, key: str | None = None, source: str = "assistant") -> store.Tile:
-    """Put a tile up for ``minutes`` (default an hour). Same ``key`` replaces the live tile."""
+         minutes: Any = None, key: str | None = None, source: str = "assistant",
+         rows: list[Any] | None = None) -> store.Tile:
+    """Put a tile up for ``minutes`` (default an hour). Same ``key`` replaces the live tile.
+    ``rows`` (optional, a scoreboard or short list) makes it a wide tile spanning the stage."""
     t = _line(title, TITLE_MAX)
     if not t:
         raise TileError("a tile needs a title")
@@ -86,13 +111,15 @@ def show(title: str, body: str = "", *, value: str | None = None, kind: str = "i
     v = _line(value, VALUE_MAX) or None
     b = _body(body)
     k = _key(key)
+    rs = _rows(rows)
     now = db.utcnow()
     expires = db.to_iso(now + timedelta(minutes=_minutes(minutes)))
     with store.transaction() as c:
         if k:
             for old in store.list_live_tiles(tile_key=k, conn=c):
                 store.remove_tile(old.id, by="replaced", conn=c)
-        tid = store.add_tile(t, expires_at=expires, body=b, kind=kind, value=v, tile_key=k, source=source, conn=c)
+        tid = store.add_tile(t, expires_at=expires, body=b, kind=kind, value=v, tile_key=k, source=source,
+                             rows=rs or None, conn=c)
         live = store.list_live_tiles(limit=MAX_LIVE + 50, conn=c)
         for extra in live[MAX_LIVE:]:
             store.remove_tile(extra.id, by="overflow", conn=c)
@@ -135,12 +162,15 @@ def view() -> list[dict[str, Any]]:
     now = db.utcnow()
     return [{"id": t.id, "kind": t.kind, "title": t.title, "body": t.body, "value": t.value,
              "expires_at": t.expires_at, "expires_ms": int(db.parse_iso(t.expires_at).timestamp() * 1000),
-             "left": _left(t.expires_at, now)} for t in live()]
+             "left": _left(t.expires_at, now), "rows": t.rows or []} for t in live()]
 
 
 def _summary(t: store.Tile) -> dict[str, Any]:
-    return {"id": t.id, "title": t.title, "value": t.value, "body": t.body, "kind": t.kind, "key": t.tile_key,
-            "expires_at": t.expires_at, "left": _left(t.expires_at, db.utcnow())}
+    out = {"id": t.id, "title": t.title, "value": t.value, "body": t.body, "kind": t.kind, "key": t.tile_key,
+           "expires_at": t.expires_at, "left": _left(t.expires_at, db.utcnow())}
+    if t.rows:
+        out["rows"] = len(t.rows)
+    return out
 
 
 # --- tools ------------------------------------------------------------------------------------
@@ -155,7 +185,8 @@ def _tool_show(ctx: Any, a: dict[str, Any]) -> Any:
 
     try:
         t = show(a.get("title", ""), a.get("body", ""), value=a.get("value"), kind=a.get("kind") or "info",
-                 minutes=a.get("minutes"), key=a.get("key"), source=f"{getattr(ctx, 'agent', 'assistant')}")
+                 minutes=a.get("minutes"), key=a.get("key"), source=f"{getattr(ctx, 'agent', 'assistant')}",
+                 rows=a.get("rows"))
     except TileError as exc:
         raise ToolError(str(exc)) from None
     return {"ok": True, "tile": _summary(t)}
@@ -185,6 +216,10 @@ def register_tools(register: Any) -> None:
         "kind": {"type": "string", "enum": list(KINDS)},
         "minutes": {"type": "integer"},
         "key": {"type": "string"},
+        "rows": {"type": "array", "description": "optional short list (e.g. a scoreboard), up to 20; makes a wide tile",
+                 "items": {"type": "object", "properties": {
+                     "text": {"type": "string"}, "note": {"type": "string"}, "mark": {"type": "boolean"}},
+                     "required": ["text"]}},
     }, ["title"]), _tool_show, owner=__name__, side_effects=True), replace=True)
     register(Tool("tile_remove", "Take Jarvis-page tiles down early: `id`, `key` or `all: true`.",
                   _obj({"id": {"type": "integer"}, "key": {"type": "string"}, "all": {"type": "boolean"}}),

@@ -627,6 +627,12 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   reset shows unknown (never 100%), and a non-rejected 5-hour/weekly reading bounds the other (`_infer_siblings`).
 - `assistant/tiles.py` (store v8 `as_tiles`): short-lived tiles on the Jarvis stage (`tile_show|remove|list`, default
   60 min, `key` replaces, max 6), `POST /dashboard/tiles/{id}/dismiss`, home part `dyn_tiles`, `static/home.js` drops expired ones.
+  Store v9 adds `as_tiles.rows` (JSON `{text, note, mark}` list, `tiles.show(rows=)`) = a wide scoreboard tile.
+- `assistant/nfl.py`: tool `nfl_scores` (ESPN scoreboard -> wide tile `nfl-scores`, his team = kv `nfl:team`, default NYG,
+  first and marked, plus week stats); jobs `assistant_nfl_monday` Mon 08:05 + `assistant_nfl_mnf` Mon 23:40; tests `nfl.set_http`.
+- `assistant/page_reader.py` + Chrome extension `extension/page-reader/` (MV3, activeTab, click/Alt+Shift+C only):
+  `POST /pagereader/capture` (Origin must be `chrome-extension://`, plus `dashboard._guard`), `GET /pagereader/status`
+  (auth only); kv `page_reader:latest`, redacted (`admin.redact` + bare 32-hex); tool `page_read(max_chars, offset, find)`.
 - `tasks.detail(id)` / `GET /voice/api/task/{id}` + jarvis.js `TASKROW`: task rows expand (request, steps, full
   `result` <= 4000 chars, the conversation around it). `assistant/retry.py`: conversation tasks (no `on_finish`, not
   self-edit; `row["retry"]`) ending error/timeout/stopped/rounds go `retrying` with backoff 5/15/30/60 min and

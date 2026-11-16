@@ -200,6 +200,9 @@ MIGRATIONS: list[list[str]] = [
             removed_at TEXT, removed_by TEXT)""",
         "CREATE INDEX idx_as_tiles_live ON as_tiles(removed_at, expires_at)",
     ],
+    [   # v9: a tile may carry a short list of rows (a scoreboard) - JSON list of {text, note, mark}
+        "ALTER TABLE as_tiles ADD COLUMN rows TEXT",
+    ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -1197,6 +1200,7 @@ def move_backlog(item_id: int, delta: int, *, conn: sqlite3.Connection | None = 
 
 @dataclass(slots=True)
 class Tile(_Row):
+    _JSON: ClassVar[tuple[str, ...]] = ("rows",)
     id: int
     created_at: str
     expires_at: str
@@ -1208,15 +1212,17 @@ class Tile(_Row):
     source: str | None = None
     removed_at: str | None = None
     removed_by: str | None = None
+    rows: list[dict[str, Any]] | None = None
 
 
 def add_tile(title: str, *, expires_at: str, body: str = "", kind: str = "info", value: str | None = None,
-             tile_key: str | None = None, source: str | None = None, conn: sqlite3.Connection | None = None) -> int:
+             tile_key: str | None = None, source: str | None = None, rows: list[dict[str, Any]] | None = None,
+             conn: sqlite3.Connection | None = None) -> int:
     _check(kind, TILE_KINDS, "kind")
     with transaction(conn) as c:
         return _insert(c, "as_tiles", {"created_at": db.now_iso(), "expires_at": expires_at, "kind": kind,
                                        "title": title, "body": body, "value": value, "tile_key": tile_key,
-                                       "source": source})
+                                       "source": source, "rows": json.dumps(rows) if rows else None})
 
 
 def get_tile(tile_id: int, *, conn: sqlite3.Connection | None = None) -> Tile | None:

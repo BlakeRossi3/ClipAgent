@@ -676,6 +676,10 @@ def assistant_job_specs() -> list[JobSpec]:
                 "interval", {"minutes": 30}, "embed new or changed vault notes for memory search by meaning"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
+        JobSpec("assistant_nfl_monday", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),
+                "cron", {"day_of_week": "mon", "hour": 8, "minute": 5}, "NFL scores tile after Sunday's games"),
+        JobSpec("assistant_nfl_mnf", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),
+                "cron", {"day_of_week": "mon", "hour": 23, "minute": 40}, "NFL scores tile after Monday night"),
     ] + _surprise_spec() + _initiative_specs() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
                   "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
                   "heartbeat: check Agent/Heartbeat.md against the live status")]

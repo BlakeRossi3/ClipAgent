@@ -247,10 +247,11 @@
 {% if h.dyn %}
 <ul class="dtiles" aria-label="Tiles from {{ h.a.name }}">
   {% for t in h.dyn %}
-  <li class="dtile dtile-{{ t.kind }}" data-dtile data-expires="{{ t.expires_ms }}">
+  <li class="dtile dtile-{{ t.kind }}{% if t.rows %} dtile-wide{% endif %}" data-dtile data-expires="{{ t.expires_ms }}">
     <p class="dtile-title">{{ t.title }}</p>
     {% if t.value %}<p class="dtile-value">{{ t.value }}</p>{% endif %}
     {% if t.body %}<p class="dtile-body">{{ t.body }}</p>{% endif %}
+    {% if t.rows %}<ul class="dtile-rows">{% for r in t.rows %}<li{% if r.mark %} class="is-mark"{% endif %}><span>{{ r.text }}</span>{% if r.note %}<span class="dtile-note">{{ r.note }}</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
     <p class="dtile-left" title="Leaves the screen by itself">{{ t.left }} left</p>
     <form class="dtile-x" method="post" action="/dashboard/tiles/{{ t.id }}/dismiss" data-async="tile"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Take down {{ t.title }}">&times;</button></form>
   </li>

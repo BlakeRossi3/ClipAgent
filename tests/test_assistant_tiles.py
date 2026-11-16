@@ -137,6 +137,18 @@ def test_tile_from_claude_code_reaches_the_open_page_and_leaves_on_time(env):
     assert "Next train" not in c.get("/dashboard/api/home").json()["html"]["dyn_tiles"]
 
 
+def test_rows_make_a_wide_escaped_scoreboard_tile(env):
+    rows = ["plain", {"text": "<i>NYG 21</i>", "note": "F", "mark": True}, {"text": "   "}] + ["x"] * 30
+    t = tiles.show("Scores", rows=rows)
+    assert t.rows[0] == {"text": "plain", "note": "", "mark": False} and t.rows[1]["mark"]
+    assert len(t.rows) == tiles.ROWS_MAX  # blank row dropped, capped
+    assert tiles.show("No rows").rows is None
+    with pytest.raises(tiles.TileError):
+        tiles.show("bad", rows="nope")
+    html = _client().get("/dashboard/api/home").json()["html"]["dyn_tiles"]
+    assert html.count("dtile-wide") == 1 and "&lt;i&gt;NYG 21&lt;/i&gt;" in html and 'class="is-mark"' in html
+
+
 def test_cli_show_list_clear(env, capsys):
     assert tiles.main(["show", "Hello", "world", "--minutes", "5", "--key", "hi"]) == 0
     assert tiles.main(["list"]) == 0

@@ -127,7 +127,17 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   Each task row on the Jarvis rail expands to the request, steps, full result and the conversation around it.
 * **Tiles** (`assistant/tiles.py`, tools `tile_show` / `tile_remove` / `tile_list`): small glanceable tiles on
   the Jarvis stage (weather, a figure, a reminder) that disappear by themselves after `minutes` (default 60);
-  a `key` replaces the previous tile, at most 6 are up, the owner can close one with its x.
+  a `key` replaces the previous tile, at most 6 are up, the owner can close one with its x. Optional `rows`
+  (up to 20 `{text, note, mark}`, store v9) make a wide tile spanning the stage, e.g. a scoreboard.
+* **NFL scores** (`assistant/nfl.py`, tool `nfl_scores`, CLI `python -m assistant.nfl [show|print]`): ESPN's
+  public scoreboard JSON -> a wide tile (key `nfl-scores`, 16 h) with every game of the week, his team first
+  and marked (kv `nfl:team`, default NYG), and stats (team star, shootout, rout, nail-biters, top passer).
+  Jobs `assistant_nfl_monday` (Mon 08:05) and `assistant_nfl_mnf` (Mon 23:40). Tests: `nfl.set_http`.
+* **Page reader** (`assistant/page_reader.py`, tool `page_read`, CLI `python -m assistant.page_reader [show|clear]`):
+  the unpacked Chrome extension `extension/page-reader/` (activeTab, nothing read until he clicks or presses
+  Alt+Shift+C) posts the tab's url, title, selection, headings, text and control labels (never field values or
+  password fields) to `POST /pagereader/capture` (Origin `chrome-extension://` + dashboard auth). One capture is
+  kept (kv `page_reader:latest`), secrets masked; Cecil uses it to guide him through a site step by step.
 * **GTA VI countdown**: a collapsible panel on the Jarvis rail counting down to `GTA6_RELEASE_DATE`.
 
 ### Guardrails for full powers
