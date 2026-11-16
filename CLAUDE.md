@@ -622,3 +622,11 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
 `assistant/semantic.py` (`ASSISTANT_SEMANTIC_MEMORY=auto|on|off`, `AssistantSettings.semantic_memory`): model2vec `minishlab/potion-base-8M` chunk vectors in `as_vault_vec` (store v6, re-embedded by mtime/sha); `vault.search` = FTS5 (`vault.keyword_search`) fused with `semantic.search` by reciprocal rank, exactly keywords when off/unavailable/still loading.
 Never blocks a turn on the model: cold start -> `warm_async()` background load + sync; job `assistant_semantic_sync` every 30 min; `semantic.status_line()` in `main.py assistant status` and Settings -> Memory.
 Tests: conftest makes model2vec look not installed; inject `semantic.set_embedder(fake)` + `semantic.set_spawner(lambda f: f())`.
+
+### Never lose Cecil's edits (both sides always merge)
+Nothing stashes any more. `selfedit.save_unsaved(reason)` commits loose edits: at the start of every full-power turn
+(`begin`), in `updater.update_now`, and in `windows/ClipAgent.ps1` before it updates. On the published branch, local
+commits move to `sterling/backup-<stamp>` and the update fast-forwards; `ensure_branch` merges the running version into
+`sterling/self` and resets the published branch to origin (`_release_published`). `selfedit.startup_recover()` (from
+`main._start_selfedit_check`, 45 s after start) merges every backup branch/old stash back in, tests, restarts.
+

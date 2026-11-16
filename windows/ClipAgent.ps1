@@ -79,6 +79,14 @@ function Update-App {
         return
     }
     $ErrorActionPreference = 'Continue'
+    # Cecil's unsaved edits are saved as a commit first - never stashed away (a stash was never put back,
+    # which is how his changes used to vanish after a restart).
+    $dirty = (& $gitExe -C $App status --porcelain 2>$null | Out-String).Trim()
+    if ($dirty) {
+        $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'add', '-A')
+        $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'commit', '-q', '--no-verify', '-m', 'Sterling: save unsaved edits before an update', '-m', 'Sterling-Self-Edit: yes')
+        Write-Log 'saved unsaved assistant edits as a commit before updating'
+    }
     $local = (& $gitExe -C $App rev-parse HEAD 2>$null | Out-String).Trim()
     $branch = (& $gitExe -C $App rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim()
     $upstream = (& $gitExe -C $App config --get clipagent.upstream 2>$null | Out-String).Trim()
@@ -97,12 +105,6 @@ function Update-App {
     $before = Get-FileHashOrEmpty $reqFile
     if ($upstream) {
         # The assistant's own branch (sterling/self): merge the published branch in, keep its commits.
-        # Unsaved edits (a self-edit still in progress) would block the merge: put them aside first.
-        $dirty = (& $gitExe -C $App status --porcelain 2>$null | Out-String).Trim()
-        if ($dirty) {
-            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'stash', 'push', '--include-untracked', '-m', 'sterling-autosave-before-update')
-            Write-Log 'set aside unsaved assistant edits (git stash) before updating'
-        }
         $code = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, '-c', 'user.name=Sterling', '-c', 'user.email=sterling@clipagent.local', 'pull', '--no-rebase', '--no-edit', 'origin', $upstream)
         if ($code -ne 0) {
             # The published version wins: keep the assistant's commits on a dated backup branch (it can
@@ -118,9 +120,20 @@ function Update-App {
             Write-Log "update conflicted with the assistant's own edits; saved them as sterling/backup-$stamp and took the published version"
         }
     }
-    elseif ((Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'pull', '--ff-only')) -ne 0) {
-        Write-Log 'git pull --ff-only failed; starting the current version'
-        return
+    else {
+        # On the published branch: local commits would block a plain update forever. Keep them on a backup
+        # branch (ClipAgent merges backups back in by itself at start-up) and take the update.
+        & $gitExe -C $App merge-base --is-ancestor HEAD $remote 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'branch', '-f', "sterling/backup-$stamp")
+            $null = Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'reset', '--hard', $remote)
+            Write-Log "local changes kept on sterling/backup-$stamp (merged back in at start-up)"
+        }
+        if ((Invoke-Logged -FilePath $gitExe -ArgumentList @('-C', $App, 'merge', '--ff-only', $remote)) -ne 0) {
+            Write-Log 'git merge --ff-only failed; starting the current version'
+            return
+        }
     }
     Write-Log "updated $local -> $remote"
     if ((Get-FileHashOrEmpty $reqFile) -ne $before) {

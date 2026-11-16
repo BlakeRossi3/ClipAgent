@@ -124,23 +124,28 @@ def test_rollback_on_failing_tests(repo):
     assert _git(r, "rev-parse", "HEAD") == snap.head and selfedit.last_outcome()["status"] == "rolled_back"
 
 
-def test_dirty_tree_is_never_reset_tested_or_reported_twice(repo):
+def test_leftover_edits_are_saved_as_a_commit_never_left_loose(repo):
     r, state, _ = repo
-    ran = []
-    selfedit.set_runners(tests=lambda root, timeout: ran.append(1) or (False, "1 failed"),
-                         restart=lambda: True)
-    (r / "app.py").write_text("VERSION = hand edit\n")
+    (r / "app.py").write_text("VERSION = leftover\n")         # an earlier turn's unsaved edit
     snap = selfedit.begin()
-    assert not snap.clean and selfedit.current_branch() == "main" and set(snap.dirty) == {"app.py"}
-    assert selfedit.finish(snap) is None                  # the hand edit alone is not this turn's change
+    assert snap.clean and selfedit.current_branch() == "sterling/self" and not selfedit.changed_files()
+    assert "save earlier unsaved edits" in _git(r, "log", "-1", "--format=%s")
+    state["pass"] = False
     (r / "other.py").write_text("y = 2\n")
-    out = selfedit.finish(snap)
-    assert out.status == "kept_dirty" and out.files == ["other.py"] and "already had uncommitted" in out.summary
-    assert (r / "app.py").read_text() == "VERSION = hand edit\n" and (r / "other.py").exists()
-    snap2 = selfedit.begin()
-    (r / "third.py").write_text("z = 3\n")
-    assert selfedit.finish(snap2) is None                 # same hand edits: said once, not after every turn
-    assert ran == []                                      # the suite never ran on top of his edits
+    out = selfedit.finish(snap)                               # this turn fails its tests: only it is undone
+    assert out.status == "rolled_back" and (r / "app.py").read_text() == "VERSION = leftover\n"
+
+
+def test_published_branch_with_cecils_commit_is_released_after_merge(repo):
+    r, _state, _ = repo
+    bare = r.parent / "origin.git"
+    _git(r.parent, "clone", "-q", "--bare", str(r), str(bare))
+    _git(r, "remote", "add", "origin", str(bare))
+    _git(r, "fetch", "-q", "origin")
+    (r / "gta.py").write_text("widget = 'GTA 6'\n")          # Cecil's edit, left on the published branch
+    snap = selfedit.begin()
+    assert snap.ok and selfedit.current_branch() == "sterling/self" and (r / "gta.py").exists()
+    assert _git(r, "rev-parse", "main") == _git(r, "rev-parse", "origin/main")   # launcher can update it again
 
 
 def test_only_files_this_turn_changed_count(repo):

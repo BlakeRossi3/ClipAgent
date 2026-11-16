@@ -94,7 +94,7 @@ def test_self_branch_merges_and_keeps_unsaved_edits(repos, clock):
     res = updater.update_now()
     assert res["ok"] and res["updated"] and res["backup"] is None
     assert (app / "app.py").read_text() == "VERSION = 3\n" and (app / "cecil.py").exists()
-    assert (app / "scratch.py").read_text() == "wip = True\n"     # stashed and put back
+    assert (app / "scratch.py").read_text() == "wip = True\n"     # saved as a commit, then merged
     assert _git(app, "rev-parse", "--abbrev-ref", "HEAD") == "sterling/self"
     assert _git(app, "stash", "list") == ""
 
@@ -136,3 +136,20 @@ def test_api_and_nav_chip(repos, clock):
     assert j["available"] and j["behind"] == 1
     page = c.get("/dashboard/scheduled").text
     assert "data-update-chip" in page and 'action="/setup/action/update"' in page
+
+
+def test_published_branch_with_local_edits_updates_and_keeps_them_for_startup(repos, clock):
+    app, dev, _ = repos
+    (app / "gta.py").write_text("widget = 'GTA 6'\n")              # Cecil's edit on the published branch
+    publish(dev, "app.py", "VERSION = 4\n")
+    res = updater.update_now()
+    assert res["ok"] and res["updated"] and (app / "app.py").read_text() == "VERSION = 4\n"
+    assert res["backup"] and _git(app, "stash", "list") == ""      # kept on a branch, never stashed
+    aside = selfedit.set_aside()
+    assert [b["name"] for b in aside["branches"]] == [res["backup"]]
+    selfedit.set_runners(tests=lambda root, timeout: (True, "ok"), restart=lambda: True)
+    try:
+        out = selfedit.recover(restart=False)                      # what start-up does by itself
+    finally:
+        selfedit.set_runners()
+    assert out["ok"] and (app / "gta.py").exists() and (app / "app.py").read_text() == "VERSION = 4\n"

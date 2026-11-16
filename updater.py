@@ -9,11 +9,12 @@ published branch has that the running version lacks.
 1. refuses while a self-edit or a background task is mid-flight ("busy, try again in a moment");
 2. ``git fetch origin``;
 3. on the assistant's own branch (``sterling/self``, published branch in ``git config clipagent.upstream``):
-   uncommitted edits are stashed (``sterling-autosave-before-update``), ``origin/<upstream>`` is merged in
-   keeping both sides; the stash is re-applied (a conflicting stash stays in the stash list). On a merge
+   uncommitted edits are first saved as a commit (``selfedit.save_unsaved``; never stashed), then
+   ``origin/<upstream>`` is merged in keeping both sides. On a merge
    conflict: abort, keep the assistant's work on ``sterling/backup-<stamp>`` and take the published
    version (``selfedit.recover()`` / tool ``self_edits_recover`` brings it back later);
-   on any other branch: ``git merge --ff-only origin/<branch>``;
+   on any other branch: local edits/commits move to ``sterling/backup-<stamp>`` (merged back at start-up by
+   ``selfedit.startup_recover``), then ``git merge --ff-only origin/<branch>``;
 4. ``pip install -r requirements.txt`` only when it changed;
 5. records the previous commit for :func:`assistant.selfedit.verify_after_restart` (``/healthz`` after the
    restart; an unhealthy app is reset to the previous commit) - the caller then restarts the app.
@@ -257,23 +258,11 @@ def _update(out: dict[str, Any]) -> dict[str, Any]:
         return out
     req_before = _req_digest()
     if t["self_branch"]:
-        stashed = False
-        if selfedit.changed_files():
-            r = git(*GIT_ID, "stash", "push", "--include-untracked", "-m", STASH_MSG)
-            stashed = r.returncode == 0
-            out["log"].append("Put Cecil's unsaved edits aside first (git stash).")
+        if selfedit.save_unsaved("unsaved edits before an update"):   # saved as a commit, never set aside
+            out["log"].append("Saved Cecil's unsaved edits first.")
         m = git(*GIT_ID, "merge", "--no-edit", "-m", f"Merge updates from origin/{up}", remote, timeout=300)
         if m.returncode == 0:
             out["log"].append(f"Merged {behind} update(s) from origin/{up}; Cecil's own changes are kept.")
-            if stashed:
-                p = git("stash", "pop")
-                if p.returncode == 0:
-                    out["log"].append("Put the unsaved edits back.")
-                else:   # they clash with the update: keep them in the stash for selfedit.recover()
-                    git("reset", "-q", "--hard", "HEAD")
-                    git("clean", "-fdq")
-                    out["log"].append("The unsaved edits clash with the update, so they stay set aside "
-                                      "(Settings > The brain, or ask Cecil to bring them back).")
         else:
             conflicts = _out("diff", "--name-only", "--diff-filter=U").splitlines()
             git("merge", "--abort")
@@ -290,6 +279,15 @@ def _update(out: dict[str, Any]) -> dict[str, Any]:
             db.log_event("setup", f"update conflicted; Cecil's edits kept on {backup}", level="warning",
                          data={"conflicts": conflicts[:20]})
     else:
+        # On the published branch itself: local edits or commits would block a plain update. Keep them on a
+        # backup branch (merged back automatically at start-up by selfedit.startup_recover) and take the update.
+        selfedit.save_unsaved("unsaved edits before an update")
+        if git("merge-base", "--is-ancestor", "HEAD", remote).returncode != 0:
+            backup = f"sterling/backup-{db.utcnow():%Y%m%d-%H%M%S}"
+            git("branch", "-f", backup, "HEAD")
+            git("reset", "-q", "--hard", remote)
+            out["backup"] = backup
+            out["log"].append(f"Local changes kept on {backup}; they are merged back in after the restart.")
         m = git("merge", "--ff-only", remote, timeout=300)
         if m.returncode != 0:
             out["log"].append((m.stdout + m.stderr).strip()[-800:])

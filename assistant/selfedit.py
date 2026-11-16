@@ -163,6 +163,7 @@ def ensure_branch() -> str:
         r = git("checkout", target) if exists else git("checkout", "-b", target)
     if r.returncode != 0:
         raise RuntimeError(f"could not switch to {target}: {(r.stderr or r.stdout).strip()[:200]}")
+    _release_published(br, target)
     if not _out("config", "--get", "user.email"):  # merges by the launcher's update need an identity
         git("config", "user.name", "Cecil")
         git("config", "user.email", "sterling@clipagent.local")
@@ -192,6 +193,35 @@ def _switch_and_merge(target: str, src: str) -> subprocess.CompletedProcess[str]
     db.log_event("assistant", f"my edits on {target} conflict with the update; kept them as {backup}",
                  level="warning", data={"conflicts": conflicts[:20]})
     return git("checkout", "-B", target, head)
+
+
+def save_unsaved(reason: str) -> str | None:
+    """Commit every uncommitted change in the app folder (on the current branch) so nothing is ever left
+    loose for an update to stash away. Returns the new commit, or None when there was nothing to save."""
+    if not changed_files():
+        return None
+    git("add", "-A")
+    r = git(*GIT_ID, "commit", "-q", "--no-verify", "-m", f"Sterling: save {reason}", "-m", TRAILER)
+    if r.returncode != 0:
+        log.warning("could not save unsaved edits: %s", (r.stderr or r.stdout).strip()[:200])
+        return None
+    sha = _out("rev-parse", "HEAD")
+    db.log_event("assistant", f"saved {reason}", data={"commit": sha})
+    return sha
+
+
+def _release_published(br: str, target: str) -> None:
+    """``br`` (the published branch) got local commits and they are now merged into ``target``: put ``br``
+    back on origin so the launcher's plain update of it can never get stuck again."""
+    if not br or br == target:
+        return
+    origin = f"origin/{br}"
+    if git("rev-parse", "--verify", "--quiet", origin).returncode != 0:
+        return
+    if git("merge-base", "--is-ancestor", br, origin).returncode == 0:
+        return                                   # no local commits on it
+    if git("merge-base", "--is-ancestor", br, target).returncode == 0:
+        git("branch", "-f", br, origin)
 
 
 def changed_files() -> list[str]:
@@ -266,6 +296,8 @@ def begin() -> Snapshot:
     if not s.self_edit or not is_repo():
         return Snapshot("", True, "", ok=False, note="not a git checkout", protected=guard)
     try:
+        if changed_files():               # leftovers (an earlier turn, a manual edit): save them, never park them
+            save_unsaved("earlier unsaved edits")
         files = changed_files()
         clean = not files
         if clean:
@@ -533,6 +565,26 @@ def _recover_message(merged: list[str], conflicts: list[dict[str, Any]]) -> str:
         parts.append(f"{c['what']} conflicts with the current version in {', '.join(c['files']) or 'some files'}: "
                      f"merge it by hand (git merge {c['what'].split(' ')[0]}), resolve, test, commit.")
     return " ".join(parts) or "Nothing to bring back."
+
+
+def startup_recover(delay: float = 45.0) -> None:
+    """At app start (main.schedule): merge anything an update set aside back in, by itself - he should never
+    have to ask. Runs in the background after ``delay`` seconds; conflicts are left listed for Cecil."""
+    def run() -> None:
+        time.sleep(delay)
+        try:
+            if not is_repo() or in_flight():
+                return
+            found = set_aside()
+            if not found["branches"] and not found["stashes"]:
+                return
+            res = recover(restart=True)
+            db.log_event("assistant", "startup: set-aside edits " + ("brought back" if res.get("merged") else "checked"),
+                         level="info" if res.get("ok") else "warning", data=res)
+        except Exception as exc:   # never break startup
+            log.warning("startup recover failed: %s", exc)
+
+    threading.Thread(target=run, name="selfedit-startup-recover", daemon=True).start()
 
 
 def register_tools(register: Callable[..., None]) -> None:

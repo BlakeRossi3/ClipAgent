@@ -1172,6 +1172,7 @@ def _start_selfedit_check(port: int) -> None:
     try:
         from assistant import selfedit
 
+        selfedit.startup_recover()       # anything an update set aside is merged back in, by itself
         if db.kv_get(selfedit.KV_PENDING) is None:
             return
         threading.Thread(target=selfedit.verify_after_restart, args=(port,), name="selfedit-verify",
