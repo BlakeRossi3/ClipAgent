@@ -586,3 +586,4 @@ first. Coding skills vendored from obra/superpowers (MIT, `LICENSE-superpowers` 
 only): systematic-debugging, test-driven-development, verification-before-completion, writing-skills;
 obra/superpowers is a default trusted catalog source. `ASSISTANT_TOOL_SEARCH` (default true) sets Claude Code's
 `ENABLE_TOOL_SEARCH` so tool descriptions load on demand (`ToolSearch` is in `brain.VOICE_BUILTINS`).
+UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.txt`); toolsmith says keep `static/theme.css`.

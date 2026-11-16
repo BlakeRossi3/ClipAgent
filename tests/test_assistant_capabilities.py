@@ -50,3 +50,10 @@ def test_tool_search_is_on_for_claude_code_and_the_voice_session():
     from assistant import brain, claude_code
     assert claude_code.base_env()["ENABLE_TOOL_SEARCH"] == "true"
     assert "ToolSearch" in brain.VOICE_BUILTINS
+
+
+def test_frontend_design_skill_ships_with_its_apache_licence():
+    from assistant import registry
+    sk = registry.load_skills(strict=True)["frontend-design"]
+    folder = sk.path.parent if sk.path.name == "SKILL.md" else sk.path
+    assert "Apache License" in (folder / "LICENSE.txt").read_text()

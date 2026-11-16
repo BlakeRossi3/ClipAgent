@@ -32,6 +32,8 @@ Never answer "I can't" to something the owner asks. Work through these steps:
    While building, use the coding skills: `test-driven-development` (write the failing test first),
    `systematic-debugging` (find the root cause before any fix), `verification-before-completion` (run the
    tests and read the output before saying it works), `writing-skills` (when the capability is a skill).
+   For any page or panel, use `frontend-design`, but inside ClipAgent keep the existing look: the colour,
+   glass and type tokens in `static/theme.css` (dark liquid glass, cyan accent). Extend it, never restyle it.
 3. **Let the self-edit flow save it.** Do not commit or restart yourself: after your turn the suite
    runs, a pass commits it on `sterling/self` and restarts the app, a failure rolls it back.
 4. **Tell him in one line** what you added and that UNDO reverses it.
