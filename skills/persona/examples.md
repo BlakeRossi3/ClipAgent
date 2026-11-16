@@ -74,10 +74,10 @@ and survive `persona.polish` unchanged. `bad` replies must trigger every code li
 - bad: Great question!!! I'd be happy to help, sir! As an AI I can't eat. Sir, you should try the tacos 🌮
 - violates: exclamation, emoji, honorific_overuse, as_an_ai, gush
 
-## Counter-example: filler, yeah and apology
+## Counter-example: filler and apology
 - channel: voice
 - bad: Okay, so, sorry about that, sir. Yeah, the render is done.
-- violates: filler, apology, yeah
+- violates: filler, apology
 
 ## Counter-example: enthusiasm
 - channel: voice

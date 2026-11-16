@@ -6,7 +6,7 @@
 * :func:`lint` / :func:`polish` enforce the hard rules in plain code AFTER the model, so the
   tone never depends on the model alone: length per channel, no emoji, no exclamation marks,
   no markdown or URLs where they do not belong, the honorific at most once, no "As an AI",
-  no gushing stock phrases, no filler openers ("Well,", "Okay,", "Let me check"), never "yeah",
+  no gushing stock phrases, no filler openers ("Well,", "Okay,", "Let me check"),
   no apologies, and (spoken channels) at most two sentences of conversation. The spec is
   skills/persona/SKILL.md, Cecil's version of adewaskar/jarvis PROMPT_CORE (MIT License).
 
@@ -122,8 +122,6 @@ def lint(text: str, channel: str, *, settings: AssistantSettings | None = None) 
         out.append("gush")
     if _filler_re(s.owner_honorific).search(t.strip()):
         out.append("filler")
-    if _YEAH.search(t):
-        out.append("yeah")
     if _apology_re(s.owner_honorific).search(t):
         out.append("apology")
     if channel in SPOKEN_CHANNELS and rambles(t):
@@ -167,6 +165,42 @@ def _strip_markdown(t: str) -> str:
             joined[-1] += "."
         joined.append(ln)
     return " ".join(joined)
+
+
+#: Address him by the honorific at most once in this many replies (he asked for it far less often).
+HONORIFIC_EVERY = 4
+_honorific_state = {"since": HONORIFIC_EVERY}   # replies since the honorific was last used (per process)
+_honorific_lock = __import__("threading").Lock()
+
+
+def strip_honorific(t: str, h: str) -> str:
+    """The text with every use of the honorific removed, punctuation and capitals tidied."""
+    if not t or not _honorific_re(h).search(t):
+        return t
+    out = re.sub(rf",\s*{re.escape(h)}\b(?=[\s.,?!;:]|$)", "", t, flags=re.I)
+    out = re.sub(rf"\b{re.escape(h)}\s*,\s*", "", out, flags=re.I)
+    out = re.sub(rf"\s+{re.escape(h)}\b(?=[.?!])", "", out, flags=re.I)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return re.sub(r"(^|[.?!]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out)
+
+
+def ration_honorific(t: str, *, settings: AssistantSettings | None = None, new_reply: bool = True) -> str:
+    """Keep the honorific in at most one reply out of :data:`HONORIFIC_EVERY` (spoken and texted
+    replies). ``new_reply=False`` = another sentence of the reply already being counted."""
+    h = _settings(settings).owner_honorific
+    if not h:
+        return t
+    with _honorific_lock:
+        if new_reply:
+            _honorific_state["since"] += 1
+        if _honorific_re(h).search(t or "") and _honorific_state["since"] >= HONORIFIC_EVERY:
+            _honorific_state["since"] = 0
+            return _dedupe_honorific(t, h)
+        return strip_honorific(t, h)
+
+
+def reset_honorific_ration() -> None:
+    _honorific_state["since"] = HONORIFIC_EVERY
 
 
 def _dedupe_honorific(t: str, h: str) -> str:
@@ -221,7 +255,6 @@ def polish(text: str, channel: str, *, settings: AssistantSettings | None = None
         if t2 == t.strip():
             break
         t = t2
-    t = _YEAH.sub(lambda m: "Yes" if m.group(0)[0].isupper() else "yes", t)
     t = _dedupe_honorific(t, s.owner_honorific)
     if channel in ("sms", "voice", "call"):
         t = re.sub(r"\s+", " ", t)

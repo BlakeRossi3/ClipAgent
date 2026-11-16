@@ -133,6 +133,12 @@ def _no_network(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
 
+    # Honorific rationing is stateful across replies: off unless a test turns it on (test_assistant_persona).
+    from assistant import persona as _persona
+
+    monkeypatch.setattr(_persona, "HONORIFIC_EVERY", 0)
+    _persona.reset_honorific_ration()
+
     # No test may open a real browser tab (on his laptop the self-edit test run would pop them up).
     import webbrowser
 

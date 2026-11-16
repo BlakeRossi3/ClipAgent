@@ -533,7 +533,7 @@ def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply
     from assistant import persona
 
     s = get_assistant_settings()
-    body = persona.polish(text, "sms")
+    body = persona.ration_honorific(persona.polish(text, "sms"))
     if not body:
         raise ToolError("empty message")
     if kind != "reply" and outbound_sms_today() >= s.max_sms_per_day:

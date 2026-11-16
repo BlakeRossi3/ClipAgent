@@ -76,7 +76,7 @@ def test_prompt_core_rules_in_lint_and_polish():
     """Sterling's version of adewaskar/jarvis PROMPT_CORE: no filler, no enthusiasm, no apology, never "yeah",
     two sentences of conversation out loud (data readouts excepted)."""
     cases = {("Well, the render is complete.", "voice"): "filler", ("Let me check.", "sms"): "filler",
-             ("Yeah, it's done.", "voice"): "yeah", ("Sorry, sir, the file is missing.", "sms"): "apology",
+             ("Sorry, sir, the file is missing.", "sms"): "apology",
              ("My mistake. The hours are fixed.", "sms"): "apology", ("Sure, sir. Done.", "voice"): "gush",
              ("It is done. It took long. The captions look good.", "voice"): "rambling"}
     for (text, ch), code in cases.items():
@@ -89,13 +89,23 @@ def test_prompt_core_rules_in_lint_and_polish():
     for ok in ("So far, three uploads went out.", "Great Britain is on the map, sir.", "Right on schedule.",
                "I'm afraid the quota is spent, sir.", "Yes, sir."):
         assert persona.lint(ok, "voice") == [], ok
-    assert persona.polish("Yeah.", "sms") == "Yes."
+    assert persona.polish("Yeah, done.", "sms") == "Yeah, done."   # casual is fine now
     assert "rambling" not in persona.lint("One. Two. Three.", "sms")       # the sentence ceiling is for speech
     assert "Two sentences at most" in persona.system_blocks("voice")[1]
 
 
 def test_persona_spec_has_the_prompt_core_sections():
     body = persona.registry.load_skills()["persona"].body
-    for heading in ("## Length", "is positional", "## Reporting", "## Never", "## Register"):
+    for heading in ("## Length", "now and then", "## Reporting", "## Never", "## Register"):
         assert heading in body, heading
-    assert "never \"yeah\"" in body.lower() and "Two sentences is the ceiling" in body
+    assert "casual" in body.lower() and "Two sentences is the ceiling" in body
+
+
+def test_sir_only_once_every_few_replies(monkeypatch):
+    from assistant import persona as p
+    monkeypatch.setattr(p, "HONORIFIC_EVERY", 4)
+    p.reset_honorific_ration()
+    said = [p.ration_honorific(t) for t in ("Done, sir.", "Sir, the upload failed.", "Logged, sir.",
+                                            "It's on your screen, sir.", "Got it, sir.")]
+    assert said == ["Done, sir.", "The upload failed.", "Logged.", "It's on your screen.", "Got it, sir."]
+    assert p.ration_honorific("Second sentence, sir.", new_reply=False) == "Second sentence."
