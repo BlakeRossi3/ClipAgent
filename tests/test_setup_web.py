@@ -81,7 +81,7 @@ def test_redirects_to_setup_until_finished(c, wiz):
     assert c.get("/dashboard/", follow_redirects=False).status_code == 200
     assert c.get("/", follow_redirects=False).headers["location"] == "/dashboard/"
     hub = c.get("/setup/").text                                   # now the Settings page
-    assert "Check for updates" in hub and "Begin" not in hub
+    assert "Update now" in hub and "Begin" not in hub
 
 
 def test_every_step_page_renders(c):
@@ -434,60 +434,6 @@ def test_youtube_oauth_expired_and_denied(c, wiz, monkeypatch, clock):
 
 
 # --------------------------------------------------------------------------- maintenance
-
-class _Proc:
-    def __init__(self, out="", rc=0):
-        self.stdout, self.stderr, self.returncode = out, "", rc
-
-
-def test_update_runs_exact_shell_free_commands(monkeypatch):
-    calls = []
-    heads = iter(["aaa", "bbb"])
-    digests = iter(["old", "new"])
-
-    def fake_run(argv, **kw):
-        calls.append((argv, kw))
-        assert "shell" not in kw and isinstance(argv, list)
-        if argv[1:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
-            return _Proc("claude/clever-allen-zi43bi\n")
-        if argv[1:] == ["rev-parse", "HEAD"]:
-            return _Proc(next(heads))
-        return _Proc("ok")
-
-    monkeypatch.setattr(setup_web.subprocess, "run", fake_run)
-    monkeypatch.setattr(setup_web.shutil, "which", lambda name: "/usr/bin/git")
-    monkeypatch.setattr(setup_web, "_req_digest", lambda: next(digests))
-    res = setup_web.update_app()
-    assert res["ok"] and res["updated"]
-    assert [a for a, _ in calls] == [
-        ["/usr/bin/git", "rev-parse", "--abbrev-ref", "HEAD"],
-        ["/usr/bin/git", "rev-parse", "HEAD"],
-        ["/usr/bin/git", "pull", "--ff-only", "origin", "claude/clever-allen-zi43bi"],
-        ["/usr/bin/git", "rev-parse", "HEAD"],
-        [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r",
-         str(setup_web.REPO_ROOT / "requirements.txt")],
-    ]
-    assert all(kw["cwd"] == str(setup_web.REPO_ROOT) for _, kw in calls)
-
-
-@pytest.mark.parametrize("branch", ["HEAD", "--upload-pack=touch /tmp/x", "a..b", ""])
-def test_update_refuses_odd_branches(monkeypatch, branch):
-    calls = []
-    monkeypatch.setattr(setup_web.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv) or _Proc(branch + "\n"))
-    res = setup_web.update_app()
-    assert not res["ok"] and len(calls) == 1
-
-
-def test_update_pull_failure_changes_nothing(monkeypatch):
-    def fake_run(argv, **kw):
-        if "pull" in argv:
-            return _Proc("fatal: Not possible to fast-forward", 1)
-        return _Proc("main\n" if "--abbrev-ref" in argv else "aaa")
-    monkeypatch.setattr(setup_web.subprocess, "run", fake_run)
-    res = setup_web.update_app()
-    assert not res["ok"] and "Nothing was changed" in res["log"][-1]
-
 
 def test_restart_stop_and_update_buttons(c, wiz, monkeypatch):
     config_store.update({"SETUP_COMPLETE": "true"})

@@ -129,13 +129,15 @@ def _menu_section(path: str) -> str:
         return "staff"
     if path.startswith("/dashboard/events"):
         return "log"
+    if path.startswith("/dashboard/scheduled"):
+        return "scheduled"
     if path.rstrip("/") in ("/dashboard", ""):
         return "home"
     return "studio"
 
 
 def main_menus(path: str) -> list[dict[str, Any]]:
-    """The top bar: Cecil (home), Studio, Staff, Memory, Settings dropdowns, then Log. ``current`` marks
+    """The top bar: Cecil (home), Studio, Staff, Memory, Settings dropdowns, then Scheduled and Log. ``current`` marks
     the section and each item's ``current`` the page (exact path match)."""
     try:
         import home
@@ -161,6 +163,7 @@ def main_menus(path: str) -> list[dict[str, Any]]:
         {"key": "staff", "label": "Staff", "items": staff_items, "wide": True},
         {"key": "memory", "label": "Memory", "items": items(MEMORY_MENU)},
         {"key": "settings", "label": "Settings", "items": items(SETTINGS_MENU), "right": True},
+        {"key": "scheduled", "label": "Scheduled", "href": "/dashboard/scheduled"},
         {"key": "log", "label": "Log", "href": "/dashboard/events"},
     ]
     for m in menus:
@@ -199,6 +202,9 @@ _FLASH = {
     "chat_long": ("warning", "That message is too long for one go. Shorten it and try again."),
     "chat_off": ("warning", "The assistant is not taking messages right now."),
     "chat_bad_image": ("warning", "That image was not accepted (PNG, JPEG, WebP or GIF, up to 8 MB, 4 per message)."),
+    "avatar_saved": ("good", "New picture saved."),
+    "avatar_reset": ("good", "Back to the drawing."),
+    "avatar_bad": ("warning", "That picture was not accepted (PNG, JPEG, WebP or GIF, up to 2 MB)."),
     "sterling_stopped": ("warning", "The assistant is stopped. Start it again here or text START CECIL."),
     "sterling_started": ("good", "The assistant is back on."),
     "sterling_undone": ("good", "The assistant's last code change was undone; ClipAgent is restarting."),
@@ -708,7 +714,7 @@ def _render(request: Request, template: str, ctx: dict[str, Any], *, status_code
     except sqlite3.Error:  # pragma: no cover - unreadable DB still renders the error page
         demo = None
     flash = _FLASH.get(request.query_params.get("msg", ""))
-    if nav in ("home", "memory", "login", "settings", "staff"):
+    if nav in ("home", "memory", "login", "settings", "staff", "scheduled"):
         section = nav
     else:
         section = "studio"

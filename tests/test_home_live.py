@@ -83,8 +83,8 @@ def test_static_assets_are_served(client):
 
 # -- the staff as Invincible characters -------------------------------------------------------
 
-EXPECTED = {"main": "Cecil", "studio": "Atom Eve", "ledger": "Debbie", "quartermaster": "Donald",
-            "archivist": "The Immortal", "researcher": "Allen", "engineer": "Robot", "briefer": "Invincible"}
+EXPECTED = {"main": "Cecil", "studio": "Invincible", "ledger": "Art", "quartermaster": "Debbie",
+            "archivist": "The Immortal", "researcher": "Allen", "engineer": "Robot", "briefer": "Donald"}
 
 
 def test_staff_display_names_keep_ids_stable():
@@ -93,21 +93,25 @@ def test_staff_display_names_keep_ids_stable():
     rows = {r["name"]: r for r in home.staff_nav()}
     assert {k: rows[k]["display"] for k in EXPECTED} == EXPECTED
     assert all(rows[k]["character"] for k in EXPECTED)
-    assert home.agent_display("ledger") == "Debbie" and home.agent_display(None) == "Cecil"
+    assert home.agent_display("ledger") == "Art" and home.agent_display(None) == "Cecil"
     assert home.agent_display("someone-new") == "Someone new"
-    # every character sprite is original 16x16 pixel art
-    for name, spec in home.CHARACTERS.items():
-        assert len(spec["rows"]) == 16 and all(len(r) == 16 for r in spec["rows"]), name
-        assert 'viewBox="0 0 16 16"' in home.sprite_svg(name)
+    # every character is an original drawn chibi portrait (inline SVG), eyes on the blink layer
+    assert set(home.CHARACTERS) == set(EXPECTED)
+    for name in home.CHARACTERS:
+        svg = home.sprite_svg(name)
+        assert 'viewBox="0 0 64 64"' in svg and 'class="px-eyes"' in svg and f"sprite-{name}" in svg, name
+        assert 'class="px-eyes"' in home.sprite_svg(name, pose="alert", size=24)
+    assert home.CHARACTER_NAMES["studio"] == "Invincible" and home.CHARACTER_NAMES["ledger"] == "Art Rosenbaum"
+    assert 'viewBox="0 0 64 64"' in home.sprite_svg("someone-new")          # a generic figure for new staff
 
 
 def test_feed_and_runs_show_display_names_not_ids():
     store.record_agent_run("ledger", "Totalled the week", model="m", duration_ms=5, cost_usd=0.01, status="ok",
                            summary="Week total: 32 h")
     who = {i["who"] for i in home.feed_data()}
-    assert "Debbie" in who and "Ledger" not in who
+    assert "Art" in who and "Ledger" not in who
     work = home_live.recent_work()
-    assert work[0]["who"] == "Debbie" and work[0]["agent"] == "ledger"
+    assert work[0]["who"] == "Art" and work[0]["agent"] == "ledger"
 
 
 def test_staff_page_lists_characters(client):
@@ -168,7 +172,7 @@ def test_recent_chats_pair_exchanges_across_channels():
     store.add_message("in", "dashboard", "two")
     store.add_message("out", "voice", "announcement", agent="briefer")
     chats = home_live.recent_chats()
-    assert chats[0]["them"] == "announcement" and chats[0]["who"] == "Invincible" and chats[0]["you"] is None
+    assert chats[0]["them"] == "announcement" and chats[0]["who"] == "Donald" and chats[0]["you"] is None
     pairs = {(c["you"], c["them"]) for c in chats}
     assert ("one", "reply one") in pairs and ("two", None) in pairs
 

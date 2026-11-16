@@ -99,14 +99,14 @@
 <section class="card s-maint">
   <h2 class="sec-title">Maintenance</h2>
   <div class="s-btnrow">
-    <form method="post" action="/setup/action/update"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Check for updates</button></form>
+    <form method="post" action="/setup/action/update"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn{% if update and update.available %} hbtn-accent{% endif %}" type="submit">{% if update and update.available %}Update now ({{ update.behind }} new){% else %}Update now{% endif %}</button></form>
     <form method="post" action="/setup/action/restart"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled title="Only when started from the ClipAgent shortcut"{% endif %}>Restart</button></form>
     <form method="post" action="/setup/action/stop"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit"{% if not can_control %} disabled{% endif %}>Stop</button></form>
     <a class="hbtn" href="/setup/done">Run health check</a>
     <form method="post" action="/setup/action/selfcheck"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit" title="Cecil tries every capability on your real data, undoes every change and sends nothing">Run self-check</button></form>
     {% if windows %}<form method="post" action="/setup/action/open-data"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn" type="submit">Open data folder</button></form>{% endif %}
   </div>
-  <p class="f-help">Your settings live in <code>{{ s.config_file }}</code>; your data in <code>{{ s.data_dir }}</code>. Updates never touch either.</p>
+  <p class="f-help">{% if update and update.checked_at %}{% if update.available %}{{ update.label }} on {{ update.upstream }}.{% elif update.error %}Last update check: {{ update.error }}{% else %}Up to date{% if update.head %} (build {{ update.head }}){% endif %}.{% endif %} Checked {{ update.checked_at | ago }}. {% endif %}Update now fetches the latest version, keeps {{ a.name }}'s own changes, and restarts. Your settings live in <code>{{ s.config_file }}</code>; your data in <code>{{ s.data_dir }}</code>. Updates never touch either.</p>
 </section>
 
 {% elif step == "action" %}

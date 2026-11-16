@@ -86,5 +86,21 @@
       if (cur && document.documentElement.classList.contains('nav-open') && window.matchMedia('(max-width: 980px)').matches) open(cur.parentNode);
     });
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  /* "Update available": the server checks git at most every 10 minutes (cached); the chip posts to
+     /setup/action/update (the same one-click update as Settings). */
+  function checkUpdate() {
+    var chip = document.querySelector('[data-update-chip]');
+    if (!chip || !window.fetch) return;
+    fetch('/dashboard/api/update', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.available) return;
+        var label = chip.querySelector('[data-update-label]');
+        if (label) label.textContent = j.label || 'Update available';
+        chip.hidden = false;
+      })
+      .catch(function () {});
+  }
+  function boot() { init(); checkUpdate(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

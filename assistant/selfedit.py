@@ -52,6 +52,7 @@ MAX_SUMMARY = 600
 HEALTH_RETRY_SEC = 3.0
 
 _app_dir: Path | None = None
+_active: dict[int, float] = {}        # id(Snapshot) -> monotonic start, while finish() tests/commits a change
 
 
 def app_dir() -> Path:
@@ -248,6 +249,16 @@ def _restore_protected(before: dict[str, bytes | None]) -> list[str]:
     return restored
 
 
+def in_flight() -> bool:
+    """A change is being tested / committed right now (:func:`finish`); the in-browser update waits."""
+    limit = get_assistant_settings().self_edit_test_timeout_sec + 900
+    now = time.monotonic()
+    for k, t0 in list(_active.items()):
+        if now - t0 > limit:          # a turn that never finished: stop counting it
+            _active.pop(k, None)
+    return bool(_active)
+
+
 def begin() -> Snapshot:
     """Before a full-power turn. Never raises: a broken git setup just disables the guardrail."""
     s = get_assistant_settings()
@@ -275,7 +286,11 @@ def finish(snap: Snapshot, *, summary: str = "") -> Outcome | None:
     """After the turn: test, then commit + restart, or roll back. None when nothing changed.
     Owner-only files (the heartbeat checklist) are restored first, whatever else happened."""
     restored = _restore_protected(snap.protected) if snap.protected else []
-    out = _finish(snap, summary=summary)
+    _active[id(snap)] = time.monotonic()
+    try:
+        out = _finish(snap, summary=summary)
+    finally:
+        _active.pop(id(snap), None)
     if not restored:
         return out
     if out is None:
@@ -549,8 +564,9 @@ def verify_after_restart(port: int, *, wait: float = 8.0, fetch: Callable[[str],
         db.log_event("assistant", "self-edit verified after restart", data={"commit": pending.get("commit")})
         return "healthy"
     git("reset", "--hard", str(pending["prev"]))
-    out = Outcome("rolled_back", "My last code change broke the app after the restart, so I put the previous "
-                  "version back.", [], pending.get("commit"))
+    out = Outcome("rolled_back", "The update broke the app after the restart, so I put the previous version back."
+                  if pending.get("reason") == "update" else "My last code change broke the app after the restart, "
+                  "so I put the previous version back.", [], pending.get("commit"))
     _remember(out)
     try:
         from assistant import tools

@@ -109,7 +109,12 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   when the limit state changes; they are recorded and shown by `usage_status` and on the dashboard.
   Non-urgent work (`usage.should_defer`) and his requests during a plan limit are queued in
   `as_deferred` and run oldest-first a few minutes after the reset (`assistant_deferred` job, every 10
-  min); `schedule_prompt` queues any prompt for a time or for after the reset.
+  min); `schedule_prompt` queues a background task for a time ("in 2 hours", "tomorrow 9am", optional daily /
+  weekdays / weekly repeat) or for after the reset (`assistant/schedule.py`; everything planned is on the
+  dashboard's Scheduled page). Near the limit (a window at 90%, or the limit hit) work in flight is written to a
+  handoff note (`Agent/Handoffs/`) and one resume task is scheduled for the next window (`assistant/handoff.py`,
+  tool `usage_handoff`). Every morning (`ASSISTANT_MORNING_SURPRISE`, default 07:40) `assistant/surprise.py` has
+  him make the owner something cool.
 
 ### Guardrails for full powers
 
@@ -220,21 +225,24 @@ The main agent is **Cecil** (default `ASSISTANT_NAME`; until now it was "Sterlin
 (kv `assistant:name_migrated`), and only when it is exactly the old default; a name you chose stays. SMS
 `STOP CECIL` / `START CECIL` (the old `... STERLING` still work).
 
-The sub-agents look and are named like characters from *Invincible* (original 16x16 pixel art in
-`home.CHARACTERS`, evoking palette and costume only). **Agent ids never changed**: they are stored in
+The sub-agents look and are named like characters from *Invincible* (ORIGINAL chibi vector portraits drawn
+in code by `home.py` (`_draw_<id>`, listed in `home.CHARACTERS`), evoking palette and costume only; no official or
+fan art). The owner can swap any portrait for his own picture on the Staff page ("Change picture": PNG/JPEG/WebP/GIF
+up to 2 MB, checked by magic bytes, stored only in `<data_dir>/avatars/<id>.<ext>`, served by
+`GET /dashboard/avatars/<id>`; "Reset to drawing" removes it). **Agent ids never changed**: they are stored in
 `as_agent_runs.agent` / `as_messages.agent` and used by `delegate`, so only `display_name` (+ `character`)
 in each `agents/*.md` changed. `home.agent_display(id)` is the one place names are resolved.
 
 | id | shown as | character | why |
 |---|---|---|---|
 | `main` | Cecil | Cecil Stedman | the director who sees the whole board and sends the right hero |
-| `studio` | Atom Eve | Atom Eve | makes things out of raw material: the Shorts |
-| `ledger` | Debbie | Debbie Grayson | keeps the household's books straight |
-| `quartermaster` | Donald | Donald Ferguson | Cecil's unflappable logistics man: meals, routines, check-ins |
+| `studio` | Invincible | Mark Grayson | the public face, out doing the work: the Shorts |
+| `briefer` | Donald | Donald Ferguson | Cecil's right-hand man, who keeps him briefed: briefs, wraps, weekly review |
+| `quartermaster` | Debbie | Debbie Grayson | Mark's mum: meals, routines, wellbeing check-ins |
+| `ledger` | Art | Art Rosenbaum | the tailor who runs his own small business: money, hours, pay |
 | `archivist` | The Immortal | The Immortal | remembers everything, across millennia |
 | `researcher` | Allen | Allen the Alien | the Coalition's field evaluator: sizes up every world |
 | `engineer` | Robot | Robot (Rudy) | rebuilds himself to be better: self-improvement |
-| `briefer` | Invincible | Mark Grayson | first on the scene, reports back: briefs and wraps |
 
 `staff_rename` gives an agent a new id and makes the new name the one shown (it also rewrites main.md's
 `- id (Display):` roster line); `staff_update(name, {"display_name": ...})` changes only the name shown.

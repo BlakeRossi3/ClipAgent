@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Scheduled{% endblock %}
+{% macro item_row(it, recent=False) %}
+<li class="sched-item{% if it.source == 'job' %} is-job{% endif %}">
+  <span class="sched-when">{{ it.when }}</span>
+  <div>
+    <span class="sched-kind k-{{ it.kind }}">{{ it.kind_label }}</span>
+    <span class="sched-title">{{ it.title }}</span>
+    <span class="sched-meta">
+      {% if it.source == "scheduled" %}#{{ it.id }} · {% endif %}{% if it.by %}by {{ it.by }}{% endif %}{% if it.why %} · {{ it.why }}{% endif %}{% if it.recur %} · repeats {{ it.recur }}{% endif %}{% if it.get("channel") == "sms" %} · result by text{% endif %}{% if it.detail and it.source == "job" %} · {{ it.detail }}{% endif %}
+    </span>
+    {% if it.get("notes") %}<span class="sched-meta">Handoff notes: {% for n in it.notes %}<a href="/dashboard/memory?note={{ n | urlencode }}">{{ n }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+    {% if recent %}<span class="sched-meta"><span class="sched-outcome o-{{ it.outcome }}">{{ it.outcome }}</span>{% if it.result %} · {{ it.result[:240] }}{% endif %}</span>{% endif %}
+  </div>
+  {% if it.actions %}
+  <div class="sched-actions">
+    <form method="post" action="/dashboard/scheduled/{{ it.id }}/run"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn hbtn-sm" type="submit">Run now</button></form>
+    <form method="post" action="/dashboard/scheduled/{{ it.id }}/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="hbtn hbtn-sm" type="submit">Cancel</button></form>
+  </div>
+  {% else %}<span></span>{% endif %}
+</li>
+{% endmacro %}
+{% block content %}
+<div class="home">
+<div class="page-head-h">
+  <h1>Scheduled</h1>
+  <p class="lede-h">Everything {{ assistant_name }} has planned: questions he'll ask you, tasks he set himself, routine jobs, and what just ran. {{ snap.usage }}</p>
+</div>
+{% if msg %}<p class="card voice" role="status">{{ msg }}</p>{% endif %}
+{% if error %}<p class="card voice" role="alert">{{ error }}</p>{% endif %}
+<div class="sched-grid">
+<div>
+  {% if snap.running or snap.other_tasks %}
+  <section class="card"><h2 class="sec-title">Running now</h2>
+    <ul class="sched-list">
+      {% for it in snap.running %}{{ item_row(it) }}{% endfor %}
+      {% for t in snap.other_tasks %}<li class="sched-item"><span class="sched-when">since {{ t.started }}</span><div><span class="sched-kind k-task">Background task</span><span class="sched-title">{{ t.task }}</span>{% if t.step %}<span class="sched-meta">{{ t.step }}</span>{% endif %}</div><span></span></li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  <section class="card"><h2 class="sec-title">Coming up</h2>
+    {% if snap.upcoming %}<ul class="sched-list">{% for it in snap.upcoming %}{{ item_row(it) }}{% endfor %}</ul>
+    {% else %}<p class="muted">Nothing planned yet.</p>{% endif %}
+  </section>
+  <section class="card"><h2 class="sec-title">Recently done</h2>
+    {% if snap.recent %}<ul class="sched-list">{% for it in snap.recent %}{{ item_row(it, True) }}{% endfor %}</ul>
+    {% else %}<p class="muted">Nothing has run from the schedule yet.</p>{% endif %}
+  </section>
+</div>
+<div>
+  <section class="card"><h2 class="sec-title">Ask {{ assistant_name }} to do something later</h2>
+    <form class="sched-form" method="post" action="/dashboard/scheduled/new">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="f-help" for="sched-text">What to do</label>
+      <textarea id="sched-text" name="text" rows="3" maxlength="4000" required placeholder="Check the Artemis launch news and tell me what changed"></textarea>
+      <div class="row">
+        <div><label class="f-help" for="sched-at">When</label><input id="sched-at" name="at" value="tomorrow 9am" placeholder="in 2 hours, 7:10am, tomorrow 9am"></div>
+        <div><label class="f-help" for="sched-repeat">Repeat</label><select id="sched-repeat" name="repeat"><option value="">Once</option><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select></div>
+      </div>
+      <p><button class="hbtn hbtn-accent" type="submit">Schedule it</button></p>
+    </form>
+  </section>
+  <section class="card"><h2 class="sec-title">Morning surprise</h2>
+    {% if snap.surprise %}
+      <p><strong>{{ snap.surprise.title }}</strong> <span class="muted">· {{ snap.surprise.day }}{% if snap.surprise.kind %} · {{ snap.surprise.kind | replace("_", " ") }}{% endif %}</span></p>
+      {% if snap.surprise.summary %}<p class="voice">{{ snap.surprise.summary }}</p>{% endif %}
+      <p class="s-btnrow">{% if snap.surprise.html_url %}<a class="hbtn hbtn-accent" href="{{ snap.surprise.html_url }}" target="_blank" rel="noopener">Open it</a> {% endif %}<a class="hbtn" href="/dashboard/memory?note={{ snap.surprise.path | urlencode }}">Read the note</a></p>
+    {% else %}<p class="muted">Nothing yet.</p>{% endif %}
+    <p class="f-help">{% if snap.surprise_time %}Every morning at {{ snap.surprise_time }}{% else %}Off{% endif %} (setting <code>ASSISTANT_MORNING_SURPRISE</code>).</p>
+  </section>
+  <section class="card"><h2 class="sec-title">Usage handoff</h2>
+    {% if snap.handoff %}
+      <p>Picks up {{ snap.handoff.when }}: <strong>{{ snap.handoff.title }}</strong></p>
+      <p class="f-help">{% for n in snap.handoff.notes %}<a href="/dashboard/memory?note={{ n | urlencode }}">{{ n }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% else %}<p class="muted">Nothing handed over. When the Claude plan is nearly used up, unfinished work is written down and picked up when the window resets.</p>{% endif %}
+  </section>
+  {% if snap.routine %}
+  <section class="card"><h2 class="sec-title">Always running</h2>
+    <ul class="plain">{% for r in snap.routine %}<li>{{ r.title }} <span class="muted">· {{ r.every }}{% if r.detail %} · {{ r.detail }}{% endif %}</span></li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+</div>
+</div>
+</div>
+{% endblock %}

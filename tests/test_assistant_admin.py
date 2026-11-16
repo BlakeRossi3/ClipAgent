@@ -254,7 +254,7 @@ def test_staff_add_rename_update_delete_restore(cfg, staff_dir):
     agents = valid()
     assert "bookie" in agents and "ledger" not in agents and agents["bookie"].extra["role"] == "Bookkeeper"
     main_md = (staff_dir / "main.md").read_text()
-    assert "- bookie (Bookie):" in main_md and "(Debbie)" not in main_md and "ledger_summary" in main_md
+    assert "- bookie (Bookie):" in main_md and "(Art)" not in main_md and "ledger_summary" in main_md
     assert agents["bookie"].extra["display_name"] == "Bookie"         # the new name is the one shown
     admin.staff_update("bookie", {"description": "The books.", "add_tools": ["pay_log"], "remove_tools": ["goals_update"]})
     b = valid()["bookie"]
@@ -276,7 +276,7 @@ def test_staff_add_rename_update_delete_restore(cfg, staff_dir):
     assert "bookie" not in valid()
     admin.app_undo(d["change_id"])                         # undo the delete
     admin.app_undo(r["change_id"])                         # ...and the rename restores ledger + main.md
-    assert "ledger" in valid() and "- ledger (Debbie):" in (staff_dir / "main.md").read_text()
+    assert "ledger" in valid() and "- ledger (Art):" in (staff_dir / "main.md").read_text()
     r = _call("staff_list")
     assert r.ok and "penny-pincher" in r.content
 

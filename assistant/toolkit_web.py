@@ -410,3 +410,107 @@ async def skills_uninstall(request: Request) -> Response:
         res = sc.uninstall(str(form.get("name") or ""), via="dashboard")
         return f"Uninstalled {res['uninstalled']} (archived; UNDO restores it). {res['commit_result']}"
     return await _skills_action(request, act)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled: everything planned (assistant/schedule.py), the morning surprise, the update check
+# ---------------------------------------------------------------------------
+
+def _sched_page(request: Request, *, msg: str | None = None, error: str | None = None, status: int = 200) -> Response:
+    from assistant import schedule
+
+    return _dash()._render(request, "scheduled.html", {"snap": schedule.snapshot(), "msg": msg, "error": error},
+                           status_code=status, nav="scheduled")
+
+
+@router.get("/scheduled", include_in_schema=False)
+async def scheduled_page(request: Request) -> Response:
+    if (r := _get_guard(request)) is not None:
+        return r
+    msg = {"cancelled": "Cancelled.", "started": "Started. It runs in the background and reports back.",
+           "added": "Scheduled."}.get(str(request.query_params.get("done") or ""))
+    return await run_in_threadpool(_sched_page, request, msg=msg)
+
+
+@router.get("/api/scheduled")
+def scheduled_json(request: Request) -> Response:
+    d = _dash()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    from assistant import schedule
+
+    return d._json(schedule.snapshot())
+
+
+def _see_other(path: str) -> Response:
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(path, status_code=303)
+
+
+@router.post("/scheduled/new", include_in_schema=False)
+async def scheduled_new(request: Request) -> Response:
+    from assistant import schedule
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    try:
+        when = schedule.parse_when(str(form.get("at") or ""))
+        schedule.schedule(str(form.get("text") or "")[:4000], when=when, recur=str(form.get("repeat") or "") or None,
+                          by="you (Scheduled page)", why="asked on the Scheduled page")
+    except schedule.ScheduleError as exc:
+        return await run_in_threadpool(lambda: _sched_page(request, error=f"Not scheduled: {exc}.", status=400))
+    return _see_other("/dashboard/scheduled?done=added")
+
+
+@router.post("/scheduled/{item_id}/{action}", include_in_schema=False)
+async def scheduled_action(request: Request, item_id: int, action: str) -> Response:
+    from assistant import schedule
+
+    err, form = await _post(request)
+    if err is not None:
+        return err
+    if action == "cancel":
+        ok = schedule.cancel(item_id, via="dashboard")
+    elif action == "run":
+        ok = await run_in_threadpool(schedule.run_now, item_id, via="dashboard")
+    else:
+        return _dash()._not_found(request, "That action")
+    if not ok:
+        return await run_in_threadpool(lambda: _sched_page(
+            request, error="That one is not waiting any more (it already ran, is running, or was cancelled).",
+            status=409))
+    return _see_other(f"/dashboard/scheduled?done={'cancelled' if action == 'cancel' else 'started'}")
+
+
+@router.get("/surprises/{name}", include_in_schema=False)
+def surprise_html(request: Request, name: str) -> Response:
+    """The morning surprise's HTML toy, sandboxed: its scripts run in an opaque origin with no network,
+    so model-written code can never reach the dashboard, its cookie or any other site."""
+    if (r := _get_guard(request)) is not None:
+        return r
+    from assistant import surprise
+
+    data = surprise.safe_html(name.removesuffix(".html")) if name.endswith(".html") else None
+    if data is None:
+        return _dash()._not_found(request, "That surprise")
+    return Response(data, media_type="text/html; charset=utf-8", headers={
+        "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
+                                   "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:",
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@router.get("/api/update")
+async def update_status(request: Request) -> Response:
+    """Is a newer version published? (git fetch at most every 10 minutes; cached.)"""
+    d = _dash()
+    resp, _ = d._guard(request, api=True)
+    if resp is not None:
+        return resp
+    import updater
+
+    force = request.query_params.get("force") == "1"
+    st = await run_in_threadpool(updater.check, force=force)
+    return d._json(updater.public(st))

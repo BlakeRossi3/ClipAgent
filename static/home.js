@@ -148,6 +148,95 @@
     });
   }
 
+  /* ---- collapsible widgets ------------------------------------------------------------------
+     Every [data-widget] gets a chevron in its header (.sec-title / .rail-h). Collapsed = only the header
+     shows. State per widget in localStorage (optional: every access is guarded). Re-applied after each
+     live refresh, which replaces some widgets' markup. */
+  var WG_KEY = 'clipagent.widgets.v1';
+  function wgLoad() {
+    try { var v = JSON.parse(window.localStorage.getItem(WG_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; }
+    catch (e) { return {}; }
+  }
+  function wgSave(state) { try { window.localStorage.setItem(WG_KEY, JSON.stringify(state)); } catch (e) { /* private mode */ } }
+  var wgState = wgLoad();
+  var CHEVRON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function wgTitle(head) {
+    var t = '';
+    Array.prototype.forEach.call(head.childNodes, function (n) { if (n.nodeType === 3) t += n.textContent; });
+    return t.trim() || 'panel';
+  }
+  function wgApply(w, collapsed) {
+    w.classList.toggle('is-collapsed', collapsed);
+    var b = w.querySelector('.wg-toggle');
+    if (b) {
+      b.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      var name = b.getAttribute('data-name') || 'panel';
+      b.setAttribute('aria-label', (collapsed ? 'Expand ' : 'Collapse ') + name);
+      b.title = collapsed ? 'Expand' : 'Collapse';
+    }
+  }
+  function wgLabelAll() {
+    var all = document.querySelectorAll('[data-widget]');
+    var anyOpen = Array.prototype.some.call(all, function (w) { return !w.classList.contains('is-collapsed'); });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-wg-all]'), function (b) {
+      var long = b.classList.contains('jv-btn');
+      b.textContent = anyOpen ? (long ? 'Collapse all panels' : 'Collapse all') : (long ? 'Expand all panels' : 'Expand all');
+      b.setAttribute('data-wg-mode', anyOpen ? 'collapse' : 'expand');
+    });
+  }
+  function enhanceWidgets(root) {
+    Array.prototype.forEach.call((root || document).querySelectorAll('[data-widget]'), function (w) {
+      var key = w.getAttribute('data-widget');
+      var head = null;
+      for (var i = 0; i < w.children.length; i++) {
+        if (/\b(sec-title|rail-h)\b/.test(w.children[i].className)) { head = w.children[i]; break; }
+      }
+      if (!head) return;
+      var b = head.querySelector('.wg-toggle');
+      if (!b) {
+        b = document.createElement('button');
+        b.type = 'button'; b.className = 'wg-toggle'; b.innerHTML = CHEVRON;
+        b.setAttribute('data-name', wgTitle(head));
+        head.appendChild(b);
+      }
+      wgApply(w, !!wgState[key]);
+    });
+    wgLabelAll();
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest && ev.target.closest('.wg-toggle');
+    if (b) {
+      var w = b.closest('[data-widget]');
+      if (!w) return;
+      ev.preventDefault();
+      var key = w.getAttribute('data-widget');
+      var collapsed = !w.classList.contains('is-collapsed');
+      if (collapsed) wgState[key] = 1; else delete wgState[key];
+      wgSave(wgState); wgApply(w, collapsed); wgLabelAll();
+      return;
+    }
+    var all = ev.target.closest && ev.target.closest('[data-wg-all]');
+    if (all) {
+      ev.preventDefault();
+      var collapse = all.getAttribute('data-wg-mode') !== 'expand';
+      Array.prototype.forEach.call(document.querySelectorAll('[data-widget]'), function (w) {
+        var k = w.getAttribute('data-widget');
+        if (collapse) wgState[k] = 1; else delete wgState[k];
+        wgApply(w, collapse);
+      });
+      wgSave(wgState); wgLabelAll();
+    }
+  });
+  enhanceWidgets();
+  window.ClipWidgets = { enhance: enhanceWidgets };
+
+  /* ---- staff pictures: pick a file -> upload at once (the Save button is the no-JS path) ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('[data-avatar-tools]'), function (box) {
+    box.classList.add('js');
+    var input = box.querySelector('input[type=file]');
+    if (input) input.addEventListener('change', function () { if (input.files.length) input.form.submit(); });
+  });
+
   /* ---- live refresh ------------------------------------------------------- */
   if (!home || !window.fetch) return;
   var every = Math.max(10, +home.getAttribute('data-refresh') || 25) * 1000, timer = null;
@@ -166,6 +255,7 @@
           box.innerHTML = j.html[k];
           open.forEach(function (id) { var d = document.getElementById(id); if (d) d.open = true; });
         });
+        enhanceWidgets();
         var hero = document.getElementById('hero');
         if (hero) hero.className = hero.className.replace(/\bmood-\S+/g, '').trim() + ' mood-' + j.mood;
         var nb = document.querySelector('[data-needs-count]');

@@ -17,9 +17,10 @@ Security (the pages can set secrets and update / restart the app):
   ``Content-Length`` under a per-route limit (uploads included).
 * Secrets are written to ``config.env`` only (:mod:`config_store`); pages show "saved", never
   the value; events log key names only.
-* "Check for updates" runs exactly ``git pull --ff-only origin <current branch>`` in the app
-  folder and, when ``requirements.txt`` changed, ``<this python> -m pip install -r requirements.txt``
-  (argv lists, never a shell), then restarts.
+* "Update now" (:mod:`updater`): ``git fetch origin``, then merge the published branch (the assistant's
+  branch keeps its own edits; a conflict keeps them on a backup branch and takes the published version),
+  ``pip install -r requirements.txt`` only when it changed (argv lists, never a shell), then restarts;
+  ``/healthz`` after the restart, else the previous commit comes back. Refused while Cecil is mid-change.
 * YouTube: OAuth code flow with PKCE and a server-side ``state`` (kv, 15 min, single use),
   loopback redirect ``http://127.0.0.1:<port>/setup/youtube/callback``.
 * Vault import: zip / tar(.gz) of ``.md`` notes; absolute paths, ``..``, links, special files,
@@ -35,7 +36,6 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import tarfile
 import zipfile
@@ -71,7 +71,6 @@ MAX_ARCHIVE_TOTAL = 60 * 1024 * 1024       # uncompressed notes in it
 MAX_ARCHIVE_MEMBERS = 5000
 OAUTH_TTL = timedelta(minutes=15)
 DOCS = {"twilio": "TWILIO_SETUP.md", "youtube": "YOUTUBE_SETUP.md", "windows": "WINDOWS.md"}
-BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$")
 E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 API_KEY_RE = re.compile(r"^sk-ant-[A-Za-z0-9_\-]{10,300}$")
 
@@ -173,6 +172,13 @@ def _render(request: Request, step: str, ctx: Mapping[str, Any] | None = None, *
         base["cc"] = claude_status(probe=False)
     if step == "brain" and "powers" not in base:
         base["powers"] = sterling_powers()
+    if "update" not in base:
+        try:
+            import updater
+
+            base["update"] = updater.public(updater.cached())
+        except Exception:
+            base["update"] = None
     return _d()._render(request, "setup.html", base, status_code=status, nav="settings")
 
 
@@ -844,82 +850,16 @@ def set_start_with_windows(on: bool) -> str | None:
 # maintenance: update / restart / stop
 # ===========================================================================
 
-def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=timeout, check=False)
-
-
-def _req_digest() -> str:
-    import hashlib
-
-    try:
-        return hashlib.sha256((REPO_ROOT / "requirements.txt").read_bytes()).hexdigest()
-    except OSError:
-        return ""
-
-
 def update_app() -> dict[str, Any]:
-    """git pull --ff-only on the checked-out branch; pip install when requirements changed."""
-    git = shutil.which("git") or "git"
-    out: dict[str, Any] = {"ok": False, "updated": False, "log": []}
-    try:
-        br = _run([git, "rev-parse", "--abbrev-ref", "HEAD"], 30)
-        branch = br.stdout.strip()
-        if br.returncode != 0 or branch == "HEAD" or not BRANCH_RE.match(branch) or ".." in branch:
-            out["log"].append("This app folder is not on a branch, so it cannot update itself.")
-            return out
-        before = _run([git, "rev-parse", "HEAD"], 30).stdout.strip()
-        req_before = _req_digest()
-        upstream = _self_edit_upstream(git, branch)
-        if upstream:  # the assistant's own branch: merge the published branch into it, keep its changes
-            pull = _run([git, *SELF_EDIT_GIT_ID, "pull", "--no-rebase", "--no-edit", "origin", upstream], 300)
-        else:
-            pull = _run([git, "pull", "--ff-only", "origin", branch], 300)
-        out["log"].append((pull.stdout + pull.stderr).strip()[-1500:])
-        if pull.returncode != 0:
-            if upstream:
-                _run([git, "merge", "--abort"], 60)
-                out["log"].append("The update conflicts with the assistant's own changes; kept the local version. "
-                                  "Undo its changes (Settings > The brain) to take the update.")
-            else:
-                out["log"].append("The update could not be applied automatically (see above). Nothing was changed.")
-            return out
-        after = _run([git, "rev-parse", "HEAD"], 30).stdout.strip()
-        out["updated"] = before != after
-        if out["updated"] and _req_digest() != req_before:
-            pip = _run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r",
-                        str(REPO_ROOT / "requirements.txt")], 1800)
-            out["log"].append((pip.stdout + pip.stderr).strip()[-1500:])
-            if pip.returncode != 0:
-                out["log"].append("Installing the new requirements failed; ClipAgent keeps running the old ones.")
-                return out
-    except (OSError, subprocess.SubprocessError) as exc:
-        out["log"].append(f"Could not run git/pip: {exc}")
-        return out
-    out["ok"] = True
-    db.log_event("setup", "update checked", data={"updated": out["updated"]})
-    return out
+    """Fetch + merge the published branch, pip install when requirements changed (see :mod:`updater`)."""
+    import updater
+
+    return updater.update_now()
 
 
 # ===========================================================================
 # Cecil's powers (self-editing assistant) - kept in one block; see assistant/selfedit.py
 # ===========================================================================
-
-SELF_EDIT_GIT_ID = ["-c", "user.name=Sterling", "-c", "user.email=sterling@clipagent.local"]
-
-
-def _self_edit_upstream(git: str, branch: str) -> str:
-    """On the assistant's self-edit branch: the published branch to merge updates from, else ''."""
-    try:
-        from assistant.settings import get_assistant_settings
-
-        if branch != get_assistant_settings().self_edit_branch:
-            return ""
-        up = _run([git, "config", "--get", "clipagent.upstream"], 30).stdout.strip()
-    except Exception:
-        return ""
-    return up if up and BRANCH_RE.match(up) and ".." not in up else ""
-
 
 def sterling_powers() -> dict[str, Any]:
     """What the assistant can do right now (Settings > The brain)."""
@@ -1218,12 +1158,17 @@ async def action(request: Request, action: str) -> Response:
     if action == "update":
         res = await run_in_threadpool(update_app)
         restarting = res["ok"] and res["updated"] and main.request_shutdown(restart=True)
-        title = ("Updated - restarting" if restarting else "Updated" if res["ok"] and res["updated"]
-                 else "Already up to date" if res["ok"] else "Update failed")
+        title = ("Busy - try again in a moment" if res.get("busy") else "Updated - restarting" if restarting
+                 else "Updated" if res["ok"] and res["updated"] else "Already up to date" if res["ok"]
+                 else "Update failed")
+        builds = (f"Build {res.get('before')} -> {res.get('after')}. " if res.get("updated") and res.get("after")
+                  else "")
         return _render(request, "action", {"title": title, "log": res["log"], "ok": res["ok"],
                                            "reload": restarting,
-                                           "hint": "" if restarting or not res["updated"]
-                                           else "Restart ClipAgent to use the new version."})
+                                           "hint": builds + ("This page reloads by itself once the new version is "
+                                                             "up; the build id is at the bottom of every page."
+                                                             if restarting else "" if not res["updated"]
+                                                             else "Restart ClipAgent to use the new version.")})
     if action == "selfcheck":
         from assistant import selfcheck
 

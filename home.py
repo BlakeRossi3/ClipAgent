@@ -15,6 +15,8 @@ Routes (registered on ``dashboard.router`` by :func:`register`):
 * ``POST /checkins/{id}/answer``      answer a check-in (hours check-ins also log the hours)
 * ``POST /meals/{id}/accept|decline`` meal suggestion feedback
 * ``POST /jobs``                      "tell me your pay rate"
+* ``POST /agents/{name}/avatar``      the owner's own picture for a staff member (``/reset``: back to the drawing);
+                                      ``GET /avatars/{name}`` serves it from <data_dir>/avatars
 
 POSTs answer JSON when the request asks for it (``Accept: application/json``, used by
 ``static/home.js``) and otherwise redirect back with a flash message, so every form also
@@ -74,217 +76,420 @@ def _asettings():
 
 
 # ===========================================================================
-# Pixel art (original sprites, drawn here; rendered as crisp inline SVG)
+# Character art: ORIGINAL chibi vector portraits, drawn here in plain shapes
 # ===========================================================================
+#
+# Every portrait is original art made for this app (simple circles, ellipses and paths); each one evokes
+# its character from *Invincible* only through palette and costume motif. No official or fan art is used.
+# One 64x64 viewBox, a big head on a small body, flat colours with translucent shading (no gradients, so
+# nothing depends on document-unique ids), the eyes on their own ``px-eyes`` layer (the CSS blink), the
+# figure in ``sprite-body`` (the CSS bob). ``pose="alert"`` raises the right arm (the hero avatar when
+# something needs the owner).
 
-#: 16x16 base figure. k outline, h hair, s skin, e eye, b cheek, m mouth, c coat, w shirt, a tie,
-#: t hat, g glass, x prop, '.' keep/empty. In overlays a space clears a pixel.
-_BASE = [
-    "................",
-    "....kkkkkkkk....",
-    "...khhhhhhhhk...",
-    "...khhhhhhhhk...",
-    "...khsssssshk...",
-    "...ksessssesk...",
-    "...kbssssssbk...",
-    "...ksssmmsssk...",
-    "....kssssssk....",
-    "..kccwwaawwcck..",
-    ".kcccwaaaawccck.",
-    ".kcccwwwwwwccck.",
-    ".kscccwwwwcccsk.",
-    ".kkcccwwwwccckk.",
-    "..kcccckkcccck..",
-    "..kkkk....kkkk..",
-]
+_OL = 'stroke="#06090f" stroke-opacity=".5" stroke-width="1.1" stroke-linejoin="round"'
+_SKIN = "#f1c39f"
 
-_GEAR: dict[str, dict[int, str]] = {
-    "main": {},
-    "studio": {0: "...tttttttt.....", 1: "..tttttttttt....", 11: "..............xx", 12: "..............xx"},
-    "ledger": {2: "...kttttttttk...", 3: "..ttttttttttt...", 12: ".............sxx", 13: "..............xx"},
-    "quartermaster": {0: "....wwwwwwww....", 1: "...wwwwwwwwww...", 2: "...kwwwwwwwwk...", 3: "...kttttttttk...",
-                      11: ".kccxxxxxxxxcck.", 12: ".kscxxxxxxxxcsk.", 13: ".kkcxxxxxxxxckk."},
-    "archivist": {5: "...kgegssgegk...", 11: "..............xx", 12: ".............sxx", 13: "..............xx"},
-    "researcher": {0: ".....tttttt.....", 1: "....tttttttt....", 2: "..ttttttttttt...",
-                   9: ".............ggg", 10: ".............g g", 11: ".............ggg", 12: ".............x.."},
-    "engineer": {0: ".....tttttt.....", 1: "....tttttttt....", 2: "..tttttttttttt..",
-                 11: "..............x.", 12: ".............xxx", 13: "..............x."},
-    "briefer": {11: "..........xxxxx.", 12: "..........xxxxx.", 13: "..........xxxxx."},
-}
-
-#: Alert pose for the butler: right arm up, ringing a little bell, mouth open.
-_ALERT = {3: "..............a.", 4: ".............aaa", 5: ".............aaa", 6: "..............s.",
-          7: "..............ck", 8: ".......mm.....ck", 9: ".............cck", 12: ".............ck "}
-
-_PX_CLASS = {"k": "k", "h": "h", "s": "s", "e": "e", "b": "b", "m": "m", "c": "c", "w": "w", "a": "a",
-             "t": "t", "g": "g", "x": "x"}
-
+#: agent id -> (primary, secondary, accent, hair): the character's palette in brief (chips, fallbacks).
 AGENT_COLORS: dict[str, tuple[str, str, str, str]] = {
-    # coat, hat, prop, hair
-    "main": ("#2b303d", "#2b303d", "#d8a24a", "#3a2a22"),
-    "studio": ("#5f3b56", "#a8433f", "#e6e1d6", "#2a2320"),
-    "ledger": ("#2f5845", "#4d8a5e", "#d8a24a", "#5a3a26"),
-    "quartermaster": ("#7a5634", "#d9d2c4", "#efe9dc", "#4a3020"),
-    "archivist": ("#454b74", "#454b74", "#9c4d3c", "#7d7a74"),
-    "researcher": ("#5d5640", "#8a7550", "#9fc3cf", "#3b2a20"),
-    "engineer": ("#3c5f70", "#d29a3a", "#9aa3ad", "#2b2018"),
-    "briefer": ("#733a3a", "#733a3a", "#e9e3d6", "#5b3b2a"),
+    "main": ("#1c2333", "#e9eef2", "#22d8f0", "#aeb4bd"),
+    "studio": ("#2b5fd9", "#ffd23f", "#1e3f9c", "#16181f"),
+    "briefer": ("#1f2f55", "#eef2f5", "#c8323a", "#5b3a22"),
+    "quartermaster": ("#a58bd6", "#f6f1ea", "#e6a862", "#c97f45"),
+    "ledger": ("#6b4a3a", "#eef0f2", "#f2c94c", "#c9ccd2"),
+    "archivist": ("#2f6f7c", "#e3b341", "#b3262d", "#17161c"),
+    "researcher": ("#eef1f5", "#3f9a5c", "#5b8fe0", "#2c5fb0"),
+    "engineer": ("#3f6b52", "#9aa6b3", "#ff4545", "#6b7683"),
 }
 
 
-#: The staff as characters from *Invincible* (a private app; every sprite is ORIGINAL 16x16 pixel art that
-#: only evokes the character through palette and costume motif). Agent ids stay as they are (they are
-#: stored in as_agent_runs / as_messages and used by ``delegate``); the names shown come from each
-#: agents/*.md ``display_name`` (and main's from ASSISTANT_NAME). '.' empty, 'k' outline, 'e' eye pixel
-#: (drawn on the blinking layer), any other letter = a colour from the character's palette.
+def _eye(cx: float, cy: float, *, iris: str, rx: float = 3.1, ry: float = 3.9) -> str:
+    return (f'<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="#1a1426"/>'
+            f'<ellipse cx="{cx}" cy="{cy + ry * 0.32:.2f}" rx="{rx * 0.74:.2f}" ry="{ry * 0.56:.2f}" fill="{iris}"/>'
+            f'<circle cx="{cx + rx * 0.36:.2f}" cy="{cy - ry * 0.36:.2f}" r="{rx * 0.42:.2f}" fill="#fff"/>'
+            f'<circle cx="{cx - rx * 0.34:.2f}" cy="{cy + ry * 0.42:.2f}" r="{rx * 0.2:.2f}" fill="#fff" opacity=".85"/>')
+
+
+def _eyes(iris: str, *, y: float = 28.6, dx: float = 6.6, rx: float = 3.1, ry: float = 3.9) -> str:
+    return _eye(32 - dx, y, iris=iris, rx=rx, ry=ry) + _eye(32 + dx, y, iris=iris, rx=rx, ry=ry)
+
+
+def _cheeks(color: str = "#ff7b8a", opacity: float = 0.42) -> str:
+    return (f'<ellipse cx="22.6" cy="34" rx="2.7" ry="1.6" fill="{color}" opacity="{opacity}"/>'
+            f'<ellipse cx="41.4" cy="34" rx="2.7" ry="1.6" fill="{color}" opacity="{opacity}"/>')
+
+
+def _smile(y: float = 35.4, w: float = 2.6, color: str = "#6b2b2e") -> str:
+    return (f'<path d="M{32 - w} {y} Q32 {y + 2.6} {32 + w} {y}" fill="none" stroke="{color}" stroke-width="1.3" '
+            f'stroke-linecap="round"/>')
+
+
+def _grin(y: float = 34.8, w: float = 3.2) -> str:
+    return (f'<path d="M{32 - w} {y} Q32 {y + 4.6} {32 + w} {y} Z" fill="#7a2833"/>'
+            f'<path d="M{32 - w * 0.55:.2f} {y + 2.1:.2f} Q32 {y + 4} {32 + w * 0.55:.2f} {y + 2.1:.2f} Q32 {y + 1.4:.2f} '
+            f'{32 - w * 0.55:.2f} {y + 2.1:.2f}Z" fill="#ff8f95"/>')
+
+
+def _head(skin: str, *, ears: bool = True) -> str:
+    out = ""
+    if ears:
+        out += (f'<circle cx="15.6" cy="28.5" r="3.4" fill="{skin}" {_OL}/>'
+                f'<circle cx="48.4" cy="28.5" r="3.4" fill="{skin}" {_OL}/>')
+    out += (f'<circle cx="32" cy="25.5" r="17" fill="{skin}" {_OL}/>'
+            # soft shading: a crescent under the jaw line, a glow on the forehead
+            '<path d="M15.3 28 A17 17 0 0 0 48.7 28 A17 13 0 0 1 15.3 28Z" fill="#7a3b2a" opacity=".1"/>'
+            '<ellipse cx="25.5" cy="16.5" rx="6" ry="3.4" fill="#fff" opacity=".16"/>')
+    return out
+
+
+def _body(*, torso: str, arm: str, hand: str, legs: str, shoes: str, pose: str, extra: str = "",
+          over_arms: str = "") -> str:
+    """Shadow, legs, torso (+ costume ``extra``), arms; the right arm goes up in the alert pose."""
+    out = ('<ellipse cx="32" cy="61.4" rx="14.5" ry="2.3" fill="#000" opacity=".32"/>'
+           f'<rect x="24.6" y="54" width="6.2" height="6.4" rx="2.6" fill="{legs}"/>'
+           f'<rect x="33.2" y="54" width="6.2" height="6.4" rx="2.6" fill="{legs}"/>'
+           f'<ellipse cx="27.3" cy="60.6" rx="4.1" ry="2" fill="{shoes}"/>'
+           f'<ellipse cx="36.7" cy="60.6" rx="4.1" ry="2" fill="{shoes}"/>'
+           f'<path d="M20.5 57 L20.5 49.5 Q20.5 41.2 32 41.2 Q43.5 41.2 43.5 49.5 L43.5 57 Q32 59.2 20.5 57Z" '
+           f'fill="{torso}" {_OL}/>')
+    out += extra
+    out += '<path d="M36 41.6 Q43.5 42.4 43.5 49.5 L43.5 57 Q39.5 58.2 36 58.3Z" fill="#000" opacity=".13"/>'
+    out += (f'<rect x="15.6" y="43" width="6.4" height="12" rx="3.2" fill="{arm}" transform="rotate(14 19 44)" {_OL}/>'
+            f'<circle cx="16.9" cy="55" r="3" fill="{hand}" {_OL}/>')
+    if pose == "alert":
+        out += (f'<rect x="42.8" y="31" width="6.4" height="13.4" rx="3.2" fill="{arm}" transform="rotate(24 46 44)" {_OL}/>'
+                f'<circle cx="51.6" cy="31.4" r="3.1" fill="{hand}" {_OL}/>'
+                '<g stroke="#ffd23f" stroke-width="1.4" stroke-linecap="round">'
+                '<path d="M55.6 26.6 L57.6 24.2"/><path d="M56.8 30.4 L59.8 29.8"/><path d="M52.2 25.4 L52.6 22.4"/></g>')
+    else:
+        out += (f'<rect x="42" y="43" width="6.4" height="12" rx="3.2" fill="{arm}" transform="rotate(-14 45 44)" {_OL}/>'
+                f'<circle cx="47.1" cy="55" r="3" fill="{hand}" {_OL}/>')
+    return out + over_arms
+
+
+def _suit(coat: str, tie: str, *, shirt: str = "#eef2f5") -> str:
+    return (f'<path d="M27.4 41.6 L32 50.5 L36.6 41.6Z" fill="{shirt}"/>'
+            f'<path d="M31 42.6 L33 42.6 L33.9 48.6 L32 51.4 L30.1 48.6Z" fill="{tie}"/>'
+            f'<path d="M27.4 41.6 L30.4 47 L28.6 47.6 M36.6 41.6 L33.6 47 L35.4 47.6" fill="none" stroke="#000" '
+            'stroke-opacity=".35" stroke-width=".9"/>')
+
+
+def _glasses(shape: str = "rect", color: str = "#1d2230") -> str:
+    if shape == "round":
+        lens = ('<circle cx="25.4" cy="28.6" r="4.9"/><circle cx="38.6" cy="28.6" r="4.9"/>')
+    else:
+        lens = ('<rect x="20.4" y="24.2" width="10" height="8.6" rx="2.8"/>'
+                '<rect x="33.6" y="24.2" width="10" height="8.6" rx="2.8"/>')
+    return (f'<g fill="#d8f2ff" fill-opacity=".14" stroke="{color}" stroke-width="1.3">{lens}</g>'
+            f'<path d="M30.3 27.8 Q32 26.8 33.7 27.8" fill="none" stroke="{color}" stroke-width="1.2"/>')
+
+
+def _brows(color: str, *, y: float = 22.4, tilt: float = 0.0, w: float = 1.5) -> str:
+    return (f'<g stroke="{color}" stroke-width="{w}" stroke-linecap="round" fill="none">'
+            f'<path d="M22.6 {y + tilt} Q25.4 {y - 1.1} 28.2 {y - tilt * 0.4:.2f}"/>'
+            f'<path d="M35.8 {y - tilt * 0.4:.2f} Q38.6 {y - 1.1} 41.4 {y + tilt}"/></g>')
+
+
+def _draw_main(p: str) -> tuple[str, str, str]:
+    """Cecil Stedman: bald, grey sides and moustache, dark suit, an interface-cyan tie."""
+    skin = "#e2ad88"
+    body = _body(torso="#1c2333", arm="#1c2333", hand=skin, legs="#141925", shoes="#0a0d14", pose=p,
+                 extra=_suit("#1c2333", "#22d8f0"))
+    head = (_head(skin)
+            + '<path d="M15.2 22 Q13.6 30 17.6 35.5 Q17 29 19.8 23.4Z" fill="#b2b8c1"/>'
+            + '<path d="M48.8 22 Q50.4 30 46.4 35.5 Q47 29 44.2 23.4Z" fill="#b2b8c1"/>'
+            + '<ellipse cx="29" cy="12.8" rx="5" ry="2" fill="#fff" opacity=".22"/>')
+    face = (_brows("#8d939c", y=23, tilt=0.8, w=1.7) + _cheeks(opacity=0.3)
+            + '<path d="M26.4 33.6 Q29.4 31.4 32 32.9 Q34.6 31.4 37.6 33.6 Q35.2 35.8 32 34.5 Q28.8 35.8 26.4 33.6Z" '
+              'fill="#a3aab3"/>'
+            + '<path d="M30.2 37.2 Q32 38.2 33.8 37.2" fill="none" stroke="#6b2b2e" stroke-width="1.2" stroke-linecap="round"/>')
+    return body + head, _eyes("#4b5a70", y=28.8, ry=3.6), face
+
+
+def _draw_studio(p: str) -> tuple[str, str, str]:
+    """Invincible: spiky black hair, a blue mask band round the eyes, yellow chest, blue sides and gloves."""
+    blue, dark, yellow = "#2b5fd9", "#1d3f9e", "#ffd23f"
+    body = _body(torso=blue, arm=blue, hand=dark, legs=blue, shoes=dark, pose=p,
+                 extra=f'<path d="M26.2 41.5 Q32 40.6 37.8 41.5 L37 57.8 Q32 58.6 27 57.8Z" fill="{yellow}"/>'
+                       f'<path d="M26.2 41.5 Q32 44.6 37.8 41.5" fill="none" stroke="{dark}" stroke-width="1.1"/>')
+    head = (_head(_SKIN)
+            + f'<path d="M15.1 23.2 Q32 19.6 48.9 23.2 L48.9 31.6 Q40.5 29.6 32 32.6 Q23.5 29.6 15.1 31.6Z" fill="{blue}"/>'
+            + '<ellipse cx="25.4" cy="28.4" rx="4.3" ry="4.9" fill="#f6dcc6"/><ellipse cx="38.6" cy="28.4" rx="4.3" ry="4.9" fill="#f6dcc6"/>'
+            + '<path d="M14.6 27.6 Q13 15.4 21 10.8 L19.6 5.8 L26 9.2 L28.2 4.2 L32.4 8.4 L37 4.6 L38.6 9.6 L44.8 7 '
+              'L43.2 11.8 Q51.2 16.8 49.4 27.6 Q47.4 19.4 41 17.4 Q35 20.6 28 18 Q20 18.8 14.6 27.6Z" fill="#16181f"/>'
+            + '<path d="M22 12.6 Q27 10.6 31 11.6" fill="none" stroke="#3a3f4c" stroke-width="1.2" stroke-linecap="round"/>')
+    face = _brows("#16181f", y=21.6, w=1.6) + _cheeks() + _grin(34.9, 3.1)
+    return body + head, _eyes("#3d6fe0", y=28.4), face
+
+
+def _draw_briefer(p: str) -> tuple[str, str, str]:
+    """Donald Ferguson: neat side-parted brown hair, glasses, navy suit, red tie, an earpiece."""
+    skin = "#e8b892"
+    body = _body(torso="#1f2f55", arm="#1f2f55", hand=skin, legs="#18223d", shoes="#0b0d14", pose=p,
+                 extra=_suit("#1f2f55", "#c8323a"))
+    head = (_head(skin)
+            + '<path d="M14.8 26.6 Q13.2 11.6 30 9.4 Q46.4 8.6 49.2 25.4 Q47.4 17.6 40.6 15.8 Q33 15.2 26.6 17.6 '
+              'Q19.6 19.8 14.8 26.6Z" fill="#5b3a22"/>'
+            + '<path d="M26.6 17.6 Q28.4 12.6 34.6 11" fill="none" stroke="#3f2614" stroke-width="1" stroke-linecap="round"/>'
+            + '<ellipse cx="37" cy="12.4" rx="5" ry="1.6" fill="#fff" opacity=".14"/>')
+    face = (_brows("#4a2e1a", y=22.2, w=1.5) + _cheeks(opacity=0.32) + _smile(35.6, 2.3) + _glasses("rect"))
+    ear = ('<circle cx="49.2" cy="29.6" r="1.9" fill="#2a2f3a"/><circle cx="49.2" cy="29.6" r=".8" fill="#22d8f0"/>'
+           '<path d="M49.6 31.4 Q51.4 37.4 46.4 41.8" fill="none" stroke="#c9d2dc" stroke-width=".8"/>')
+    return body + head, _eyes("#5a4630", y=28.8, ry=3.6), face + ear
+
+
+def _draw_quartermaster(p: str) -> tuple[str, str, str]:
+    """Debbie Grayson: shoulder-length auburn-blonde hair, a lavender cardigan, a warm smile."""
+    skin, hair, lav = "#f3c8a6", "#c97f45", "#a58bd6"
+    body = _body(torso=lav, arm=lav, hand=skin, legs="#4b587a", shoes="#2c3148", pose=p,
+                 extra='<path d="M27.6 41.6 Q32 43.2 36.4 41.6 L35.4 57.8 Q32 58.4 28.6 57.8Z" fill="#f6f1ea"/>'
+                       '<path d="M27.6 41.6 Q32 47 36.4 41.6" fill="none" stroke="#e7d9c6" stroke-width="1"/>'
+                       '<g fill="#7d63b3"><circle cx="27.2" cy="49" r=".9"/><circle cx="27.4" cy="53.4" r=".9"/></g>')
+    back = (f'<path d="M12.6 30 Q10.4 9.6 32 8.2 Q53.6 9.6 51.4 30 L52.8 44.2 Q48.4 47.6 43.8 44.4 L43.6 36 '
+            f'L20.4 36 L20.2 44.4 Q15.6 47.6 11.2 44.2Z" fill="{hair}" {_OL}/>')
+    head = (back + _head(skin, ears=False)
+            + f'<path d="M14.8 27.4 Q13.8 10.6 32 9.4 Q50.2 10.6 49.2 27.4 Q46.6 18.6 40.2 16 Q36 21.4 25.6 20.4 '
+              f'Q18.8 20.4 14.8 27.4Z" fill="{hair}"/>'
+            + '<path d="M21 13.2 Q27 10.4 33.6 11" fill="none" stroke="#e8a866" stroke-width="1.5" stroke-linecap="round"/>'
+            + '<path d="M40.6 16.4 Q44.6 19 46.6 23.6" fill="none" stroke="#a9622f" stroke-width="1" stroke-linecap="round"/>'
+            + '<circle cx="15.6" cy="34.6" r="1" fill="#f2c94c"/><circle cx="48.4" cy="34.6" r="1" fill="#f2c94c"/>')
+    lashes = ('<g stroke="#1a1426" stroke-width="1.2" stroke-linecap="round" fill="none">'
+              '<path d="M21.9 27 Q25.2 23.6 28.7 26.2 M21.9 27 L20.6 25.9"/>'
+              '<path d="M42.1 27 Q38.8 23.6 35.3 26.2 M42.1 27 L43.4 25.9"/></g>')
+    face = (_brows("#9a5a2c", y=21.2, tilt=0.5, w=1.2).replace("Q25.4 20.1", "Q25.4 19.4").replace("Q38.6 20.1", "Q38.6 19.4")
+            + _cheeks(opacity=0.5) + _grin(34.6, 3.3))
+    return body + head, _eyes("#4f8a5a", y=28.8) + lashes, face
+
+
+def _draw_ledger(p: str) -> tuple[str, str, str]:
+    """Art Rosenbaum: grey hair, round glasses, a brown waistcoat, a tailor's tape measure round the neck."""
+    skin, vest = "#e8b894", "#6b4a3a"
+    tape = ('<path d="M24.6 41.6 Q23.4 49 24.4 56.4" fill="none" stroke="#f2c94c" stroke-width="2.6" stroke-linecap="round"/>'
+            '<path d="M39.4 41.6 Q40.6 49 39.6 56.4" fill="none" stroke="#f2c94c" stroke-width="2.6" stroke-linecap="round"/>'
+            '<g fill="none" stroke="#8a6a1c" stroke-width="2.6" stroke-dasharray=".45 1.6">'
+            '<path d="M24.6 41.6 Q23.4 49 24.4 56.4"/><path d="M39.4 41.6 Q40.6 49 39.6 56.4"/></g>')
+    body = _body(torso="#eef0f2", arm="#eef0f2", hand=skin, legs="#4a4f5a", shoes="#22252c", pose=p,
+                 extra=f'<path d="M20.5 57 L20.5 49.5 Q20.5 42 28 41.6 L31.2 51 L31.2 58 Q25.6 58.2 20.5 57Z" fill="{vest}"/>'
+                       f'<path d="M43.5 57 L43.5 49.5 Q43.5 42 36 41.6 L32.8 51 L32.8 58 Q38.4 58.2 43.5 57Z" fill="{vest}"/>'
+                       '<g fill="#e3c27a"><circle cx="30" cy="52.6" r=".75"/><circle cx="30" cy="55.6" r=".75"/>'
+                       '<circle cx="34" cy="52.6" r=".75"/><circle cx="34" cy="55.6" r=".75"/></g>'
+                       '<path d="M29.8 42 L32 43.6 L34.2 42 L34.2 45 L32 43.6 L29.8 45Z" fill="#3a2a40"/>' + tape)
+    head = (_head(skin)
+            + '<path d="M15 21.6 Q13.2 30.6 17.6 35.8 Q17.4 28.6 20.4 23Z" fill="#c9ccd2"/>'
+            + '<path d="M49 21.6 Q50.8 30.6 46.4 35.8 Q46.6 28.6 43.6 23Z" fill="#c9ccd2"/>'
+            + '<path d="M17.8 17 Q24 8.2 33.4 9 Q43.8 9.4 46.6 17.6 Q40 12.8 33 13.2 Q24.6 13.2 17.8 17Z" fill="#d7dade"/>'
+            + '<g stroke="#a86f50" stroke-width=".7" opacity=".45" fill="none"><path d="M27 18.2 Q32 17.2 37 18.2"/>'
+              '<path d="M28.4 20 Q32 19.3 35.6 20"/></g>')
+    face = (_brows("#b8bcc3", y=22.6, tilt=-0.6, w=2) + _cheeks(opacity=0.3) + _smile(35.8, 2.4) + _glasses("round", "#4a3a2c"))
+    return body + head, _eyes("#5d6f86", y=28.6, rx=2.8, ry=3.4), face
+
+
+def _draw_archivist(p: str) -> tuple[str, str, str]:
+    """The Immortal: long black hair and beard, teal armour with gold trim, a crimson cape."""
+    skin, teal, gold = "#d9a47f", "#2f6f7c", "#e3b341"
+    cape = f'<path d="M17.6 43 Q9.6 51.6 10.6 61 L53.4 61 Q54.4 51.6 46.4 43Z" fill="#b3262d" {_OL}/>'
+    body = cape + _body(torso=teal, arm=teal, hand=skin, legs="#1f4a53", shoes="#13161c", pose=p,
+                        extra=f'<path d="M22.6 52.4 L41.4 52.4 L41.4 54.6 L22.6 54.6Z" fill="{gold}"/>'
+                              f'<path d="M28.6 46 L35.4 46 L32 50.6Z" fill="{gold}" opacity=".9"/>',
+                        over_arms=f'<circle cx="20.4" cy="44.4" r="4" fill="{teal}" stroke="{gold}" stroke-width="1.2"/>'
+                                  f'<circle cx="43.6" cy="44.4" r="4" fill="{teal}" stroke="{gold}" stroke-width="1.2"/>')
+    back = (f'<path d="M13.2 28 Q11.6 8.6 32 7.8 Q52.4 8.6 50.8 28 L51.4 46 Q46.6 45 45 39 L19 39 Q17.4 45 12.6 46Z" '
+            f'fill="#17161c" {_OL}/>')
+    head = (back + _head(skin, ears=False)
+            + '<path d="M14.8 27 Q14 10.8 32 9.6 Q50 10.8 49.2 27 Q47.2 16.2 33.2 14.6 L32 18.4 L30.8 14.6 '
+              'Q16.8 16.2 14.8 27Z" fill="#17161c"/>'
+            + '<path d="M21.4 13.6 Q25.6 11.6 29.6 11.6" fill="none" stroke="#3b3a44" stroke-width="1.1" stroke-linecap="round"/>')
+    face = (_brows("#17161c", y=22.6, tilt=0.6, w=2.1) + _cheeks(opacity=0.26)
+            + '<path d="M16.8 30 Q17.4 43.8 32 46.6 Q46.6 43.8 47.2 30 Q44.4 36.8 38.8 37.4 Q35.6 35 32 35.6 '
+              'Q28.4 35 25.2 37.4 Q19.6 36.8 16.8 30Z" fill="#17161c"/>'
+            + '<path d="M30 37.4 Q32 38.6 34 37.4" fill="none" stroke="#c98a7a" stroke-width="1.2" stroke-linecap="round"/>')
+    return body + head, _eyes("#6b4a2a", y=28.4, ry=3.6), face
+
+
+def _draw_researcher(p: str) -> tuple[str, str, str]:
+    """Allen the Alien: blue skin, one great eye, a white and green Coalition suit."""
+    skin, green, white = "#5b8fe0", "#3f9a5c", "#eef1f5"
+    body = _body(torso=white, arm=green, hand=skin, legs=white, shoes=green, pose=p,
+                 extra=f'<path d="M20.5 57 L20.5 49.5 Q20.5 42.6 25.4 41.6 L26.4 57.8 Q23 57.6 20.5 57Z" fill="{green}"/>'
+                       f'<path d="M43.5 57 L43.5 49.5 Q43.5 42.6 38.6 41.6 L37.6 57.8 Q41 57.6 43.5 57Z" fill="{green}"/>'
+                       f'<path d="M26 41.8 Q32 45.4 38 41.8" fill="none" stroke="{green}" stroke-width="2"/>'
+                       '<circle cx="32" cy="49.6" r="2.2" fill="#ffd23f" stroke="#2f7a46" stroke-width=".8"/>')
+    head = (_head(skin, ears=False)
+            + '<path d="M18 16 Q32 5.6 46 16 Q40 11.6 32 11.4 Q24 11.6 18 16Z" fill="#2c5fb0" opacity=".55"/>'
+            + '<path d="M23.4 19.6 Q32 15.4 40.6 19.6" fill="none" stroke="#2c5fb0" stroke-width="2" stroke-linecap="round"/>')
+    eye = ('<ellipse cx="32" cy="27.4" rx="7.4" ry="7.8" fill="#fbfdff"/>'
+           '<ellipse cx="32" cy="28.2" rx="4.6" ry="5" fill="#2a8f6a"/>'
+           '<ellipse cx="32" cy="28.4" rx="2.6" ry="3" fill="#0f1420"/>'
+           '<circle cx="34" cy="25.6" r="1.7" fill="#fff"/><circle cx="30.4" cy="30.6" r=".8" fill="#fff" opacity=".85"/>')
+    face = (_cheeks("#ff9cc0", 0.38) + _grin(37, 3.6))
+    return body + head, eye, face
+
+
+def _draw_engineer(p: str) -> tuple[str, str, str]:
+    """Robot: a rounded metal head with a red visor, an antenna, green armour, a red core."""
+    metal, green = "#9aa6b3", "#3f6b52"
+    body = _body(torso=green, arm=metal, hand="#7d8896", legs=metal, shoes="#4f5966", pose=p,
+                 extra='<circle cx="32" cy="49" r="3.1" fill="#ff4545" stroke="#7a1c1c" stroke-width=".8"/>'
+                       '<circle cx="31.2" cy="48.2" r=".9" fill="#ffd0d0"/>'
+                       f'<path d="M22.4 53.6 L41.6 53.6" stroke="#2c4d3a" stroke-width="1.2"/>')
+    head = ('<path d="M32 10.6 L32 4.6" stroke="#6b7683" stroke-width="1.8" stroke-linecap="round"/>'
+            '<circle cx="32" cy="3.8" r="2.4" fill="#ff4545"/><circle cx="31.3" cy="3.1" r=".8" fill="#ffd0d0"/>'
+            f'<rect x="12.8" y="25" width="4" height="8" rx="1.6" fill="#6b7683" {_OL}/>'
+            f'<rect x="47.2" y="25" width="4" height="8" rx="1.6" fill="#6b7683" {_OL}/>'
+            f'<rect x="15" y="10" width="34" height="31" rx="11" fill="{metal}" {_OL}/>'
+            '<path d="M15.4 30 Q15.6 40.6 26 40.6 L38 40.6 Q48.4 40.6 48.6 30 Q46 37 38 37.4 L26 37.4 Q18 37 15.4 30Z" '
+            'fill="#000" opacity=".12"/>'
+            '<ellipse cx="24.6" cy="14.6" rx="6" ry="2.4" fill="#fff" opacity=".3"/>'
+            '<rect x="18" y="21.4" width="28" height="11.4" rx="5.7" fill="#2a0c10" stroke="#5a1c22" stroke-width="1"/>'
+            '<path d="M21 23.6 L27 23.6" stroke="#fff" stroke-opacity=".25" stroke-width="1" stroke-linecap="round"/>')
+    eyes = ('<ellipse cx="25.6" cy="27.1" rx="2.9" ry="3.1" fill="#ff4040"/>'
+            '<ellipse cx="38.4" cy="27.1" rx="2.9" ry="3.1" fill="#ff4040"/>'
+            '<circle cx="26.5" cy="26.1" r="1" fill="#ffd6d6"/><circle cx="39.3" cy="26.1" r="1" fill="#ffd6d6"/>')
+    face = ('<ellipse cx="25.6" cy="27.1" rx="5" ry="4.6" fill="#ff4040" opacity=".18"/>'
+            '<ellipse cx="38.4" cy="27.1" rx="5" ry="4.6" fill="#ff4040" opacity=".18"/>'
+            '<path d="M27.6 35.4 Q32 37.8 36.4 35.4" fill="none" stroke="#3f4954" stroke-width="1.5" stroke-linecap="round"/>'
+            + _cheeks("#ff6b6b", 0.28))
+    return body + head, eyes, face
+
+
+def _draw_generic(agent: str, p: str) -> tuple[str, str, str]:
+    """Anyone new on the staff: a friendly figure in a colour picked from the id."""
+    hues = ("#3f8f9a", "#7a5cc0", "#c0703c", "#3f9a5c", "#b8456a", "#4a6fd0")
+    coat = hues[sum(map(ord, agent)) % len(hues)]
+    body = _body(torso=coat, arm=coat, hand=_SKIN, legs="#2a3040", shoes="#151922", pose=p,
+                 extra='<path d="M27.4 41.6 L32 47.6 L36.6 41.6Z" fill="#f3efe6"/>')
+    head = (_head(_SKIN) + '<path d="M14.8 26.6 Q13.6 10.8 32 9.6 Q50.4 10.8 49.2 26.6 Q46 17.2 32 17 Q18 17.2 14.8 26.6Z" '
+            'fill="#3b2a20"/>')
+    return body + head, _eyes("#6b4a2a"), _brows("#3b2a20") + _cheeks() + _smile()
+
+
+_DRAW: dict[str, Callable[[str], tuple[str, str, str]]] = {
+    "main": _draw_main, "studio": _draw_studio, "briefer": _draw_briefer, "quartermaster": _draw_quartermaster,
+    "ledger": _draw_ledger, "archivist": _draw_archivist, "researcher": _draw_researcher, "engineer": _draw_engineer,
+}
+
+#: The staff as characters from *Invincible* (each portrait is ORIGINAL vector art, see above). Agent ids stay
+#: as they are (stored in as_agent_runs / as_messages and used by ``delegate``); the names shown come from
+#: each agents/*.md ``display_name`` (main's from ASSISTANT_NAME).
 CHARACTERS: dict[str, dict[str, Any]] = {
-    "main": {  # Cecil Stedman: bald, grey sides and moustache, dark suit, interface-cyan tie
-        "rows": ["................", ".....kkkkkk.....", "....kssssssk....", "...kssssssssk...", "...kgssssssgk...",
-                 "...kgessssegk...", "...kbssssssbk...", "...kssggggssk...", "....kssggssk....", "..kccwwaawwcck..",
-                 ".kcccwaaaawccck.", ".kcccwwaawwccck.", ".kscccwaawcccsk.", ".kkcccwwwwccckk.", "..kcccckkcccck..",
-                 "..kkkk....kkkk.."],
-        "pal": {"s": "#d9a77f", "g": "#b9bec7", "b": "#d48f78", "c": "#1c2333", "w": "#e9eef2", "a": "#22d8f0"},
-    },
-    "studio": {  # Atom Eve: red hair, pink suit, white atom on the chest
-        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhssssssshk..", "..khsssssssshk..",
-                 "..khsesssseshk..", "..khbssssssbhk..", "..khsssmmssshk..", "..hh.kssssk.hh..", "..hkppppppppkh..",
-                 ".kpppppwwpppppk.", ".kppppwppwppppk.", ".kqpppppwwpppqk.", ".kkqqpppppqqkk..", "..kqqqqkkqqqqk..",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#d2462e", "s": "#f0c19b", "b": "#f19a8f", "m": "#b5524a", "p": "#ff5fae", "q": "#b83280", "w": "#ffffff"},
-    },
-    "ledger": {  # Debbie: shoulder-length hair, lavender cardigan, the household folder
-        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhsssssshhk..", "..khsssssssshk..",
-                 "..khsesssseshk..", "..khbssssssbhk..", "..khssmmmmsshk..", "..hh.kssssk.hh..", "..kccwwwwwwcck..",
-                 ".kcccwwwwwwccck.", ".kcccwwwwwwcxxx.", ".kscccwwwwccsxx.", ".kkcccwwwwccckk.", "..kddddkkddddk..",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#c8894d", "s": "#f1c7a3", "b": "#ec9f8e", "m": "#b5524a", "c": "#8d6bb8", "w": "#f4efe6",
-                "x": "#e8b054", "d": "#3d5a80"},
-    },
-    "quartermaster": {  # Donald Ferguson: combed hair, glasses, navy suit, red tie, an earpiece
-        "rows": ["................", "....kkkkkkkk....", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khsssssshk...",
-                 "...kgegssgegk...", "...kbssssssbkx..", "...ksssmmsssk...", "....kssssssk....", "..kccwwaawwcck..",
-                 ".kcccwaaaawccck.", ".kcccwwaawwccck.", ".kscccwaawcccsk.", ".kkcccwwwwccckk.", "..kcccckkcccck..",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#5b3a24", "s": "#e2b08c", "b": "#d9937c", "m": "#a8564a", "g": "#9fd8e6", "c": "#1f2f4f",
-                "w": "#eef2f5", "a": "#c0392b", "x": "#22d8f0"},
-    },
-    "archivist": {  # The Immortal: long dark hair and beard, deep teal, gold, a crimson cape
-        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "..khhhhhhhhhhk..", "..khhsssssshhk..", "..khsssssssshk..",
-                 "..khsesssseshk..", "..khbssssssbhk..", "..khhhhmmhhhhk..", "..rkhhhhhhhhkr..", ".rkttttttttttkr.",
-                 ".rktttyyyytttkr.", ".rkttttttttttkr.", ".rksttyyyyttskr.", ".rkkttttttttkkr.", "rrkttttkkttttkrr",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#1c1b22", "s": "#d9a47f", "b": "#cf8d74", "m": "#7a3b32", "t": "#2f5f6b", "y": "#e3b341", "r": "#b3262d"},
-    },
-    "researcher": {  # Allen the Alien: blue skin, one great eye, Coalition white and green
-        "rows": ["................", "....kkkkkkkk....", "...khhhhhhhhk...", "...kssssssssk...", "...ksswwwwssk...",
-                 "...kswweewwsk...", "...ksswwwwssk...", "...kssmmmmssk...", "....kssssssk....", "..kggwwwwwwggk..",
-                 ".kgggwwggwwgggk.", ".kgggwwwwwwgggk.", ".ksgggwwwwgggsk.", ".kkgggwwwwgggkk.", "..kggggkkggggk..",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#1b1f2a", "s": "#5b8fe0", "w": "#f2f4f7", "m": "#27467a", "g": "#3f8f5a"},
-        "eye": ("#10131a", "#10131a"),
-    },
-    "engineer": {  # Robot: a metal head with a red visor, an antenna, green armour, a red core
-        "rows": [".......x........", ".......k........", "....kkkkkkkk....", "...kmmmmmmmmk...", "...kmmmmmmmmk...",
-                 "...kmeeeeeemk...", "...kmmmmmmmmk...", "...kmkmkmkmmk...", "....kkkkkkkk....", "..kggggggggggk..",
-                 ".kgggmmmmmmgggk.", ".kgggmrrrrmgggk.", ".kmgggmmmmgggmk.", ".kkggggggggggkk.", "..kmmmmkkmmmmk..",
-                 "..kkkk....kkkk.."],
-        "pal": {"m": "#8b98a6", "g": "#3e5a4c", "r": "#ff4040", "x": "#ff4040"},
-        "eye": ("#ff3b3b", "#ffb0a8"),
-    },
-    "briefer": {  # Invincible: black hair, blue mask, yellow chest, blue sides and gloves
-        "rows": ["....kkkkkkkk....", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khhhhhhhhk...", "...khsssssshk...",
-                 "...kueuuuueuk...", "...kbssssssbk...", "...ksssmmsssk...", "....kssssssk....", "..kuuyyyyyyuuk..",
-                 ".kuuuyyyyyyuuuk.", ".kuuuyyuuyyuuuk.", ".kuuuuyuuyuuuuk.", ".kkuuuyyyyuuukk.", "..kuuuukkuuuuk..",
-                 "..kkkk....kkkk.."],
-        "pal": {"h": "#15171d", "s": "#f0c19b", "b": "#ec9f8e", "m": "#b5524a", "u": "#2b55c9", "y": "#f7d23e"},
-        "eye": ("#ffffff", "#0b0d12"),
-    },
+    "main": {"character": "Cecil Stedman", "look": "bald, grey sides and moustache, dark suit, cyan tie"},
+    "studio": {"character": "Invincible", "look": "black hair, blue mask band, yellow chest, blue sides and gloves"},
+    "briefer": {"character": "Donald Ferguson", "look": "neat brown hair, glasses, navy suit, red tie, earpiece"},
+    "quartermaster": {"character": "Debbie Grayson", "look": "shoulder-length auburn hair, lavender cardigan"},
+    "ledger": {"character": "Art Rosenbaum", "look": "grey hair, round glasses, waistcoat, tape measure"},
+    "archivist": {"character": "The Immortal", "look": "long black hair and beard, teal and gold armour, crimson cape"},
+    "researcher": {"character": "Allen the Alien", "look": "blue skin, one big eye, white and green Coalition suit"},
+    "engineer": {"character": "Robot", "look": "metal head, red visor, antenna, green armour"},
 }
-CHARACTER_NAMES = {"main": "Cecil Stedman", "studio": "Atom Eve", "ledger": "Debbie Grayson",
-                   "quartermaster": "Donald Ferguson", "archivist": "The Immortal", "researcher": "Allen the Alien",
-                   "engineer": "Robot", "briefer": "Invincible"}
+CHARACTER_NAMES = {k: v["character"] for k, v in CHARACTERS.items()}
 
 
-def character_svg(agent: str, *, size: int = 48, label: str = "", cls: str = "") -> str | None:
-    """An agent's character sprite (see :data:`CHARACTERS`), or None for staff without one."""
-    spec = CHARACTERS.get(agent)
-    if spec is None:
-        return None
-    pal = {"k": "#0b0d12", **spec["pal"]}
-    eye_base, eye_lid = spec.get("eye") or (pal.get("s", "#e8b98f"), "#0b0d12")
-    rects: list[str] = []
-    eyes: list[str] = []
-    for y, row in enumerate(spec["rows"]):
-        x = 0
-        while x < 16:
-            ch = row[x]
-            if ch == ".":
-                x += 1
-                continue
-            if ch == "e":
-                rects.append(f'<rect x="{x}" y="{y}" width="1" height="1" fill="{eye_base}"/>')
-                eyes.append(f'<rect x="{x}" y="{y}" width="1" height="1"/>')
-                x += 1
-                continue
-            start = x
-            while x < 16 and row[x] == ch:
-                x += 1
-            rects.append(f'<rect x="{start}" y="{y}" width="{x - start}" height="1" fill="{pal.get(ch, pal["k"])}"/>')
+def _portrait(agent: str, *, pose: str, size: int, label: str, cls: str) -> str:
+    draw = _DRAW.get(agent)
+    figure, eyes, face = draw(pose) if draw else _draw_generic(agent, pose)
     title = f"<title>{html.escape(label)}</title>" if label else ""
     aria = f'role="img" aria-label="{html.escape(label)}"' if label else 'aria-hidden="true"'
-    return (f'<svg class="sprite sprite-{html.escape(agent)} {html.escape(cls)}" viewBox="0 0 16 16" width="{size}" '
-            f'height="{size}" shape-rendering="crispEdges" {aria}>{title}<g class="sprite-body">{"".join(rects)}'
-            f'<g class="px-eyes" style="fill:{eye_lid}">{"".join(eyes)}</g></g></svg>')
+    return (f'<svg class="sprite chibi sprite-{html.escape(agent)} {html.escape(cls)}" viewBox="0 0 64 64" '
+            f'width="{size}" height="{size}" {aria}>{title}<g class="sprite-body">{figure}'
+            f'<g class="px-eyes">{eyes}</g>{face}</g></svg>')
 
 
-def _grid(agent: str, pose: str) -> list[str]:
-    rows = list(_BASE)
-    for overlay in (_GEAR.get(agent, {}), _ALERT if pose == "alert" else {}):
-        for y, patch in overlay.items():
-            row = list(rows[y])
-            for x, ch in enumerate(patch[:16]):
-                if ch == " ":
-                    row[x] = "."
-                elif ch != ".":
-                    row[x] = ch
-            rows[y] = "".join(row)
-    return rows
+def character_svg(agent: str, *, size: int = 48, label: str = "", cls: str = "", pose: str = "idle") -> str | None:
+    """An agent's drawn character portrait (see :data:`CHARACTERS`), or None for staff without one."""
+    if agent not in CHARACTERS:
+        return None
+    return _portrait(agent, pose=pose, size=size, label=label, cls=cls)
 
 
 def sprite_svg(agent: str = "main", *, pose: str = "idle", size: int = 48, label: str = "",
                cls: str = "") -> str:
-    """An original 16x16 pixel character as inline SVG (runs merged, eyes on their own layer)."""
-    drawn = character_svg(agent, size=size, label=label, cls=cls)
-    if drawn is not None:
-        return drawn
-    key = agent if agent in AGENT_COLORS else "researcher"
-    rows = _grid(key, pose)
-    coat, hat, prop, hair = AGENT_COLORS[key]
-    rects: list[str] = []
-    eyes: list[str] = []
-    for y, row in enumerate(rows):
-        x = 0
-        while x < 16:
-            ch = row[x]
-            if ch == ".":
-                x += 1
-                continue
-            if ch == "e":
-                rects.append(f'<rect x="{x}" y="{y}" width="1" height="1" class="px-s"/>')
-                eyes.append(f'<rect x="{x}" y="{y}" width="1" height="1"/>')
-                x += 1
-                continue
-            start = x
-            while x < 16 and row[x] == ch:
-                x += 1
-            rects.append(f'<rect x="{start}" y="{y}" width="{x - start}" height="1" class="px-{_PX_CLASS.get(ch, "k")}"/>')
-    title = f"<title>{html.escape(label)}</title>" if label else ""
-    aria = f'role="img" aria-label="{html.escape(label)}"' if label else 'aria-hidden="true"'
-    tie = "var(--accent)" if key == "main" else hat
-    style = f"--coat:{coat};--hat:{hat};--prop:{prop};--hair:{hair};--tie:{tie}"
-    return (f'<svg class="sprite {html.escape(cls)}" viewBox="0 0 16 16" width="{size}" height="{size}" '
-            f'shape-rendering="crispEdges" style="{style}" {aria}>{title}<g class="sprite-body">{"".join(rects)}'
-            f'<g class="px-eyes">{"".join(eyes)}</g></g></svg>')
+    """The picture an agent goes by: the owner's custom avatar when he set one (``avatar_path``), else the
+    drawn portrait (a friendly generic figure for staff without a character)."""
+    custom = avatar_html(agent, size=size, label=label, cls=cls)
+    if custom is not None:
+        return custom
+    return _portrait(agent, pose=pose, size=size, label=label, cls=cls)
+
+
+# --- custom avatars: a picture the owner chose, stored only in <data_dir>/avatars ----------------------
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_KINDS = ("png", "jpg", "webp", "gif")
+AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def avatars_dir() -> Path:
+    import config
+
+    return Path(config.get_settings().data_dir) / "avatars"
+
+
+def avatar_path(agent: str) -> Path | None:
+    """The owner's picture for ``agent`` (``<data_dir>/avatars/<id>.<ext>``), or None."""
+    if not AGENT_ID.match(agent or ""):
+        return None
+    base = avatars_dir()
+    for kind in AVATAR_KINDS:
+        p = base / f"{agent}.{kind}"
+        if p.is_file():
+            return p
+    return None
+
+
+def avatar_html(agent: str, *, size: int = 48, label: str = "", cls: str = "") -> str | None:
+    p = avatar_path(agent)
+    if p is None:
+        return None
+    try:
+        ver = p.stat().st_mtime_ns
+    except OSError:
+        return None
+    alt = html.escape(label) if label else ""
+    aria = "" if label else ' aria-hidden="true"'
+    return (f'<img class="sprite sprite-custom sprite-{html.escape(agent)} {html.escape(cls)}" '
+            f'src="/dashboard/avatars/{html.escape(agent)}?v={ver}" width="{size}" height="{size}" alt="{alt}"{aria} '
+            'decoding="async">')
+
+
+def save_avatar(agent: str, data: bytes) -> Path:
+    """Validate (by magic bytes, at most 2 MB) and store an avatar; replaces any earlier one."""
+    if not AGENT_ID.match(agent or ""):
+        raise ValueError("unknown staff member")
+    if not data:
+        raise ValueError("empty file")
+    if len(data) > AVATAR_MAX_BYTES:
+        raise ValueError("image larger than 2 MB")
+    kind = image_kind(data)
+    if kind not in AVATAR_KINDS:
+        raise ValueError("only PNG, JPEG, WebP or GIF images")
+    base = avatars_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    target = base / f"{agent}.{kind}"
+    tmp = base / f".{agent}.{kind}.tmp"
+    tmp.write_bytes(data)
+    tmp.replace(target)
+    for other in AVATAR_KINDS:
+        if other != kind:
+            (base / f"{agent}.{other}").unlink(missing_ok=True)
+    return target
+
+
+def reset_avatar(agent: str) -> bool:
+    """Back to the drawing; True when a picture was removed."""
+    if not AGENT_ID.match(agent or ""):
+        return False
+    removed = False
+    for kind in AVATAR_KINDS:
+        p = avatars_dir() / f"{agent}.{kind}"
+        if p.is_file():
+            p.unlink()
+            removed = True
+    return removed
+
+
+def _avatars_key() -> tuple[Any, ...]:
+    try:
+        return tuple(sorted((f.name, f.stat().st_mtime_ns) for f in avatars_dir().iterdir() if not f.name.startswith(".")))
+    except OSError:
+        return ()
 
 
 #: 8x8 section glyphs ('#' = filled), drawn in currentColor.
@@ -769,6 +974,7 @@ def roster_data(today: date) -> list[dict[str, Any]]:
             "status": status, "last": last, "runs": runs,
             "runs_today": len(today_runs), "cost_today": round(sum(r.cost_usd for r in today_runs), 4),
             "sprite": sprite_svg(name, size=40), "sprite_big": sprite_svg(name, size=96, label=f"{name} sprite"),
+            "custom_avatar": avatar_path(name) is not None,
         })
     return out
 
@@ -781,9 +987,10 @@ def _agents_key() -> tuple[Any, ...]:
 
     try:
         files = sorted(Path(registry.AGENTS_DIR).glob("*.md"))
-        return (str(registry.AGENTS_DIR), tuple((f.name, f.stat().st_mtime_ns) for f in files), _asettings().name)
+        return (str(registry.AGENTS_DIR), tuple((f.name, f.stat().st_mtime_ns) for f in files), _asettings().name,
+                str(avatars_dir()), _avatars_key())
     except OSError:
-        return (str(registry.AGENTS_DIR), (), _asettings().name)
+        return (str(registry.AGENTS_DIR), (), _asettings().name, str(avatars_dir()), _avatars_key())
 
 
 def staff_nav() -> list[dict[str, Any]]:
@@ -1500,6 +1707,83 @@ def agent_page(request: Request, name: str) -> Response:
     return d._render(request, "agent.html", {"ag": agent, "glyph": glyph, "a": assistant_state()}, nav="staff")
 
 
+# --- staff pictures (custom avatars) ---------------------------------------------------------
+def _known_agent(name: str) -> bool:
+    if not AGENT_ID.match(name or ""):
+        return False
+    try:
+        return any(r["name"] == name for r in staff_nav())
+    except Exception:
+        return name in CHARACTERS
+
+
+def _avatar_reply(request: Request, ok: bool, msg: str, name: str, *, status: int = 200) -> Response:
+    d = _d()
+    if _wants_json(request):
+        return d._json({"ok": ok, "msg": msg, "agent": name}, status_code=status)
+    anchor = f"#staff-{name}" if AGENT_ID.match(name or "") else ""
+    return d._security_headers(RedirectResponse(f"/dashboard/staff?msg={msg}{anchor}", status_code=303))
+
+
+async def avatar_post(request: Request, name: str) -> Response:
+    """Upload a staff member's picture (PNG/JPEG/WebP/GIF by content, at most 2 MB) into <data_dir>/avatars."""
+    try:
+        size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        size = 0
+    if size > AVATAR_MAX_BYTES + 65536:
+        return _avatar_reply(request, False, "avatar_bad", name, status=413)
+    if "multipart/form-data" in request.headers.get("content-type", ""):
+        try:
+            await request.form(max_files=1, max_part_size=AVATAR_MAX_BYTES + 1024)  # cached for the guard
+        except Exception:
+            return _avatar_reply(request, False, "avatar_bad", name, status=400)
+    err, form = await _post_guard(request)
+    if err is not None:
+        return err
+    if not _known_agent(name):
+        return _avatar_reply(request, False, "avatar_bad", name, status=404)
+    f = form.get("image")
+    if not hasattr(f, "read"):
+        return _avatar_reply(request, False, "avatar_bad", name, status=400)
+    try:
+        save_avatar(name, await f.read())
+    except ValueError as exc:
+        return _avatar_reply(request, False, "avatar_bad", name, status=400) if not _wants_json(request) else \
+            _d()._json({"ok": False, "msg": "avatar_bad", "reason": str(exc), "agent": name}, status_code=400)
+    db.log_event("dashboard", "staff picture changed", data={"agent": name})
+    return _avatar_reply(request, True, "avatar_saved", name)
+
+
+async def avatar_reset(request: Request, name: str) -> Response:
+    """Back to the drawn portrait."""
+    err, _form = await _post_guard(request)
+    if err is not None:
+        return err
+    if not _known_agent(name):
+        return _avatar_reply(request, False, "avatar_bad", name, status=404)
+    if reset_avatar(name):
+        db.log_event("dashboard", "staff picture reset to the drawing", data={"agent": name})
+    return _avatar_reply(request, True, "avatar_reset", name)
+
+
+def avatar_get(request: Request, name: str) -> Response:
+    """Serve a custom avatar from the data dir, with a content type taken from its validated extension."""
+    from fastapi.responses import FileResponse
+
+    d = _d()
+    resp, _ = d._guard(request)
+    if resp is not None:
+        return resp
+    path = avatar_path(name)
+    if path is None:
+        return Response(status_code=404)
+    out = FileResponse(path, media_type=_MIME[path.suffix[1:]],
+                       headers={"Cache-Control": "private, max-age=31536000, immutable",
+                                "X-Content-Type-Options": "nosniff", "Content-Disposition": "inline"})
+    return d._security_headers(out)
+
+
 def register(router: Any) -> None:
     """Attach the home routes to the dashboard router (called once by ``dashboard``)."""
     router.add_api_route("/", home_page, methods=["GET"], include_in_schema=False)
@@ -1507,6 +1791,9 @@ def register(router: Any) -> None:
     router.add_api_route("/api/home", api_home, methods=["GET"])
     router.add_api_route("/memory", memory_page, methods=["GET"])
     router.add_api_route("/agents/{name}", agent_page, methods=["GET"])
+    router.add_api_route("/agents/{name}/avatar", avatar_post, methods=["POST"])
+    router.add_api_route("/agents/{name}/avatar/reset", avatar_reset, methods=["POST"])
+    router.add_api_route("/avatars/{name}", avatar_get, methods=["GET"], include_in_schema=False)
     router.add_api_route("/chat", chat_post, methods=["POST"])
     router.add_api_route("/chat/job/{job_id}", chat_job, methods=["GET"])
     router.add_api_route("/uploads/{name}", upload_get, methods=["GET"], include_in_schema=False)

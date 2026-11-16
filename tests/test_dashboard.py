@@ -587,7 +587,7 @@ def test_old_urls_redirect_to_studio(client, clock):
 def test_seeded_home_shows_everything(client, seeded):
     html = client.get("/dashboard/").text
     assert "DEMO DATA" in html and "Needs you" in html and "Spoke &amp; Chain" in html
-    for name in ("Atom Eve", "Debbie", "Donald", "The Immortal", "Invincible", "Allen", "Robot"):  # the staff, as characters
+    for name in ("Invincible", "Art", "Debbie", "Donald", "The Immortal", "Allen", "Robot"):  # the staff, as characters
         assert name in html
     for role in ("Studio director", "Bookkeeper", "Quartermaster", "Archivist", "Briefer", "Researcher", "Engineer"):
         assert role in html

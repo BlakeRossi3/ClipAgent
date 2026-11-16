@@ -38,6 +38,7 @@ MAX_STEPS = 30
 
 _lock = threading.Lock()
 _threads: dict[str, threading.Thread] = {}
+_on_finish: dict[str, Callable[[dict[str, Any], str, str], None]] = {}   # task id -> callback (in memory)
 Runner = Callable[..., tuple[str, str]]   # runner(brief, context[, on_step]) -> (full_text, status)
 _runner: Runner | None = None
 
@@ -74,7 +75,8 @@ def _save(task: dict[str, Any], *, publish: bool = True) -> None:
 
 
 def public(task: dict[str, Any]) -> dict[str, Any]:
-    return {k: task.get(k) for k in ("id", "task", "status", "started", "finished", "summary", "origin", "steps")}
+    return {k: task.get(k) for k in ("id", "task", "status", "started", "finished", "summary", "origin", "steps",
+                                     "meta")}
 
 
 def brief_for(task: str, heard: str) -> str:
@@ -85,11 +87,25 @@ def brief_for(task: str, heard: str) -> str:
               "\n</background_task>")
 
 
-def start(task: str, *, heard: str = "", origin: str = "browser") -> str:
-    """Start ``task`` in the background; returns its id at once."""
+def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | None = None,
+          model: str | None = None, effort: str | None = None, announce: bool = True,
+          meta: dict[str, Any] | None = None,
+          on_finish: Callable[[dict[str, Any], str, str], None] | None = None) -> str:
+    """Start ``task`` in the background; returns its id at once.
+
+    Scheduled work (assistant/schedule.py) passes its own ``brief`` (the full prompt; ``task`` is then the
+    short label), a cheaper ``model``/``effort``, ``announce=False`` to stay quiet when it finishes, ``meta``
+    (shown with the task) and ``on_finish(row, full_text, status)``."""
     tid = uuid.uuid4().hex[:10]
     row = {"id": tid, "task": " ".join(task.split())[:300], "heard": heard[:300], "origin": origin,
-           "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": []}
+           "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": [],
+           "announce": announce, "meta": meta or {}}
+    if brief:
+        row["brief"] = brief
+    if model or effort:
+        row["model"], row["effort"] = model, effort
+    if on_finish is not None:
+        _on_finish[tid] = on_finish
     _save(row)
     db.log_event("assistant", "background task started", data={"task_id": tid, "task": row["task"][:200]})
     th = threading.Thread(target=_run, args=(row,), name=f"task-{tid[:6]}", daemon=True)
@@ -133,14 +149,16 @@ def _run(row: dict[str, Any]) -> None:
         context = {"status": status.turn_context()[:800]}
     except Exception:
         context = {}
-    brief = brief_for(row["task"], row["heard"] or row["task"])
+    brief = row.get("brief") or brief_for(row["task"], row["heard"] or row["task"])
+    if row.get("model") or row.get("effort"):
+        context.update(model=row.get("model"), effort=row.get("effort"))
     try:
         if _runner is not None:
             full, st = _call_runner(_runner, brief, context, on_step)
         else:
             from assistant import brain
 
-            full, st = brain.run_worker(brief, on_step=on_step)
+            full, st = brain.run_worker(brief, on_step=on_step, model=row.get("model"), effort=row.get("effort"))
     except Exception as exc:
         log.exception("background task failed")
         db.log_event("assistant", "background task failed", level="error", data={"error": repr(exc)[:300]})
@@ -158,7 +176,23 @@ def finish(row: dict[str, Any], full: str, status: str) -> None:
     except Exception as exc:
         log.warning("task result not recorded: %s", exc)
     db.log_event("assistant", "background task finished", data={"task_id": row["id"], "status": row["status"]})
-    announce(row, full)
+    cb = _on_finish.pop(row["id"], None)
+    if cb is not None:
+        try:
+            cb(row, full, status)
+        except Exception as exc:
+            log.warning("task finish callback failed: %s", exc)
+            db.log_event("assistant", "scheduled task bookkeeping failed", level="warning",
+                         data={"task_id": row["id"], "error": repr(exc)[:300]})
+    if status == "budget":   # the plan ran out mid-task: hand the work over to the next usage window
+        try:
+            from assistant import handoff
+
+            handoff.on_task_stopped(row)
+        except Exception as exc:
+            log.warning("usage handoff failed: %s", exc)
+    if row.get("announce", True):
+        announce(row, full)
 
 
 def fallback_summary(full: str, n: int = 3) -> str:

@@ -14,7 +14,7 @@
   {% for ag in roster %}
   {% set lv = live.get(ag.name) or {} %}
   {% set state = lv.get("state") or ag.status %}
-  <li class="card staff-card is-{{ state }}{% if ag.name == 'main' %} is-chief{% endif %}">
+  <li class="card staff-card is-{{ state }}{% if ag.name == 'main' %} is-chief{% endif %}" id="staff-{{ ag.name }}">
     <div class="staff-px" aria-hidden="true">{{ ag.sprite_big | safe }}</div>
     <div class="staff-main">
       <p class="eyebrow">{{ ag.role }}{% if ag.name != ag.display | lower %} · <code>{{ ag.name }}</code>{% endif %}</p>
@@ -28,6 +28,20 @@
         <div><dt>Model</dt><dd><code>{{ ag.model }}</code></dd></div>
         {% if ag.last %}<div><dt>Last</dt><dd>{{ (ag.last.summary or ag.last.task) | truncate(90) }} <span class="muted">· {{ ag.last.ts | ago }}</span></dd></div>{% endif %}
       </dl>
+      <div class="avatar-tools" data-avatar-tools>
+        <form method="post" action="/dashboard/agents/{{ ag.name }}/avatar" enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label class="hbtn hbtn-sm" title="Use your own picture for {{ ag.display }} (PNG, JPEG, WebP or GIF, up to 2 MB)">Change picture
+            <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" required aria-label="Picture for {{ ag.display }}"></label>
+          <button type="submit" class="hbtn hbtn-sm avatar-save">Save</button>
+        </form>
+        {% if ag.custom_avatar %}
+        <form method="post" action="/dashboard/agents/{{ ag.name }}/avatar/reset">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="hbtn hbtn-sm" title="Show the drawn portrait again">Reset to drawing</button>
+        </form>
+        {% endif %}
+      </div>
     </div>
   </li>
   {% endfor %}
@@ -37,3 +51,4 @@
 {% endif %}
 </div>
 {% endblock %}
+{% block scripts %}<script src="/dashboard/static/home.js?v={{ asset_v }}" defer></script>{% endblock %}

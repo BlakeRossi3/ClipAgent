@@ -665,17 +665,30 @@ def assistant_job_specs() -> list[JobSpec]:
         JobSpec("assistant_improve", _weekly_improvement,
                 "cron", {"day_of_week": "sun", "hour": 19, "minute": 25}, "weekly self-improvement proposals"),
         JobSpec("assistant_deferred", lambda: __import__("assistant.usage", fromlist=["x"]).run_due(),
-                "interval", {"minutes": 10}, "run prompts queued for after the Claude plan resets"),
+                "interval", {"minutes": 10}, "run scheduled tasks and prompts queued for after the plan resets"),
         JobSpec("assistant_evals", lambda: __import__("assistant.evals", fromlist=["x"]).run_evals_isolated(),
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
         JobSpec("assistant_history", lambda: __import__("assistant.history_import", fromlist=["x"]).nightly(),
                 "cron", {"hour": 1, "minute": 37}, "distil the next batch of imported Claude chats"),
         JobSpec("assistant_reels_cleanup", lambda: __import__("assistant.reels", fromlist=["x"]).cleanup(),
                 "cron", {"hour": 3, "minute": 50}, "delete old downloaded reels"),
-    ] + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
+    ] + _surprise_spec() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
                   "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
                   "heartbeat: check Agent/Heartbeat.md against the live status")]
          if get_assistant_settings().heartbeat_minutes > 0 else [])
+
+
+def _surprise_spec() -> list[JobSpec]:
+    """The morning surprise at ASSISTANT_MORNING_SURPRISE (local HH:MM; empty = off)."""
+    from assistant.settings import get_assistant_settings
+
+    at = get_assistant_settings().morning_surprise
+    if not at:
+        return []
+    h, m = (int(x) for x in at.split(":"))
+    return [JobSpec("assistant_morning_surprise",
+                    lambda: __import__("assistant.surprise", fromlist=["x"]).run_morning(),
+                    "cron", {"hour": h, "minute": m}, "morning surprise: make him something cool")]
 
 
 def build_scheduler() -> Any:

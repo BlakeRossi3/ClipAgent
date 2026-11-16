@@ -55,6 +55,7 @@
       </ul>
     </nav>
     <div class="topbar-end">
+      {% if csrf %}<form class="update-chip" method="post" action="/setup/action/update" data-update-chip hidden><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="topbar-chip topbar-chip-update" title="New version available: update and restart"><span class="dot dot-info" aria-hidden="true"></span><span data-update-label>Update available</span> · Update now</button></form>{% endif %}
       {% if dry_run %}<span class="topbar-chip" title="Uploads, calls and texts are simulated">Practice</span>{% endif %}
     </div>
     {% endif %}

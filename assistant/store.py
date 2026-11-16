@@ -20,6 +20,7 @@ as_goals            goals with a metric/target/current value
 as_agent_runs       audit trail: one row per agent or sub-agent run (cost, status)
 as_lessons          self-improvement memory: proposed -> adopted -> retired
 as_vault_index      vault search index bookkeeping (path, mtime, sha) + FTS5 table
+as_deferred         prompts and scheduled tasks for later (assistant/usage.py, assistant/schedule.py)
 ==================  ===================================================================
 
 Assistant LLM spend is written to the phase-1 ``llm_usage`` table with
@@ -164,6 +165,11 @@ MIGRATIONS: list[list[str]] = [
             day TEXT NOT NULL, week_start TEXT NOT NULL, hours REAL NOT NULL, source TEXT NOT NULL DEFAULT 'sms',
             note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (job_id, day))""",
         "CREATE INDEX idx_as_work_days_week ON as_work_days(job_id, week_start)",
+    ],
+    [   # v5: scheduled tasks (assistant/schedule.py): recurrence, a short title and JSON details on as_deferred
+        "ALTER TABLE as_deferred ADD COLUMN recur TEXT",
+        "ALTER TABLE as_deferred ADD COLUMN title TEXT",
+        "ALTER TABLE as_deferred ADD COLUMN meta TEXT",
     ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -865,6 +871,7 @@ def list_lessons(status: str | None = None, *, area: str | None = None, limit: i
 @dataclass(slots=True)
 class Deferred(_Row):
     _BOOL: ClassVar[tuple[str, ...]] = ("after_reset",)
+    _JSON: ClassVar[tuple[str, ...]] = ("meta",)
     id: int
     created_at: str
     kind: str
@@ -879,16 +886,55 @@ class Deferred(_Row):
     finished_at: str | None = None
     result: str | None = None
     message_id: int | None = None
+    recur: str | None = None          # None | daily | weekdays | weekly (assistant/schedule.py)
+    title: str | None = None
+    meta: Any = None                  # JSON: {"by", "why", "notes", "task_id", ...}
 
 
 def add_deferred(prompt: str, *, kind: str = "prompt", channel: str = "system", agent: str = "main",
                  run_after: str | None = None, after_reset: bool = False, reason: str | None = None,
+                 recur: str | None = None, title: str | None = None, meta: Any = None,
                  conn: sqlite3.Connection | None = None) -> int:
     with transaction(conn) as c:
         cur = c.execute("INSERT INTO as_deferred (created_at, kind, prompt, channel, agent, run_after, after_reset, "
-                        "reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (db.now_iso(), kind, prompt, channel, agent, run_after, int(after_reset), reason))
+                        "reason, recur, title, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (db.now_iso(), kind, prompt, channel, agent, run_after, int(after_reset), reason, recur,
+                         title, None if meta is None else json.dumps(meta, sort_keys=True)))
         return int(cur.lastrowid)
+
+
+_DEFERRED_EDITABLE = {"prompt", "run_after", "after_reset", "reason", "recur", "title", "meta", "channel"}
+
+
+def update_deferred(did: int, *, conn: sqlite3.Connection | None = None, **cols: Any) -> None:
+    """Change a deferred row's non-status columns (``meta`` is JSON-encoded). Raises ``db.NotFound``."""
+    vals = {k: (int(v) if k == "after_reset" else v) for k, v in cols.items()}
+    with transaction(conn) as c:
+        _update(c, "as_deferred", did, vals, _DEFERRED_EDITABLE, json_cols=("meta",), touch=False)
+
+
+def requeue_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """A running row goes back to the queue (the plan limit stopped it)."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_deferred SET status = 'queued', started_at = NULL WHERE id = ? AND status = 'running'",
+                        (did,))
+        return cur.rowcount > 0
+
+
+def cancel_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """Queued -> cancelled (first writer wins). False when it already ran, runs or is gone."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_deferred SET status = 'cancelled', finished_at = ? WHERE id = ? AND status = 'queued'",
+                        (db.now_iso(), did))
+        return cur.rowcount > 0
+
+
+def list_deferred_finished(limit: int = 20, *, conn: sqlite3.Connection | None = None) -> list[Deferred]:
+    """Done / failed / cancelled rows, most recently finished first."""
+    with transaction(conn) as c:
+        rows = c.execute("SELECT * FROM as_deferred WHERE status IN ('done', 'failed', 'cancelled') "
+                         "ORDER BY COALESCE(finished_at, created_at) DESC, id DESC LIMIT ?", (limit,)).fetchall()
+    return [Deferred.from_row(r) for r in rows]
 
 
 def get_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> Deferred | None:

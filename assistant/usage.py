@@ -11,7 +11,9 @@ seen we fall back to the daily run cap and to the reset time parsed from a "You'
 
 Deferred work lives in ``as_deferred`` (assistant/store.py): ``after_reset`` rows run a few minutes
 after the plan's window resets, timed rows at ``run_after``. :func:`run_due` (scheduler, every
-10 min) runs them oldest first and texts (sms) or posts (dashboard) the result.
+10 min) runs them oldest first: scheduled tasks (``assistant/schedule.py``) as background tasks, other
+prompts through ``runtime.run_task`` (texted or posted on the dashboard). Near the limit it also writes a
+usage handoff (``assistant/handoff.py``).
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ log = logging.getLogger(__name__)
 KV_WINDOW = "assistant:usage:window:{kind}"
 WINDOW_KINDS = ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet")
 DEFER_THRESHOLD = 0.80        # non-urgent work waits once a window is this full
+HANDOFF_THRESHOLD = 0.90      # work in flight is handed over to the next window (assistant/handoff.py)
 RESET_GRACE = timedelta(minutes=5)
 MAX_PER_RUN = 3               # deferred prompts run per scheduler tick (they cost plan usage too)
 # Deferred kinds that are scheduler jobs (module:function), run as such when their time comes.
@@ -77,6 +80,13 @@ def record_window(info: dict[str, Any]) -> None:
         until = db.parse_iso(resets_iso)
         if until > db.utcnow():
             db.kv_set(claude_code.KV_BACKOFF, {"until": resets_iso, "reason": f"{kind} limit", "set_at": db.now_iso()})
+    if info.get("status") == "rejected" or (util is not None and util >= HANDOFF_THRESHOLD):
+        try:   # nearly out: write the handoff for work in flight before it stops (plain code, no tokens)
+            from assistant import handoff
+
+            handoff.on_usage_signal()
+        except Exception as exc:
+            log.warning("usage handoff failed: %s", exc)
 
 
 def _window(kind: str) -> dict[str, Any] | None:
@@ -198,52 +208,78 @@ def due(now: datetime | None = None) -> list[store.Deferred]:
 
 
 def run_due(limit: int = MAX_PER_RUN) -> int:
-    """Scheduler job: run due deferred prompts, oldest first. Returns how many ran."""
-    from assistant import claude_code, runtime
+    """Scheduler job: run due deferred prompts and scheduled tasks, oldest first. Returns how many started.
+
+    Also: hands work over to the next usage window when the plan is nearly used up
+    (``assistant.handoff.on_usage_signal``) and fails rows lost to a restart (``schedule.sweep_stale``)."""
+    from assistant import claude_code, runtime, schedule
 
     s = get_assistant_settings()
     if not s.enabled or runtime.is_stopped():
         return 0
-    until = claude_code.backoff_until()
-    if until is not None:
+    for fn in ("handoff.on_usage_signal", "schedule.sweep_stale"):
+        try:
+            mod, name = fn.split(".")
+            getattr(__import__(f"assistant.{mod}", fromlist=["x"]), name)()
+        except Exception as exc:
+            log.warning("%s failed: %s", fn, exc)
+    if claude_code.backoff_until() is not None:
         return 0
     n = 0
     for d in due()[:limit]:
-        if until is None and n and claude_code.backoff_until() is not None:
+        if n and claude_code.backoff_until() is not None:
             break
+        if d.kind in schedule.TASK_KINDS and not schedule.can_start_task():
+            continue                       # two scheduled tasks already running: next tick
         if not store.set_deferred_status(d.id, "running"):
             continue
-        if d.kind in JOB_FUNCS:  # a deferred scheduler job: run its plain function, not a prompt
-            import importlib
+        n += 1
+        if run_claimed(d) == "limited":
+            break
+    return n
 
-            mod, fn = JOB_FUNCS[d.kind].split(":")
-            try:
-                getattr(importlib.import_module(mod), fn)()
-                store.set_deferred_status(d.id, "done", result="ran")
-            except Exception as exc:
-                store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
-            n += 1
-            continue
-        sms = d.channel == "sms"
-        task = (f"Earlier request from the owner (queued {d.created_at[:16]}Z because of the Claude plan limit; "
-                f"do it now and report the result):\n{d.prompt}" if d.kind == "owner_request" else d.prompt)
+
+def run_claimed(d: store.Deferred) -> str:
+    """Run one row already claimed (status ``running``). Returns started | done | failed | limited."""
+    from assistant import runtime, schedule
+
+    if d.kind in schedule.TASK_KINDS:      # real work: a background worker session, reports back by itself
         try:
-            res = runtime.run_task(d.agent, task, channel=d.channel if d.channel in ("sms", "dashboard") else "system",
-                                   deliver=sms, kind="deferred")
+            schedule.start_row(d)
         except Exception as exc:
             store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
-            continue
-        if res.status == "budget":   # limited again: back in the queue
-            with store.transaction() as c:
-                c.execute("UPDATE as_deferred SET status = 'queued', started_at = NULL WHERE id = ?", (d.id,))
-            break
-        mid = res.message_out_id
-        if d.channel == "dashboard":
-            mid = store.add_message("out", "dashboard", res.text, kind="deferred", agent=d.agent)
-        store.set_deferred_status(d.id, "done" if res.status == "ok" else "failed", result=res.text[:500],
-                                  message_id=mid)
-        n += 1
-    return n
+            return "failed"
+        return "started"
+    if d.kind in JOB_FUNCS:  # a deferred scheduler job: run its plain function, not a prompt
+        import importlib
+
+        mod, fn = JOB_FUNCS[d.kind].split(":")
+        try:
+            getattr(importlib.import_module(mod), fn)()
+            store.set_deferred_status(d.id, "done", result="ran")
+        except Exception as exc:
+            store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
+            return "failed"
+        return "done"
+    sms = d.channel == "sms"
+    task = (f"Earlier request from the owner (queued {d.created_at[:16]}Z because of the Claude plan limit; "
+            f"do it now and report the result):\n{d.prompt}" if d.kind == "owner_request" else d.prompt)
+    try:
+        res = runtime.run_task(d.agent, task, channel=d.channel if d.channel in ("sms", "dashboard") else "system",
+                               deliver=sms, kind="deferred")
+    except Exception as exc:
+        store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
+        return "failed"
+    if res.status == "budget":   # limited again: back in the queue
+        store.requeue_deferred(d.id)
+        return "limited"
+    mid = res.message_out_id
+    if d.channel == "dashboard":
+        mid = store.add_message("out", "dashboard", res.text, kind="deferred", agent=d.agent)
+    ok = res.status == "ok"
+    store.set_deferred_status(d.id, "done" if ok else "failed", result=res.text[:500], message_id=mid)
+    schedule.book_next(d)
+    return "done" if ok else "failed"
 
 
 def parse_at(at: str | None) -> datetime | None:
@@ -266,36 +302,9 @@ def _tool_usage_status(ctx: Any, a: dict[str, Any]) -> Any:
     return usage_status()
 
 
-def _tool_schedule_prompt(ctx: Any, a: dict[str, Any]) -> Any:
-    from assistant.tools import ToolError
-
-    text = str(a.get("text") or "").strip()
-    if not text or len(text) > 4000:
-        raise ToolError("text must be 1-4000 characters")
-    try:
-        at = parse_at(a.get("at"))
-    except ValueError as exc:
-        raise ToolError("at must be 'after_reset', 'YYYY-MM-DD HH:MM' (local) or ISO-8601") from exc
-    if at is not None and at <= db.utcnow():
-        raise ToolError("that time is in the past")
-    channel = a.get("channel") if a.get("channel") in ("sms", "dashboard") else "dashboard"
-    did = defer(text, kind="prompt", channel=channel, at=at, reason=f"scheduled by {ctx.agent}")
-    when = next_reset() if at is None else at
-    from assistant import claude_code
-
-    return {"id": did, "runs": ("after the plan resets" + (f" ({claude_code.friendly_time(when)})" if when else ""))
-            if at is None else claude_code.friendly_time(at)}
-
-
 def register_tools(register: Any) -> None:
     from assistant.tools import Tool, _obj
 
     register(Tool("usage_status", "How much of the owner's Claude plan is left: 5-hour and weekly windows "
                                   "(left % or unknown), when they reset, runs today vs the daily cap, queued tasks.",
                   _obj({}), _tool_usage_status), replace=True)
-    register(Tool("schedule_prompt", "Run a prompt later as yourself: at='after_reset' (just after the Claude plan's "
-                                     "usage window resets) or a local time 'YYYY-MM-DD HH:MM'. The result is texted "
-                                     "(channel sms) or posted on the dashboard.",
-                  _obj({"text": {"type": "string"}, "at": {"type": "string"},
-                        "channel": {"type": "string", "enum": ["sms", "dashboard"]}}, ["text"]),
-                  _tool_schedule_prompt, side_effects=True), replace=True)

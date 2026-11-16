@@ -82,6 +82,8 @@ class AssistantSettings:
     heartbeat_max_tasks_per_day: int = 6
     # --- automatic memory (assistant/auto_memory.py): distil lasting facts after each conversation
     auto_memory: bool = True                 # ASSISTANT_AUTO_MEMORY
+    # --- the morning surprise (assistant/surprise.py): local "HH:MM", "" = off
+    morning_surprise: str = "07:40"
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -149,7 +151,20 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         heartbeat_minutes=max(0, int(s("HEARTBEAT_MINUTES", "30"))),
         heartbeat_max_tasks_per_day=max(0, int(s("HEARTBEAT_MAX_TASKS_PER_DAY", "6"))),
         auto_memory=config._bool(env.get("ASSISTANT_AUTO_MEMORY"), True),
+        morning_surprise=_hhmm(env.get("ASSISTANT_MORNING_SURPRISE"), "07:40"),
     )
+
+
+def _hhmm(raw: str | None, default: str) -> str:
+    """ "HH:MM" (24 h) -> normalised "HH:MM"; unset -> ``default``; empty / off / invalid -> "" (off)."""
+    if raw is None:
+        return default
+    v = raw.strip().lower()
+    try:
+        h, m = (int(x) for x in v.split(":"))
+    except ValueError:
+        return ""
+    return f"{h:02d}:{m:02d}" if 0 <= h < 24 and 0 <= m < 60 else ""
 
 
 def _server_list(raw: str) -> tuple[str, ...] | None:

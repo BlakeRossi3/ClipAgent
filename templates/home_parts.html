@@ -7,7 +7,7 @@
 {% macro needs(h) %}
 {% set n = h.needs %}
 {% if n.count %}
-<section class="card needs" aria-labelledby="needs-title" id="needs">
+<section class="card needs" aria-labelledby="needs-title" id="needs" data-widget="needs">
   <h2 class="sec-title" id="needs-title"><span class="sec-glyph">{{ glyph("bell") | safe }}</span>Needs you<span class="count-badge">{{ n.count }}</span></h2>
   <ul class="needs-list">
     {% for d in n.decisions %}

@@ -35,6 +35,7 @@ approval before any major change.
 | `server.py` | FastAPI `app` (notify + dashboard routers) | **done** |
 | `main.py` | APScheduler jobs + CLI; portable locks (fcntl / msvcrt), Restart/Stop control | **done** |
 | `config_store.py` | comment-preserving atomic edits of `config.env` (wizard writes) | **done** |
+| `updater.py` | in-browser update: cached `git fetch` check + one-click merge/ff, pip if needed, health-checked restart | **done** |
 | `setup_web.py` | `/setup` wizard + Settings page (forms, YouTube OAuth, vault import, update/restart/stop) | **done** |
 | `voice/` | always-on local voice loop (`python -m voice`; wake word, STT, TTS, barge-in, mute) - docs/VOICE.md | **done** |
 | `windows/` | `ClipAgent-Setup.bat` + `setup.ps1` installer, `ClipAgent.ps1` launcher (docs/WINDOWS.md) | |
@@ -587,3 +588,33 @@ only): systematic-debugging, test-driven-development, verification-before-comple
 obra/superpowers is a default trusted catalog source. `ASSISTANT_TOOL_SEARCH` (default true) sets Claude Code's
 `ENABLE_TOOL_SEARCH` so tool descriptions load on demand (`ToolSearch` is in `brain.VOICE_BUILTINS`).
 UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.txt`); toolsmith says keep `static/theme.css`.
+
+### Scheduled page, usage handoff, morning surprise, in-browser update
+- `assistant/schedule.py`: Cecil's scheduled tasks = `as_deferred` rows (store v5 added `recur`, `title`, JSON `meta`
+  {by, why, notes, task_id}; helpers `update_deferred`, `requeue_deferred`, `cancel_deferred`, `list_deferred_finished`).
+  Kinds `task` | `handoff_resume` | `surprise` (`schedule.TASK_KINDS`) run through the background-task path
+  (`tasks.start(..., brief=, model=, effort=, announce=, meta=, on_finish=)`, max 2 at once) when
+  `usage.run_due` (job `assistant_deferred`, 10 min) finds them due; other kinds keep `runtime.run_task`
+  (`usage.run_claimed`). `parse_when` ("in 20 minutes", "7:10am", "tomorrow 9am", "YYYY-MM-DD HH:MM", "after_reset"),
+  `recur` daily|weekdays|weekly (`book_next` once per row), `when_words`, `sweep_stale`, `snapshot()` (check-ins,
+  queued rows, next run of every cron job, interval jobs, recent outcomes, handoff, surprise). Tools `schedule_prompt`
+  (moved from usage.py; now at/repeat/title/why), `schedule_list`, `schedule_cancel`. Page `/dashboard/scheduled`
+  (top-bar "Scheduled"; cancel / run now / add, CSRF POSTs), JSON `/dashboard/api/scheduled` (assistant/toolkit_web.py).
+- `assistant/handoff.py`: at `usage.HANDOFF_THRESHOLD` (0.90 of a window), a rejected event or a hit limit, work in
+  flight is written to vault `Agent/Handoffs/<YYYY-MM-DD-HHMM>.md` and ONE `handoff_resume` row is scheduled at reset
+  + 5 min (unknown reset: +5 h); a newer handoff joins it (`meta.notes`). Triggers: `usage.record_window`, every
+  `run_due` tick, `tasks.finish` with status `budget`, tool `usage_handoff` (skill `usage-aware` says when).
+  `resume_brief` embeds the notes.
+- `assistant/surprise.py`: job `assistant_morning_surprise` at `ASSISTANT_MORNING_SURPRISE` (default 07:40, empty = off;
+  `AssistantSettings.morning_surprise`). Picks a kind not in the last 5 (kv `assistant:surprise:history`), runs as a
+  `surprise` row on `cc_subagent_model` / effort low, waits for the reset when `usage.constrained()`; files
+  `Agent/Surprises/<day>.md` + optional `<data>/surprises/<day>.html` (served sandboxed at `/dashboard/surprises/<day>.html`);
+  `announcement()` adds one line to the Jarvis boot briefing once (`voice/web.activity`).
+- `updater.py` (repo root): `check()` (git fetch at most every 10 min, kv `app:update:status`; `GET /dashboard/api/update`,
+  nav.js shows the "Update available · Update now" chip in base.html), `update_now()` = the launcher's Update-App
+  (stash, merge `clipagent.upstream` into `sterling/self`, conflict -> `sterling/backup-<stamp>` + published version;
+  other branches `--ff-only`; pip only if requirements.txt changed; `selfedit.KV_PENDING` reason `update` so
+  `verify_after_restart` rolls back an unhealthy start). Refuses while busy (`selfedit.in_flight()`, pending restart
+  check, running background task, a voice turn). `setup_web.update_app` delegates to it. Tests: temp repos with a local
+  bare origin + `updater.set_runners(pip=...)`.
+

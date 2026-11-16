@@ -1806,9 +1806,11 @@ def announce_task(row: dict[str, Any], full: str) -> bool:
 
 
 def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
-               timeout: float | None = None) -> tuple[str, str]:
-    """A parallel worker session for one background task (fresh, full powers, the main model).
-    Returns (result text, status). Runs in the calling thread."""
+               timeout: float | None = None, model: str | None = None,
+               effort: str | None = None) -> tuple[str, str]:
+    """A parallel worker session for one background task (fresh, full powers, the main model unless
+    ``model``/``effort`` say otherwise, e.g. the cheap morning surprise). Returns (result text, status).
+    Runs in the calling thread."""
     from assistant import claude_code
 
     s = get_assistant_settings()
@@ -1819,7 +1821,14 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         t = _sdk()
         mode = billing()
         table = helper.tool_table(worker=True)
-        client = _make_client(helper.options(mode=mode, resume=None, worker=True, table=table), table)
+        opts = helper.options(mode=mode, resume=None, worker=True, table=table)
+        for key, val in (("model", model), ("effort", effort)):
+            if val:
+                try:
+                    setattr(opts, key, val)
+                except Exception:   # an options object that will not take it: keep the defaults
+                    pass
+        client = _make_client(opts, table)
         await client.connect()
         text, seen = "", set()
         try:

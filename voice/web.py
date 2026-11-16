@@ -559,6 +559,14 @@ def activity() -> dict[str, Any]:
         from assistant.settings import get_assistant_settings
 
         snap["briefing"] = needs.briefing(get_assistant_settings().owner_honorific)
+        try:   # the morning surprise, said once
+            from assistant import surprise
+
+            line = surprise.announcement()
+            if line:
+                snap["briefing"] = (snap["briefing"] + " " + line).strip()
+        except Exception as exc:
+            log.warning("surprise line unavailable: %s", exc)
     except Exception as exc:
         log.warning("briefing unavailable: %s", exc)
         snap["briefing"] = ""
