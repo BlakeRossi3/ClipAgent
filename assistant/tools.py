@@ -131,6 +131,11 @@ PLANNED_TOOLS: dict[str, str] = {
     "selfcheck_run": "assistant.selfcheck",
     "speaking_style_note": "assistant.speaking_style",
     "self_edits_set_aside": "assistant.selfedit",
+    "needs_list": "assistant.needs",
+    "usage_breakdown": "assistant.usage_report",
+    "needs_dismiss": "assistant.needs",
+    "checkin_answer": "assistant.needs",
+    "meals_set_preferences": "assistant.meals",
     "self_edits_recover": "assistant.selfedit",
     "fast_search": "assistant.fast_search",
     "approval_rules_list": "assistant.approvals",
@@ -145,7 +150,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.reels", "assistant.desktop_modes", "assistant.history_import", "assistant.twilio_doctor",
                      "assistant.skill_vetting", "assistant.heartbeat", "assistant.live_settings", "assistant.admin",
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
-                     "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit")
+                     "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs
@@ -574,6 +579,11 @@ def _open_url(ctx: ToolContext, a: dict[str, Any]) -> Any:
     url = str(a.get("url") or "").strip()
     if not re.match(r"^https?://[^\s\"'<>]+$", url, re.I) or len(url) > 2000:
         raise ToolError("only a single http(s) URL can be opened")
+    from assistant.settings import get_assistant_settings
+
+    if _url_opener is _default_url_opener and get_assistant_settings().fake:
+        # Fake mode = tests, nightly evals, self-edit test runs: never pop a real browser tab on his screen.
+        return {"opened": True, "url": url, "note": "fake mode: nothing was opened"}
     try:
         ok = bool(_url_opener(url))
     except Exception as exc:  # no browser on this machine, headless server...

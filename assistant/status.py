@@ -127,7 +127,8 @@ def status_snapshot() -> str:
 #: Only these get :func:`glance_lines` in their context, so the answer needs no tool round.
 GLANCE_RE = re.compile(
     r"\b(going on|what'?s up|what'?s new|status|update|today|this week|last week|make|made|earn\w*|money|"
-    r"pay|paid|income|hours|worked|uploads?|shorts|views|channel|approvals?|pending|how are things|anything new)\b",
+    r"pay|paid|income|hours|worked|uploads?|shorts|views|channel|approvals?|pending|how are things|anything new|"
+    r"needs?|waiting|failures?|failed)\b",
     re.I)
 
 
@@ -156,7 +157,16 @@ def glance_lines() -> list[str]:
     def money() -> list[str]:
         return work_lines()[:1]
 
-    lines = _parts([shorts, money])
+    def needs_now() -> list[str]:
+        from assistant import needs
+
+        its = needs.items()
+        if not its:
+            return ["Needs him: nothing (the badge shows none)."]
+        return [f"Needs him ({len(its)}, the same list and count as his 'need you' badge):",
+                *[f"  {i}. {it['text'][:200]} -> {it['how']}" for i, it in enumerate(its, 1)]]
+
+    lines = _parts([needs_now, shorts, money])
     return ["At a glance (use only for what he asked; details: studio_status, ledger_summary):", *lines] \
         if lines else []
 

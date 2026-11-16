@@ -236,6 +236,9 @@ def test_llm_usage_helpers(clock):
     summary = db.llm_usage_summary()
     assert summary[0]["calls"] == 2 and summary[0]["cost_usd"] == pytest.approx(0.75)
     assert db.list_llm_usage()[0].fake is True
+    db.insert_llm_usage(model="m", purpose="assistant.main", input_tokens=1, output_tokens=1, cost_usd=0)
+    assert len(db.llm_usage_between(start, end)) == 3
+    assert [r.purpose for r in db.llm_usage_between(start, end, purpose_prefix="assistant.")] == ["assistant.main"]
 
 
 # ---------------------------------------------------------------------------

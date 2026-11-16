@@ -554,6 +554,14 @@ def activity() -> dict[str, Any]:
         live.setdefault(t["id"], tasks.public(t))
     snap["tasks"] = sorted(live.values(), key=lambda x: x.get("started") or "")[-10:]
     snap["voice"] = {**get_voice_settings().public(), "smart_turn_ready": smart_turn_ready()}
+    try:   # what needs him, said the moment he opens the app (plain code, no tokens)
+        from assistant import needs
+        from assistant.settings import get_assistant_settings
+
+        snap["briefing"] = needs.briefing(get_assistant_settings().owner_honorific)
+    except Exception as exc:
+        log.warning("briefing unavailable: %s", exc)
+        snap["briefing"] = ""
     return snap
 
 

@@ -47,16 +47,16 @@
     {% endfor %}
     {% if n.failures_24h %}
     <li class="need need-fail">
-      <p class="need-kind">Studio · last 24 h</p>
+      <p class="need-kind">Studio · since you last looked</p>
       <p class="need-text">{{ n.failures_24h }} failure{{ "s" if n.failures_24h != 1 else "" }}{% if n.last_error %} — latest: {{ n.last_error.message | truncate(110) }}{% endif %}</p>
-      <a class="need-link" href="/dashboard/events?level=error">See the log →</a>
+      <a class="need-link" href="/dashboard/needs/seen/failures">See the log →</a>
     </li>
     {% endif %}
     {% for r in n.run_errors[:1] %}
     <li class="need need-fail">
       <p class="need-kind">{{ agent_name(r.agent) }} · {{ r.ts | ago }}</p>
       <p class="need-text">{{ (r.summary or r.task) | truncate(140) }}</p>
-      <a class="need-link" href="/dashboard/agents/{{ r.agent }}">Open {{ agent_name(r.agent) }} →</a>
+      <a class="need-link" href="/dashboard/needs/seen/run_errors?agent={{ r.agent | urlencode }}">Open {{ agent_name(r.agent) }} →</a>
     </li>
     {% endfor %}
   </ul>

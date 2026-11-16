@@ -569,3 +569,14 @@ browser. Chat images: `home.save_upload` -> paths passed to the turn (`runtime.r
 the brain (`ASSISTANT_MCP_SERVERS`; names only anywhere visible; tests: `claude_code.set_claude_json`).
 `VOICE_STT=auto|browser|server` (page speech recognition vs Whisper). `assistant/selfcheck.py` (`main.py assistant
 selfcheck`, Settings button, tool `selfcheck_run`): real tool calls, every change undone via `admin.app_undo`.
+
+### Needs, usage, cooperative self-edits
+`assistant/needs.py` is the ONE "needs you" list (badge, home section, Cecil's glance, tool `needs_list`, boot
+briefing spoken by the voice page from `/voice/api/activity` `briefing`). Failures / failed staff runs clear once
+seen (`needs.acknowledge`, kv `needs:seen:<kind>`, link `/dashboard/needs/seen/<kind>`, tool `needs_dismiss`).
+Check-in answers from any channel go through `needs.answer_checkin` (tool `checkin_answer`); meal preferences
+via `meals_set_preferences`. `assistant/usage_report.py` (`main.py assistant usage-report`, tool `usage_breakdown`)
+prices every `llm_usage` row at API rates to show what eats the plan allowance. Self-edits merge updates into
+`sterling/self` (`selfedit.ensure_branch`); `selfedit.recover()` (tool `self_edits_recover`, `main.py assistant
+recover`) merges set-aside backup branches/stashes back. Tests must never open a real browser (conftest guard;
+`open_url` is a no-op in fake mode).

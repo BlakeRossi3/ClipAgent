@@ -1170,6 +1170,7 @@
     es.addEventListener('hello', function (m) { try { var h = JSON.parse(m.data); if (seq === null) seq = h.seq; } catch (x) { /* ignore */ } });
     es.onerror = function () { /* EventSource reconnects by itself (retry: 2000) with Last-Event-ID */ };
   }
+  var briefed = false, brief = '';   // the boot briefing; browsers only let a page speak after a tap
   function loadActivity() {
     return fetch('/voice/api/activity', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
@@ -1182,6 +1183,12 @@
         (j.tasks || []).forEach(function (t) { act.tasks[t.id] = t; });
         act.panels = j.panels || [];
         if (j.ui) applyUi(j.ui);
+        if (j.briefing && !briefed) {         // what needs him, first thing (spoken now if the page may talk)
+          briefed = true; brief = j.briefing;
+          caption(brief, true); addHistory('them', brief, 'voice · needs you');
+          var act0 = navigator.userActivation;
+          if (act0 && act0.hasBeenActive) { speaker.say(brief, null, true); brief = ''; }
+        }
         seq = j.seq;
         renderRail();
       }).catch(function () { /* the stream still works */ });
@@ -1197,6 +1204,7 @@
     if (on) {
       audioCtx();
       if (synth) synth.resume();     // unlock speech inside the click
+      if (brief) { speaker.say(brief, null, true); brief = ''; }
       if (bg.online || bg.muted) postMute(false);
       ensureMic().then(function () {
         always = true; vad.armed = 0; vad.speaking = false; local = local === 'error' ? null : local;

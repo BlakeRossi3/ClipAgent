@@ -825,20 +825,26 @@ def agent_display(name: str | None, *, spec: Any = None, settings: Any = None) -
 
 
 def needs_data() -> dict[str, Any]:
-    from assistant import store
+    from assistant import needs
 
-    d = _d()
-    pending = db.list_decisions("pending", limit=10)
-    now = db.now_iso()
-    checkins = [c for c in store.list_checkins("pending", limit=200) if c.sent_at or c.scheduled_for <= now][:5]
-    with d._conn() as c:
-        fails = d.failures_24h(c)
-        last_err = db.list_events(limit=1, level="error", conn=c)
-    since = db.to_iso(db.utcnow() - timedelta(hours=24))
-    run_errors = [r for r in store.list_agent_runs(50, since=since) if r.status == "error"]
-    return {"decisions": pending, "checkins": checkins, "failures_24h": fails,
-            "last_error": last_err[0] if last_err else None, "run_errors": run_errors[:3],
-            "count": len(pending) + len(checkins) + (1 if fails else 0) + (1 if run_errors else 0)}
+    return needs.data()
+
+
+_SEEN_TARGETS = {"failures": "/dashboard/events?level=error"}
+
+
+async def needs_seen(request: Request, kind: str) -> Response:
+    """The item's link: mark it seen (so the badge drops it), then open what it points at."""
+    from fastapi.responses import RedirectResponse
+
+    from assistant import needs
+
+    needs.acknowledge(kind)
+    to = _SEEN_TARGETS.get(kind, "/dashboard/#needs")
+    agent = request.query_params.get("agent") or ""
+    if kind == "run_errors" and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", agent):
+        to = f"/dashboard/agents/{agent}"
+    return RedirectResponse(to, status_code=303)
 
 
 def memory_data() -> dict[str, Any]:
@@ -1394,7 +1400,12 @@ async def checkin_answer(request: Request, checkin_id: int) -> Response:
             store.log_hours(jobs[0].id, hours, week_start=_week_for(chk), source="dashboard", note="check-in answer")
             parsed["job_id"] = jobs[0].id
             logged = {"job": jobs[0].name, "hours": hours, "pay": round(hours * jobs[0].hourly_rate, 2)}
-    store.answer_checkin(checkin_id, answer, parsed)
+    if "hour" in chk.kind.lower():
+        store.answer_checkin(checkin_id, answer, parsed)
+    else:   # same handling as a texted / spoken answer: meal preferences, pay rate... saved where they belong
+        from assistant import needs
+
+        needs.answer_checkin(checkin_id, answer, via="dashboard")
     db.log_event("dashboard", f"check-in {checkin_id} answered on the dashboard", data={"kind": chk.kind})
     return _post_reply(request, True, "answered", anchor="needs", data={"logged": logged})
 
@@ -1501,6 +1512,7 @@ def register(router: Any) -> None:
     router.add_api_route("/uploads/{name}", upload_get, methods=["GET"], include_in_schema=False)
     router.add_api_route("/sterling/{action}", sterling_control, methods=["POST"])
     router.add_api_route("/checkins/{checkin_id}/answer", checkin_answer, methods=["POST"])
+    router.add_api_route("/needs/seen/{kind}", needs_seen, methods=["GET"], include_in_schema=False)
     router.add_api_route("/meals/{meal_id}/{action}", meal_feedback, methods=["POST"])
     router.add_api_route("/jobs", job_post, methods=["POST"])
 

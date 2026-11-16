@@ -1579,6 +1579,17 @@ def llm_usage_summary(day: date | None = None, *, conn: sqlite3.Connection | Non
     return [dict(r) for r in rows]
 
 
+def llm_usage_between(start_iso: str, end_iso: str, *, purpose_prefix: str | None = None,
+                      conn: sqlite3.Connection | None = None) -> list[LLMUsageRow]:
+    """Usage rows with start <= ts < end (oldest first), optionally only purposes starting with a prefix."""
+    sql, params = "SELECT * FROM llm_usage WHERE ts >= ? AND ts < ?", [start_iso, end_iso]
+    if purpose_prefix:
+        sql += " AND substr(purpose, 1, ?) = ?"
+        params += [len(purpose_prefix), purpose_prefix]
+    with transaction(conn) as c:
+        return _many(c, LLMUsageRow, sql + " ORDER BY ts, id", tuple(params))
+
+
 def list_llm_usage(limit: int = 100, *, conn: sqlite3.Connection | None = None) -> list[LLMUsageRow]:
     with transaction(conn) as c:
         return _many(c, LLMUsageRow, "SELECT * FROM llm_usage ORDER BY ts DESC, id DESC LIMIT ?", (limit,))

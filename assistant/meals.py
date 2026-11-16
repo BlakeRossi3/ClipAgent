@@ -91,6 +91,8 @@ def record_preferences(text: str, *, source: str = "sms") -> str:
     if not clean:
         raise ValueError("empty preferences")
     r = _vault().remember(f"Meal preferences (his words): {clean}", area="meals", source=source)
+    for c in store.list_checkins("pending", kind=PREFS_KIND, limit=20):   # answered: never ask again
+        store.answer_checkin(c.id, clean, {"via": source})
     db.log_event("assistant", "meal preferences recorded", data={"note": r.path, "added": r.added})
     return r.path
 
@@ -252,8 +254,8 @@ def _tool_suggest(ctx: Any, a: dict[str, Any]) -> Any:
     if not prefs:
         cid = request_preferences()
         return {"preferences_known": False,
-                "instruction": "His meal preferences are unknown. Do not invent a diet: ask him (a preferences "
-                               "question has been queued" + (f" as check-in #{cid}" if cid else "") + ")."}
+                "instruction": "His meal preferences are unknown. Do not invent a diet: ask him once, then save "
+                               "his answer with meals_set_preferences (in his words) so he is never asked again."}
     today = db.local_today()
     avoid = avoid_words(prefs)
     recent = {m.suggestion.lower() for m in recent_meals(today)}
@@ -283,6 +285,20 @@ def register_tools(register: Callable[..., None]) -> None:
                   "the suggestion you make. If preferences are unknown it says so: ask him, do not invent a diet.",
                   _obj({"slot": {"type": "string", "enum": list(store.MEAL_SLOTS)}, "chosen": {"type": "string"}}),
                   _tool_suggest, owner="assistant.meals", side_effects=True))
+    def _set_prefs(ctx: Any, a: dict[str, Any]) -> Any:
+        from assistant.tools import ToolError
+
+        try:
+            path = record_preferences(a.get("preferences") or "", source=getattr(ctx, "channel", "voice") or "voice")
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        return {"saved_to": path, "preferences": preferences()[:30]}
+
+    register(Tool("meals_set_preferences",
+                  "Save his meal preferences in his own words (dislikes, can't eat, likes, cooking time) the moment "
+                  "he gives them, by voice or chat. Answers the open meal question so it is never asked again.",
+                  _obj({"preferences": {"type": "string"}}, ["preferences"]), _set_prefs,
+                  owner="assistant.meals", side_effects=True), replace=True)
     register(Tool("meals_record_feedback",
                   "Record his reaction to a meal suggestion (default: the latest). status: suggested, accepted, "
                   "declined or eaten (inferred from his words if omitted). Durable preferences in his words are "

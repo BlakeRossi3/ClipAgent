@@ -132,6 +132,16 @@ def _no_network(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+
+    # No test may open a real browser tab (on his laptop the self-edit test run would pop them up).
+    import webbrowser
+
+    def no_browser(*_a, **_k):
+        raise AssertionError("a test tried to open a real browser tab")
+
+    monkeypatch.setattr(webbrowser, "open", no_browser)
+    monkeypatch.setattr(webbrowser, "open_new_tab", no_browser)
+    monkeypatch.setattr(os, "startfile", no_browser, raising=False)
     yield
 
 
