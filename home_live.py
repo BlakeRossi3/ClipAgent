@@ -443,11 +443,52 @@ REEL_MODULES = frozenset({"main", "pick", "fetch", "transcribe", "edit", "upload
 REEL_SOURCES = 8
 REEL_PROBLEMS = 4
 REEL_RECENT = timedelta(hours=24)
+REEL_CLIPS = 10
+# per-clip (reel) states, in the order the panel lists them
+REEL_CLIP_ORDER = {"working": 0, "retrying": 1, "failed": 2, "queued": 3, "done": 4}
+REEL_CLIP_QUEUED = {"picked": "Waiting to render", "rendered": "Waiting to upload", "scheduled": "Waiting to upload"}
+REEL_CLIP_DONE = {"uploaded": "Posted", "skipped": "Skipped"}
+
+
+def _reel_clips(clips: list[Any], live: list[dict[str, Any]], since: str) -> list[dict[str, Any]]:
+    """Each reel (clip) still in the works or touched in the last day: {id, source_id, title, state
+    (working|retrying|failed|queued|done), label, attempt, reason, updated}. ``working`` = a live lane
+    is on it now (render or upload); ``retrying`` = failed but the pipeline will render it again."""
+    import main
+
+    working = {x.get("clip_id"): x for x in live if x.get("clip_id")}
+    out: list[dict[str, Any]] = []
+    for c in clips:
+        attempt = ""
+        if c.id in working:
+            state, label = "working", working[c.id].get("label") or "Working"
+        elif c.status == "failed":
+            n = int(db.kv_get(f"main:clip_retries:{c.id}", 0) or 0)
+            attempt = f"{n}/{main.MAX_CLIP_RETRIES}"
+            state, label = ("retrying", "Will retry") if n < main.MAX_CLIP_RETRIES else ("failed", "Failed")
+        elif c.status in REEL_CLIP_QUEUED:
+            state, label = "queued", REEL_CLIP_QUEUED[c.status]
+        else:
+            state, label = "done", REEL_CLIP_DONE.get(c.status, c.status)
+        if state in ("failed", "done") and (c.updated_at or "") < since:
+            continue
+        out.append({"id": c.id, "source_id": c.source_id, "title": c.title or f"clip {c.id}", "state": state,
+                    "label": label, "attempt": attempt, "reason": c.status_reason or "", "updated": c.updated_at})
+    # newest first within working/retrying/failed/done; queued keeps pipeline (oldest-first) order
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in out:
+        groups.setdefault(r["state"], []).append(r)
+    ordered: list[dict[str, Any]] = []
+    for st in REEL_CLIP_ORDER:
+        g = groups.get(st, [])
+        ordered += g if st == "queued" else sorted(g, key=lambda r: r["updated"] or "", reverse=True)
+    return ordered
 
 
 def reels() -> dict[str, Any]:
     """The live Reels panel: {lanes (progress.lanes), sources [{id, title, status, label, step, reason,
-    updated, clips}], clips {status: n}, problems [{ts, level, text}], dry_run}. Sources = everything
+    updated, clips, retrying}], reel_clips (see :func:`_reel_clips`), clips {status: n}, problems [{ts,
+    level, text}], dry_run}. Sources = everything
     still in the works plus whatever finished or failed in the last day, busiest first."""
     import progress
 
@@ -469,7 +510,8 @@ def reels() -> dict[str, Any]:
         rows.append({"id": src.id, "title": src.title or src.url, "status": src.status,
                      "label": REEL_STEP_LABELS.get(src.status, src.status), "step": step,
                      "reason": src.status_reason or "", "updated": src.updated_at,
-                     "clips": per_source.get(src.id, {})})
+                     "clips": per_source.get(src.id, {}),
+                     "retrying": src.status in active and (src.status_reason or "").startswith("retry ")})
     live = [x for x in progress.lanes() if x["state"] in ("running", "quiet")]
     busy = {x.get("source_id") for x in live}
     order = {"failed": 0, "picked": 2, "transcribed": 3, "fetched": 4, "candidate": 5, "done": 6, "rejected": 7}
@@ -477,7 +519,10 @@ def reels() -> dict[str, Any]:
     problems = [{"ts": e.ts, "level": e.level, "text": e.message}
                 for e in db.list_events(limit=80, since=db.to_iso(now - timedelta(hours=6)))
                 if e.module in REEL_MODULES and e.level in ("warning", "error")][:REEL_PROBLEMS]
-    return {"lanes": progress.lanes(), "live": live, "sources": rows[:REEL_SOURCES], "more": max(0, len(rows) - REEL_SOURCES),
+    reel_clips = _reel_clips(clips, live, since)
+    return {"lanes": progress.lanes(), "live": live, "sources": rows[:REEL_SOURCES],
+            "reel_clips": reel_clips[:REEL_CLIPS], "reel_clips_more": max(0, len(reel_clips) - REEL_CLIPS),
+            "more": max(0, len(rows) - REEL_SOURCES),
             "clips": totals, "problems": problems, "dry_run": config.get_settings().dry_run,
             "steps": [REEL_STEP_LABELS[s] for s in REEL_STEPS]}
 

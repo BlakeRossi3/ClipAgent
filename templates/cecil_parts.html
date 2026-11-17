@@ -174,7 +174,7 @@
     <li class="cc-reel is-{{ s.status }}">
       <p class="cc-reel-title"><a href="/dashboard/sources/{{ s.id }}">{{ s.title | truncate(70) }}</a></p>
       <p class="cc-reel-steps" aria-label="Stage: {{ s.label }}">{% for lbl in r.steps %}<i class="{% if s.step >= loop.index0 %}on{% endif %}{% if s.step == loop.index0 - 1 and s.status in ('candidate', 'fetched', 'transcribed', 'picked') %} next{% endif %}" title="{{ lbl }}"></i>{% endfor %}</p>
-      <p class="cc-meta"><span class="chip chip-{{ s.status }}">{{ s.label }}</span>{% for st, n in s.clips.items() %} · {{ n }} {{ st }}{% endfor %} · {{ s.updated | ago }}</p>
+      <p class="cc-meta"><span class="chip chip-{{ s.status }}">{{ s.label }}</span>{% if s.retrying %} <span class="chip chip-retry">retrying</span>{% endif %}{% for st, n in s.clips.items() %} · {{ n }} {{ st }}{% endfor %} · {{ s.updated | ago }}</p>
       {% if s.reason and s.status in ("failed", "rejected", "done") %}<p class="cc-reel-why">{{ s.reason | truncate(110) }}</p>{% endif %}
     </li>
     {% endfor %}
@@ -182,6 +182,20 @@
   {% if r.more %}<p class="cc-meta">and {{ r.more }} more on the <a href="/dashboard/sources">Sources</a> page</p>{% endif %}
   {% else %}
   <p class="rail-empty">No videos in the works.</p>
+  {% endif %}
+
+  {% if r.reel_clips %}
+  <ul class="cc-reel-clips-list" aria-label="Reels">
+    {% for k in r.reel_clips %}
+    <li class="cc-rclip is-{{ k.state }}">
+      <span class="cc-rclip-dot" aria-hidden="true"></span>
+      <span class="cc-rclip-title">{{ k.title | truncate(60) }}</span>
+      <span class="chip chip-rclip-{{ k.state }}">{{ k.label }}{% if k.attempt %} · {{ k.attempt }}{% endif %}</span>
+      {% if k.reason and k.state in ("retrying", "failed") %}<span class="cc-rclip-why">{{ k.reason | truncate(90) }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if r.reel_clips_more %}<p class="cc-meta">and {{ r.reel_clips_more }} more reels</p>{% endif %}
   {% endif %}
 
   <p class="cc-meta cc-reel-clips">Clips: {% for st, n in r.clips.items() %}{{ n }} {{ st }}{% if not loop.last %} · {% endif %}{% else %}none yet{% endfor %}{% if r.dry_run %} · <span class="chip chip-dry">dry run, nothing posts</span>{% endif %}</p>

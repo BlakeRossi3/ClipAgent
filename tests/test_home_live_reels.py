@@ -55,3 +55,43 @@ def test_reels_idle_says_when_it_last_ran(clock):
     progress.end_run("process", {"processed": 2, "failed": 0})
     html = TestClient(server.create_app(), base_url="http://testserver").get("/dashboard/api/cecil").json()["html"]["reels"]
     assert "Not running right now" in html and "processed 2" in html and "failed 0" not in html
+
+
+def test_reel_clips_show_working_retrying_failed_and_done(clock, make_source, make_clip):
+    sid = make_source(status="picked", title="Big source")
+    rendering = make_clip(sid, title="Being rendered")
+    retrying = make_clip(sid, title="Will retry")
+    db.set_clip_status(retrying, "failed", "ffmpeg exited 1", force=True)
+    dead = make_clip(sid, title="Gave up")
+    db.set_clip_status(dead, "failed", "ffmpeg exited 1", force=True)
+    db.kv_set(f"main:clip_retries:{dead}", 2)
+    waiting = make_clip(sid, status="rendered", title="Ready to post")
+    posted = make_clip(sid, status="uploaded", title="Posted one")
+    progress.step("process", "render", source_id=sid, clip_id=rendering, title="Being rendered", done=0, total=3)
+    by_id = {c["id"]: c for c in home_live.reels()["reel_clips"]}
+    assert by_id[rendering]["state"] == "working" and by_id[rendering]["label"] == "Rendering"
+    assert by_id[retrying]["state"] == "retrying" and by_id[retrying]["attempt"] == "0/2"
+    assert by_id[dead]["state"] == "failed" and by_id[dead]["reason"] == "ffmpeg exited 1"
+    assert by_id[waiting]["state"] == "queued" and by_id[waiting]["label"] == "Waiting to upload"
+    assert by_id[posted]["state"] == "done"
+    order = [c["id"] for c in home_live.reels()["reel_clips"]]
+    assert order[0] == rendering and order[-1] == posted
+
+
+def test_reel_clips_drop_old_finished_ones_and_render_live(clock, make_source, make_clip):
+    sid = make_source(status="picked", title="Src")
+    old = make_clip(sid, status="uploaded", title="Long ago")
+    clock.advance(days=2)
+    up = make_clip(sid, status="rendered", title="<b>Now uploading</b>")
+    progress.step("upload", "upload", source_id=sid, clip_id=up, title="x", done=0, total=1)
+    ids = [c["id"] for c in home_live.reels()["reel_clips"]]
+    assert up in ids and old not in ids
+    html = TestClient(server.create_app(), base_url="http://testserver").get("/dashboard/api/cecil").json()["html"]["reels"]
+    assert "cc-reel-clips-list" in html and "Uploading" in html and "&lt;b&gt;Now uploading" in html
+
+
+def test_retried_source_is_flagged(clock, make_source):
+    sid = make_source(status="failed", title="Flaky")
+    db.set_source_status(sid, "fetched", "retry 1/2 after: network down", force=True)
+    row = next(s for s in home_live.reels()["sources"] if s["id"] == sid)
+    assert row["retrying"] is True

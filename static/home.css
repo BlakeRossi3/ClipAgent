@@ -954,6 +954,20 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .chip-failed { background: var(--critical-bg); color: var(--critical-text); }
 .chip-done { background: var(--good-bg); color: var(--good-text); }
 .chip-dry { background: var(--warning-bg); color: var(--warning-text); }
+.cc-reel-clips-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.8rem; }
+.cc-rclip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cc-rclip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral-bg); flex: none; }
+.cc-rclip.is-working .cc-rclip-dot { background: var(--accent); animation: cc-reel-pulse 1.4s ease-in-out infinite; }
+.cc-rclip.is-retrying .cc-rclip-dot { background: var(--warning); }
+.cc-rclip.is-failed .cc-rclip-dot { background: var(--critical); }
+.cc-rclip.is-done .cc-rclip-dot { background: var(--good); }
+.cc-rclip-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-rclip-why { flex-basis: 100%; padding-left: 13px; font-size: 0.74rem; color: var(--muted); }
+.cc-rclip.is-failed .cc-rclip-why { color: var(--critical-text); }
+.chip-rclip-working { background: var(--info-bg); }
+.chip-rclip-retrying, .chip-retry { background: var(--warning-bg); color: var(--warning-text); }
+.chip-rclip-failed { background: var(--critical-bg); color: var(--critical-text); }
+@media (prefers-reduced-motion: reduce) { .cc-rclip.is-working .cc-rclip-dot { animation: none; } }
 .cc-reel-problems { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.76rem; }
 .cc-reel-problems li { color: var(--warning-text); }
 .cc-reel-problems li.is-error { color: var(--critical-text); }
