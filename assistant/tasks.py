@@ -255,6 +255,13 @@ def _run(row: dict[str, Any]) -> None:
         full, st = f"I couldn't finish that, {s.owner_honorific}: something went wrong on my side.", "error"
         kind = getattr(exc, "kind", "") or "error"
     restart = _edit_finish(snap, row) if snap is not None else False
+    if (get_task(row["id"]) or {}).get("status") == "cancelled":   # he stopped it while it ran: leave it stopped
+        _on_finish.pop(row["id"], None)
+        if restart:
+            from assistant import selfedit
+
+            selfedit.schedule_restart()
+        return
     if row.get("retry") and st in RETRY_STATUSES:
         _schedule_retry(row, full, st, kind)
         return
@@ -339,6 +346,21 @@ def _requeue_orphans(now: Any = None) -> int:
     if n:
         db.log_event("assistant", f"{n} interrupted background task(s) requeued", level="warning")
     return n
+
+
+def cancel(task_id: str, why: str = "stopped at his request") -> dict[str, Any] | None:
+    """Stop a background task: a retrying one never runs again; a running one is left to end on its own
+    but its result is dropped and it is not retried. The page is told at once (an already-cancelled row
+    is re-published, which clears a stale "Retrying" line). ``None`` when unknown."""
+    row = get_task(task_id)
+    if row is None:
+        return None
+    if row.get("status") not in ("done",):
+        row.update(status="cancelled", next_try=None, finished=row.get("finished") or db.now_iso(),
+                   summary=f"Cancelled: {why}"[:300])
+    _save(row)
+    db.log_event("assistant", "background task cancelled", data={"task_id": task_id, "why": why[:200]})
+    return row
 
 
 def retry_due(now: Any = None, *, limit: int = 1) -> int:
