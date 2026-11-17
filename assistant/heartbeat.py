@@ -436,6 +436,10 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     return done("acted" if (result["notified"] or result["tasks"]) else ("quiet" if held else "nothing"))
 
 
+HEARTBEAT_TASK_TIMEOUT_SEC = 600.0
+HEARTBEAT_TASK_USAGE_SHARE = 0.10
+
+
 def _start_task(t: dict[str, str], s: Any) -> str | None:
     """Start one background task (assistant.tasks). None = not started (busy, cap, deferred)."""
     from assistant import tasks, usage
@@ -454,7 +458,10 @@ def _start_task(t: dict[str, str], s: Any) -> str | None:
         db.log_event(AGENT, "heartbeat task deferred until the plan resets", data={"task": t["task"][:200]})
         return None
     db.kv_incr(KV_TASKS_DAY.format(day=db.local_today().isoformat()))
-    tid = tasks.start(brief, heard=f"Heartbeat check: {t['why'] or t['task']}"[:300], origin="any")
+    # A check-up, not a project: the cheaper model, low effort, 10 minutes and 10% of the 5-hour window at most.
+    tid = tasks.start(brief, heard=f"Heartbeat check: {t['why'] or t['task']}"[:300], origin="any",
+                      model=s.cc_subagent_model, effort="low", timeout=HEARTBEAT_TASK_TIMEOUT_SEC,
+                      usage_share=HEARTBEAT_TASK_USAGE_SHARE)
     db.kv_set(KV_TASK, tid)
     return tid
 

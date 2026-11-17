@@ -507,6 +507,18 @@ async def api_interrupt(request: Request) -> Response:
     return _d()._json({"ok": True, "interrupted": brain.interrupt()})
 
 
+@router.post("/api/task/{task_id}/cancel", include_in_schema=False)
+async def api_task_cancel(request: Request, task_id: str) -> Response:
+    """The x on a task row: cancel it for good (a retrying one never runs again)."""
+    from assistant import tasks
+
+    err, _form = await _ask_guard(request)
+    if err is not None:
+        return err
+    row = tasks.cancel(task_id[:40], "removed from the list by him")
+    return _d()._json({"ok": row is not None, "status": (row or {}).get("status")}, status_code=200 if row else 404)
+
+
 @router.post("/api/voices", include_in_schema=False)
 async def api_voices(request: Request) -> Response:
     """The page reports the browser's voices (names only), so "switch to Ryan" can find one."""

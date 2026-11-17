@@ -173,3 +173,72 @@ def test_poll_jobs_are_scheduled():
 
     names = {j.id for j in main.assistant_job_specs()}
     assert {"assistant_usage_poll", "assistant_usage_poll_startup"} <= names
+
+
+def _worker_client(t, events):
+    class Client:
+        interrupted = 0
+
+        def __init__(self, *a):
+            pass
+
+        async def connect(self, prompt=None):
+            pass
+
+        async def query(self, prompt, session_id="default"):
+            pass
+
+        async def receive_messages(self):
+            for e in events():
+                yield e
+
+        async def interrupt(self):
+            Client.interrupted += 1
+
+        async def disconnect(self):
+            pass
+    return Client
+
+
+def test_background_task_pauses_after_using_half_the_window_not_after_n_steps(monkeypatch):
+    asettings.set_assistant_settings(asettings.get_assistant_settings().replace(enabled=True))
+    t = brain._sdk()
+    now = int(db.utcnow().timestamp())
+    monkeypatch.setattr(brain, "USAGE_CHECK_SEC", 0.0)
+    monkeypatch.setattr(usage, "poll_plan_usage", lambda **k: {})
+    usage.record_window({"status": "allowed", "rateLimitType": "five_hour", "utilization": 0.10, "resetsAt": now + 3600})
+
+    def events():
+        for i in range(30):   # many cheap steps: fine on their own
+            yield t.AssistantMessage(content=[t.TextBlock(text=f"step {i}")], model="m")
+        usage.record_window({"status": "allowed", "rateLimitType": "five_hour", "utilization": 0.65,
+                             "resetsAt": now + 3600})
+        yield t.AssistantMessage(content=[t.TextBlock(text="more")], model="m")
+        yield t.AssistantMessage(content=[t.TextBlock(text="never reached")], model="m")
+
+    Client = _worker_client(t, events)
+    brain.set_client_factory(lambda options, tools: Client())
+    try:
+        text, status, kind = brain.run_worker("explore", with_kind=True)
+    finally:
+        brain.set_client_factory(None)
+    assert status == "budget" and kind == "usage_cap" and "50%" in text and Client.interrupted == 1
+
+
+def test_cancelled_task_stops_mid_run():
+    asettings.set_assistant_settings(asettings.get_assistant_settings().replace(enabled=True))
+    t = brain._sdk()
+    flag = {"stop": False}
+
+    def events():
+        yield t.AssistantMessage(content=[t.TextBlock(text="working")], model="m")
+        flag["stop"] = True
+        yield t.AssistantMessage(content=[t.TextBlock(text="still working")], model="m")
+
+    Client = _worker_client(t, events)
+    brain.set_client_factory(lambda options, tools: Client())
+    try:
+        text, status, kind = brain.run_worker("x", with_kind=True, should_stop=lambda: flag["stop"])
+    finally:
+        brain.set_client_factory(None)
+    assert status == "stopped" and Client.interrupted == 1

@@ -72,6 +72,8 @@ class AssistantSettings:
     mcp_servers: tuple[str, ...] | None = None   # his ~/.claude.json MCP servers for the brain (None = all)
     cc_task_timeout_sec: int = 900           # one full-power run (long tasks, test runs)
     cc_max_turns: int = 40                   # tool round trips per full-power run
+    task_max_turns: int = 400                # background tasks: a runaway backstop only (cheap steps are fine)
+    task_usage_share: float = 0.5            # pause a background task once IT used this share of the 5-hour window
     session_max_turns: int = 30              # resume one session per channel; roll over after this many
     session_max_tokens: int = 150_000        # ... or once a run's context passes this many input tokens
     self_edit: bool = True                   # test + commit (or roll back) its own code changes
@@ -151,6 +153,8 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         mcp_servers=_server_list(s("ASSISTANT_MCP_SERVERS", "all")),
         cc_task_timeout_sec=max(60, int(s("ASSISTANT_CC_TASK_TIMEOUT_SEC", "900"))),
         cc_max_turns=max(2, int(s("ASSISTANT_CC_MAX_TURNS", "40"))),
+        task_max_turns=max(10, int(s("ASSISTANT_TASK_MAX_TURNS", "400"))),
+        task_usage_share=min(1.0, max(0.05, float(s("ASSISTANT_TASK_USAGE_SHARE", "0.5") or 0.5))),
         session_max_turns=max(1, int(s("ASSISTANT_SESSION_MAX_TURNS", "30"))),
         session_max_tokens=max(10_000, int(s("ASSISTANT_SESSION_MAX_TOKENS", "150000"))),
         self_edit=config._bool(env.get("ASSISTANT_SELF_EDIT"), True),

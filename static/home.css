@@ -877,3 +877,8 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 @keyframes dtile-in { from { opacity: 0; transform: translateY(6px); } }
 @media (max-width: 720px) { .dtile-value { font-size: 1.25rem; } }
 @media (prefers-reduced-motion: reduce) { .dtile { animation: none; transition: none; } }
+
+.rail-task { position: relative; }
+.rail-task-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line, rgba(255,255,255,.15));
+  background: transparent; color: var(--muted); cursor: pointer; line-height: 1; font-size: 15px; }
+.rail-task-x:hover, .rail-task-x:focus-visible { color: var(--ink); border-color: var(--accent); }

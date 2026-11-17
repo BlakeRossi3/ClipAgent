@@ -265,6 +265,14 @@ def _window(kind: str) -> dict[str, Any] | None:
     return v
 
 
+def five_hour_used() -> float | None:
+    """Share of the current 5-hour window used (0-1), or None when unknown/stale."""
+    w = _window("five_hour")
+    if not w or w.get("stale") or w.get("utilization") is None:
+        return None
+    return float(w["utilization"])
+
+
 # -- reporting -------------------------------------------------------------------
 
 def next_reset() -> datetime | None:

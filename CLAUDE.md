@@ -689,4 +689,12 @@ force, `GIT_TERMINAL_PROMPT=0`) after every self-edit commit / recovery / start-
 secret scan (`publish.scan`: config.env secret values + token shapes) blocks the push first; GitHub push protection is
 the backstop; refusals go to `publish.status()` (kv `publish:status`, in `selfedit.powers_status`) + a warning event.
 The build chat merges `origin/cecil/self`. Tests: `publish.set_runner`, `push_now(force_run=True)`.
+Background tasks stop on usage, not steps: `brain.run_worker` sets `max_turns=ASSISTANT_TASK_MAX_TURNS` (400, runaway
+backstop) and every `USAGE_CHECK_SEC` (60 s, `usage.poll_plan_usage` in a thread) compares `usage.five_hour_used()` with the
+start; a rise >= `ASSISTANT_TASK_USAGE_SHARE` (0.5, or `tasks.start(usage_share=)`) interrupts -> status `budget`, kind
+`usage_cap` (handoff resumes after the reset). `should_stop` (cancelled row) interrupts -> `stopped`. Heartbeat tasks:
+`cc_subagent_model`, effort low, 600 s, 10 % share. Tools `task_cancel` / `task_retry` (assistant/tasks.py; retry reuses
+the same row), the x on a rail row -> `POST /voice/api/task/{id}/cancel`. Page actions: `page_reader.guard_action` refuses in
+code any click/submit on buy/pay/send/post/delete/accept/security labels and typing into password/card/code fields or secrets.
+Voice end-of-turn waits are longer (holdFor 600/900/2200 ms, browser STT silence 1400 ms, Smart Turn 550 ms).
 

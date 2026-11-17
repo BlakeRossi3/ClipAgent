@@ -87,6 +87,7 @@ TIMING_EXTRA = ("smart_turn_p", "smart_turn_ms")
 # The lean voice session's built-in tools (ASSISTANT_VOICE_LEAN): files, a shell, web search, sub-agents and
 # skills. Claude Code's other built-ins (cron, worktrees, monitors, notebooks...) are about 16k tokens of tool
 # definitions sent with every spoken turn; background tasks (start_task) keep all of them.
+USAGE_CHECK_SEC = 60.0   # background tasks: how often their own usage is checked
 VOICE_BUILTINS = ("Read", "Glob", "Grep", "Edit", "Write", "Bash", "PowerShell", "WebSearch", "WebFetch",
                   "Agent", "Skill", "TaskStop", "ToolSearch")
 NEED_KINDS = ("browser", "my_servers")
@@ -1808,7 +1809,7 @@ def announce_task(row: dict[str, Any], full: str) -> bool:
 def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                timeout: float | None = None, model: str | None = None,
                effort: str | None = None, with_kind: bool = False,
-               should_stop: Callable[[], bool] | None = None) -> Any:
+               should_stop: Callable[[], bool] | None = None, usage_share: float | None = None) -> Any:
     """A parallel worker session for one background task (fresh, full powers, the main model unless
     ``model``/``effort`` say otherwise, e.g. the cheap morning surprise). Returns (result text, status),
     or with ``with_kind`` (result text, status, kind) where kind says why it did not finish
@@ -1824,6 +1825,10 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         mode = billing()
         table = helper.tool_table(worker=True)
         opts = helper.options(mode=mode, resume=None, worker=True, table=table)
+        try:   # background work: many cheap steps are fine; usage, not step count, decides when to pause
+            opts.max_turns = s.task_max_turns
+        except Exception:
+            pass
         for key, val in (("model", model), ("effort", effort)):
             if val:
                 try:
@@ -1833,10 +1838,40 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         client = _make_client(opts, table)
         await client.connect()
         text, seen = "", set()
+        from assistant import usage as _usage
+
+        start_used = _usage.five_hour_used()
+        share = usage_share or s.task_usage_share
+        guard = {"next": time.monotonic() + USAGE_CHECK_SEC, "why": ""}
+
+        async def over_budget() -> bool:
+            """This task alone used task_usage_share of the 5-hour window (checked every USAGE_CHECK_SEC)."""
+            if time.monotonic() < guard["next"]:
+                return False
+            guard["next"] = time.monotonic() + USAGE_CHECK_SEC
+            try:
+                await asyncio.to_thread(_usage.poll_plan_usage)
+            except Exception as exc:
+                log.debug("usage check failed: %s", exc)
+            now_used = _usage.five_hour_used()
+            nonlocal start_used
+            if start_used is None:
+                start_used = now_used
+                return False
+            return now_used is not None and now_used - start_used >= share
+
         try:
             async def pump() -> Any:
                 nonlocal text
                 async for msg in client.receive_messages():
+                    if should_stop is not None and should_stop():
+                        guard["why"] = "stopped"
+                        await client.interrupt()
+                        return None
+                    if await over_budget():
+                        guard["why"] = "usage"
+                        await client.interrupt()
+                        return None
                     if isinstance(msg, t.AssistantMessage):
                         for b in msg.content or []:
                             if isinstance(b, t.ToolUseBlock) and b.id not in seen:
@@ -1863,6 +1898,13 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                 await client.disconnect()
             except Exception:
                 pass
+        if r is None and guard["why"] == "stopped":
+            return "Stopped at your request.", "stopped", "stopped"
+        if r is None and guard["why"] == "usage":
+            share_pct = round(share * 100)
+            return (f"I paused this one: it alone used {share_pct}% of your 5-hour Claude window. "
+                    f"I'll pick it up again after the reset. So far: {text[-600:] or 'nothing to report yet.'}"), \
+                "budget", "usage_cap"
         if r is None:
             return "The work stopped before it finished.", "error", "error"
         if r.is_error:

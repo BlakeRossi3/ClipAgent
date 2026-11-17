@@ -155,7 +155,8 @@ def brief_for(task: str, heard: str) -> str:
 def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | None = None,
           model: str | None = None, effort: str | None = None, announce: bool = True,
           meta: dict[str, Any] | None = None,
-          on_finish: Callable[[dict[str, Any], str, str], None] | None = None, self_edit: bool = False) -> str:
+          on_finish: Callable[[dict[str, Any], str, str], None] | None = None, self_edit: bool = False,
+          timeout: float | None = None, usage_share: float | None = None) -> str:
     """Start ``task`` in the background; returns its id at once.
 
     Scheduled work (assistant/schedule.py) passes its own ``brief`` (the full prompt; ``task`` is then the
@@ -172,6 +173,10 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
         row["brief"] = brief
     if model or effort:
         row["model"], row["effort"] = model, effort
+    if timeout:
+        row["timeout"] = float(timeout)
+    if usage_share:
+        row["usage_share"] = float(usage_share)
     if self_edit:
         row["self_edit"] = True
     if on_finish is not None:
@@ -247,8 +252,10 @@ def _run(row: dict[str, Any]) -> None:
         else:
             from assistant import brain
 
-            full, st, kind = brain.run_worker(brief, on_step=on_step, model=row.get("model"), effort=row.get("effort"),
-                                              with_kind=True)
+            full, st, kind = brain.run_worker(
+                brief, on_step=on_step, model=row.get("model"), effort=row.get("effort"), with_kind=True,
+                timeout=row.get("timeout"), usage_share=row.get("usage_share"),
+                should_stop=lambda: (get_task(row["id"]) or {}).get("status") == "cancelled")
     except Exception as exc:
         log.exception("background task failed")
         db.log_event("assistant", "background task failed", level="error", data={"error": repr(exc)[:300]})
@@ -361,6 +368,58 @@ def cancel(task_id: str, why: str = "stopped at his request") -> dict[str, Any] 
     _save(row)
     db.log_event("assistant", "background task cancelled", data={"task_id": task_id, "why": why[:200]})
     return row
+
+
+def retry_now(task_id: str) -> dict[str, Any] | None:
+    """Run an unfinished/failed task again NOW - the same task, not a new one (so no duplicate sits on
+    "retrying"). ``None`` when unknown; a running or finished-ok task is left alone."""
+    row = get_task(task_id)
+    if row is None:
+        return None
+    if row.get("status") in ("running", "done"):
+        return row
+    row.update(status="retrying", next_try=db.now_iso(), finished=None)
+    _save(row)
+    retry_due()
+    return get_task(task_id)
+
+
+def _find(ref: str) -> dict[str, Any] | None:
+    """A task by id, or by words of its request (newest unfinished first)."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    row = get_task(ref)
+    if row is not None:
+        return row
+    low = ref.lower()
+    rows = sorted(list_tasks(), key=lambda t: (t.get("status") in UNFINISHED, t.get("started") or ""), reverse=True)
+    return next((t for t in rows if low in str(t.get("task") or "").lower()), None)
+
+
+def register_tools(register: Callable[..., None]) -> None:
+    from assistant.tools import Tool, ToolError, _obj
+
+    def _cancel(ctx: Any, a: dict[str, Any]) -> Any:
+        row = _find(str(a.get("task") or ""))
+        if row is None:
+            raise ToolError("no such background task (use task_list for ids)")
+        out = cancel(row["id"], str(a.get("why") or "stopped at his request"))
+        return {"cancelled": row["id"], "status": (out or {}).get("status"), "task": row.get("task")}
+
+    def _retry(ctx: Any, a: dict[str, Any]) -> Any:
+        row = _find(str(a.get("task") or ""))
+        if row is None:
+            raise ToolError("no such background task (use task_list for ids)")
+        out = retry_now(row["id"]) or {}
+        return {"task": row["id"], "status": out.get("status"), "note": "the same task runs again; no new one was started"}
+
+    register(Tool("task_cancel", "Cancel a background task (id or words of its request): a retrying one never runs "
+                  "again and leaves the list as cancelled; a running one stops.", _obj({"task": {"type": "string"},
+                  "why": {"type": "string"}}, ["task"]), _cancel, owner=__name__, side_effects=True), replace=True)
+    register(Tool("task_retry", "Run a failed or retrying background task again now - the same task, never a new "
+                  "copy.", _obj({"task": {"type": "string"}}, ["task"]), _retry, owner=__name__, side_effects=True),
+             replace=True)
 
 
 def retry_due(now: Any = None, *, limit: int = 1) -> int:

@@ -489,24 +489,24 @@
   var LEADS = /^(on|and|so|but|then|also|plus|or|for|at|in|by|with|after|before|until|from)$/i;
   function holdFor(text) {
     var t = text.trim(), words = t.split(/\s+/).filter(Boolean);
-    if (!words.length) return 1600;
+    if (!words.length) return 2200;
     var bare = t.replace(/[.!?…]+$/, '').trim();
-    if (/[,;:–—-]$/.test(bare) || /(\.\.\.|…)$/.test(t)) return 1600;
+    if (/[,;:–—-]$/.test(bare) || /(\.\.\.|…)$/.test(t)) return 2200;
     var last = (bare.split(/\s+/).pop() || '').replace(/[^a-z']/gi, '');
-    if (CONTINUES.test(last)) return 1600;
+    if (CONTINUES.test(last)) return 2200;
     var tail = bare.split(/[.!?]\s+/).pop().trim().split(/\s+/), lead = (tail[0] || '').replace(/[^a-z']/gi, '');
-    if (tail.length <= 3 && LEADS.test(lead) && !OVERRIDE.test(bare)) return 1600;
-    if (/[.!?]$/.test(t)) return 0;
-    return 250;
+    if (tail.length <= 3 && LEADS.test(lead) && !OVERRIDE.test(bare)) return 2200;
+    if (/[.!?]$/.test(t)) return 600;      // he said "too often it cuts me off": even a full stop gets a beat
+    return 900;
   }
   var held = '', holdTimer = null, firstAt = 0;
   // Smart Turn (server STT path): the audio model's verdict beats the text rules. Finished -> send now (a
   // dangling last word still gets a short grace); not finished -> wait up to EOT_WAIT_MS for the rest.
-  var EOT_WAIT_MS = 2000;
+  var EOT_WAIT_MS = 3000;
   function waitFor(text, eot) {
     var rule = holdFor(text);
     if (eot === null || eot === undefined || eot === '') return rule;
-    if (eot >= 0.5) return rule >= 1600 ? 500 : 0;
+    if (eot >= 0.5) return rule >= 2200 ? 900 : 400;
     return Math.max(rule, Math.round(EOT_WAIT_MS * (1 - eot)));
   }
   function assemble(text, active, eot) {
@@ -710,7 +710,7 @@
       }
       youEl.textContent = (held ? held + ' ' : '') + full;
       clearTimeout(silence);
-      silence = setTimeout(emit, pttDown ? 6000 : 900);
+      silence = setTimeout(emit, pttDown ? 6000 : 1400);
     }
     function spin() {
       if (!wanted || running || rec) return;
@@ -764,9 +764,9 @@
   var vad = { floor: 0.01, smooth: 0, armed: 0, speaking: false, lastLoud: 0 }, firstInWindow = true;
   function endSilenceMs() {      // longer for the first thing he says after a reply (he draws breath mid-answer)
     if (speaker.busy()) return 650;
-    if (voiceCfg.smart_turn_ready) return 350;   // Smart Turn on the server decides whether he has finished
+    if (voiceCfg.smart_turn_ready) return 550;   // Smart Turn on the server decides whether he has finished
     var long = Math.round(1000 * (parseFloat(voiceCfg.end_silence_sec) || 1.2));
-    return firstInWindow || (pending && pending !== 'asking' && !spokeIn[pending]) ? Math.max(650, long) : 650;
+    return firstInWindow || (pending && pending !== 'asking' && !spokeIn[pending]) ? Math.max(900, long) : 900;
   }
   setInterval(function () {
     if (!always || !micAnalyser || recMode === 'ptt' && rec || sttEngine() === 'browser') return;
@@ -968,6 +968,12 @@
       var small = el('small', '', v.line); small.title = v.line;
       head.appendChild(small);
       li.appendChild(head);
+      if (t.status === 'retrying' || t.status === 'running') {     // remove it for good (never runs again)
+        var x = el('button', 'rail-task-x', '\u00d7');
+        x.type = 'button'; x.title = 'Cancel this task'; x.setAttribute('aria-label', 'Cancel this task');
+        x.setAttribute('data-cancel-task', t.id || '');
+        li.appendChild(x);
+      }
       if (open) {
         var d = v.detail, box = el('div', 'rail-task-detail');
         box.appendChild(el('p', 'rail-task-meta', d.meta));
@@ -992,6 +998,14 @@
     });
   }
   if (tasksEl) tasksEl.addEventListener('click', function (ev) {
+    var cx = ev.target && ev.target.closest ? ev.target.closest('[data-cancel-task]') : null;
+    if (cx) {
+      var tid = cx.getAttribute('data-cancel-task');
+      post('/voice/api/task/' + encodeURIComponent(tid) + '/cancel', {}).then(function () {
+        if (act.tasks[tid]) { act.tasks[tid].status = 'cancelled'; renderTasks(); }
+      }).catch(function () { flash('Could not cancel that task.'); });
+      return;
+    }
     var head = ev.target && ev.target.closest ? ev.target.closest('.rail-task-head') : null;
     if (!head || !tasksEl.contains(head)) return;
     var id = head.getAttribute('data-task-id');

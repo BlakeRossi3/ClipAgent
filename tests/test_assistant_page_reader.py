@@ -348,3 +348,15 @@ def test_main_agent_lists_page_act():
     text = (Path(__file__).resolve().parent.parent / "agents" / "main.md").read_text(encoding="utf-8")
     tools_line = re.search(r"^tools: \[(.*)\]$", text, re.M).group(1)
     assert "page_act" in [t.strip() for t in tools_line.split(",")]
+
+
+def test_risky_presses_and_sensitive_entries_are_refused_in_code():
+    from assistant import page_reader as pr
+    assert pr.guard_action("click", "Place order", None, None)
+    assert pr.guard_action("click", "Send message", None, None)
+    assert pr.guard_action("submit", "Delete account", None, None)
+    assert pr.guard_action("type", "Card number", None, "4111")
+    assert pr.guard_action("type", "Search", None, "sk-ant-" + "a" * 30)
+    assert pr.guard_action("click", "Next page", None, None) is None
+    assert pr.guard_action("type", "Search", None, "giants score") is None
+    assert pr.guard_action("scroll", "", None, None) is None

@@ -217,7 +217,7 @@ def test_activity_says_whether_the_page_may_trust_smart_turn(page):
 
 def test_page_script_shortens_silence_and_holds_on_not_finished():
     js = (config.REPO_ROOT / "static" / "jarvis.js").read_text(encoding="utf-8")
-    assert "smart_turn_ready) return 350" in js and "fd.append('cont', '1')" in js
+    assert "smart_turn_ready) return 550" in js and "fd.append('cont', '1')" in js
     assert "function waitFor(text, eot)" in js and "smart_turn_p" in js
 
 
