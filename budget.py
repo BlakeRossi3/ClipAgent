@@ -197,13 +197,16 @@ def record_usage(
     clip_id: int | None = None,
     request_id: str | None = None,
     fake: bool = False,
+    cost_override: float | None = None,
 ) -> float:
     """Price a completed call, write ``llm_usage``, and return its cost in USD.
 
     Fake-mode calls are recorded (``fake=1``) and count toward the cap, so
-    budget behaviour can be exercised offline.
+    budget behaviour can be exercised offline. ``cost_override``: the real cost when it
+    is not per-token API pricing (0.0 for a run on the owner's Claude plan).
     """
-    cost = cost_usd(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    cost = (cost_usd(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+            if cost_override is None else float(cost_override))
     db.insert_llm_usage(
         model=model, purpose=purpose, input_tokens=input_tokens, output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens, cost_usd=cost,

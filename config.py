@@ -60,6 +60,9 @@ class Settings:
     # {model: {input, output, cache_write, cache_read}} USD per MTok overrides.
     llm_price_overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     fake_llm: bool = False
+    # Where the Shorts pipeline's judgment calls run: "plan" = the owner's Claude subscription through
+    # Claude Code (no API bill), "api" = the Anthropic API key.
+    llm_backend: str = "plan"
 
     # --- guardrails ----------------------------------------------------------
     daily_llm_budget_usd: float = 1.00
@@ -244,6 +247,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         llm_server_fallbacks=_bool(env.get("LLM_SERVER_FALLBACKS"), True),
         llm_price_overrides=overrides,
         fake_llm=_bool(env.get("FAKE_LLM"), False),
+        llm_backend="api" if s("LLM_BACKEND", "plan").strip().lower() == "api" else "plan",
         daily_llm_budget_usd=float(s("DAILY_LLM_BUDGET_USD", "1.00")),
         max_daily_llm_budget_usd=float(s("MAX_DAILY_LLM_BUDGET_USD", "5.00")),
         max_uploads_per_day=int(s("MAX_UPLOADS_PER_DAY", "6")),

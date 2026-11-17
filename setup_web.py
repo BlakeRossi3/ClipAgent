@@ -215,7 +215,7 @@ def current_values(step: str) -> dict[str, Any]:
     if step == "brain":
         return {"pipeline_cap": f"{s.max_daily_llm_budget_usd:g}", "assistant_cap": f"{a.daily_budget_usd:g}",
                 "assistant_on": a.enabled or not s.setup_complete, "fake": s.fake_llm, "backend": a.backend,
-                "turns_cap": a.max_turns_per_day}
+                "turns_cap": a.max_turns_per_day, "llm_backend": s.llm_backend}
     if step == "money":
         j = _job()
         return {"job_name": j.name if j else "", "rate": f"{j.hourly_rate:g}" if j else "",
@@ -352,11 +352,23 @@ def save_brain(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:
         changes["ANTHROPIC_API_KEY"] = key
     elif form.get("clear_api_key"):
         changes["ANTHROPIC_API_KEY"] = ""
-    changes["FAKE_LLM"] = "false" if has_key else "true"   # no key: free practice mode
+    changes["FAKE_LLM"] = "false" if has_key or _pipeline_on_plan() else "true"   # neither: free practice mode
     changes["MAX_DAILY_LLM_BUDGET_USD"] = f"{pipe:.2f}"
     changes["ASSISTANT_DAILY_BUDGET_USD"] = f"{asst:.2f}"
     changes["ASSISTANT_ENABLED"] = "true" if form.get("assistant_on") else "false"
     return errors, changes
+
+
+def _pipeline_on_plan() -> bool:
+    """The Shorts pipeline can run on his Claude subscription (LLM_BACKEND=plan + Claude Code installed)."""
+    if config.get_settings().llm_backend != "plan":
+        return False
+    try:
+        from assistant import claude_code
+
+        return claude_code.find_claude() is not None
+    except Exception:
+        return False
 
 
 def save_money(form: Any) -> tuple[dict[str, str], dict[str, str | None]]:

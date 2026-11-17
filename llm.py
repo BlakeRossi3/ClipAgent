@@ -45,6 +45,10 @@ Behaviour:
   ``FAKE_LLM=true``, no network call is made. The default fake returns a
   deterministic instance of ``json_schema`` (or a short text). Usage is still
   recorded (``fake=1``) so budget logic is exercised.
+* **Where calls run** (``LLM_BACKEND``): ``plan`` (default) = the owner's Claude subscription through
+  Claude Code (``_call_plan``: ``claude -p`` with no tools, recorded at $0, never on the API key; a
+  limited or tight plan raises ``budget.BudgetExceeded``); ``api`` = the Anthropic API below. An
+  injected client (``set_client``, tests) always uses the API path.
 * **Credentials**: only ``settings.anthropic_api_key`` is used, passed
   explicitly; ambient ``ANTHROPIC_*`` credentials are never picked up.
 """
@@ -162,6 +166,7 @@ class _Raw:
     stop_reason: str | None
     request_id: str | None
     fake: bool
+    cost: float | None = None   # set when not priced per token (0.0 = the owner's Claude plan)
 
 
 @dataclass(slots=True)
@@ -356,12 +361,19 @@ def sample_from_schema(schema: dict[str, Any]) -> Any:
 
 
 def parse_json_text(text: str) -> Any:
-    """Parse JSON from model text, tolerating a surrounding ```json fence."""
+    """Parse JSON from model text, tolerating a surrounding ```json fence or a stray line of prose
+    around one object/array (the Claude plan path has no structured-output mode)."""
     t = text.strip()
     m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", t, re.S)
     if m:
         t = m.group(1)
-    return json.loads(t)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        m = re.search(r"```(?:json)?\s*(.*?)\s*```", t, re.S) or re.search(r"(\{.*\}|\[.*\])", t, re.S)
+        if m is None:
+            raise
+        return json.loads(m.group(1))
 
 
 def approx_tokens(*texts: str) -> int:
@@ -417,13 +429,15 @@ def complete(
     prompt_tokens = approx_tokens(*parts, user, schema_text)
     for attempt in range(1, attempts + 1):
         req = _with_attempt(req, attempt)
-        budget.check_budget(budget.estimate_cost(model, prompt_tokens, req.max_tokens))
+        on_plan = not is_fake() and not _state.injected and s.llm_backend == "plan"
+        budget.check_budget(0.0 if on_plan else budget.estimate_cost(model, prompt_tokens, req.max_tokens))
 
-        raw = _call_fake(req) if is_fake() else _call_api(req)
+        raw = _call_fake(req) if is_fake() else (_call_plan(req) if on_plan else _call_api(req))
         cost = budget.record_usage(
             raw.model, purpose, input_tokens=raw.usage.input_tokens, output_tokens=raw.usage.output_tokens,
             cache_read_tokens=raw.usage.cache_read_tokens, cache_write_tokens=raw.usage.cache_write_tokens,
             tier=tier, source_id=source_id, clip_id=clip_id, request_id=raw.request_id, fake=raw.fake,
+            cost_override=raw.cost,
         )
         total_cost += cost
 
@@ -452,7 +466,7 @@ def complete(
         if attempt == attempts:
             raise LLMOutputError(f"{purpose}: invalid structured output: {problems[:3]}", text=raw.text,
                                  cost_usd=total_cost, attempts=attempt, truncated=truncated)
-        if truncated:
+        if truncated and not on_plan:
             # The same request would be cut off again: retry once with more room, if affordable.
             bigger = min(MAX_TRUNCATION_RETRY_TOKENS, req.max_tokens * 2)
             worst = budget.estimate_cost(model, prompt_tokens, bigger)
@@ -484,6 +498,55 @@ def _default_fake(req: LLMRequest) -> str | dict | list:
     if req.json_schema is not None:
         return sample_from_schema(req.json_schema)
     return f"[fake {req.tier}:{req.purpose}] " + req.user[:80]
+
+
+PLAN_MODELS = {"haiku": "haiku", "sonnet": "sonnet"}   # Claude Code aliases (the plan's current models)
+PLAN_JSON_NOTE = ("\n\nAnswer with ONLY one JSON value that matches this JSON schema - no prose, no markdown "
+                  "fences, nothing before or after it:\n")
+
+
+def _call_plan(req: LLMRequest) -> _Raw:
+    """Run the call on the owner's Claude subscription (``claude -p``, no tools, no session), like Cecil.
+
+    Plan limits never spill onto the API key: a limited plan, or usage tight enough that the assistant
+    is deferring its own work, raises ``budget.BudgetExceeded`` so the pipeline stops LLM work for this
+    run and leaves items where they are (the next hourly run tries again)."""
+    from assistant import claude_code, runtime, usage
+
+    def stop(why: str) -> budget.BudgetExceeded:
+        db.log_event("llm", f"{req.purpose}: waiting for the Claude plan ({why})", level="warning",
+                     data={"tier": req.tier, "why": why})
+        return budget.BudgetExceeded(f"Claude plan unavailable for {req.purpose}: {why}",
+                                     spent=budget.spent_today(), cap=budget.daily_cap_usd())
+
+    until = claude_code.backoff_until()
+    if until is not None:
+        raise stop(f"plan limit, back {claude_code.friendly_time(until)}")
+    try:
+        tight, _ = usage.constrained()
+    except Exception:  # no usage reading: go ahead
+        tight = False
+    if tight:
+        raise stop("plan usage is tight")
+    user = req.user
+    if req.json_schema is not None:
+        user += PLAN_JSON_NOTE + json.dumps(req.json_schema, separators=(",", ":"))
+    try:
+        res = claude_code.run_prompt(user, system="\n\n".join(req.system), role="sub", max_turns=1,
+                                     effort=req.effort, model=PLAN_MODELS[req.tier], count_turn=True,
+                                     timeout=float(get_settings().llm_timeout_sec) * 3)
+    except runtime.AssistantBudgetExceeded as exc:
+        raise stop(str(exc)[:120]) from exc
+    except claude_code.ClaudeCodeError as exc:
+        db.log_event("llm", f"{req.purpose}: Claude plan run failed ({exc.kind})", level="error",
+                     data={"tier": req.tier, "kind": exc.kind, "message": str(exc)[:500]})
+        raise LLMError(f"Claude plan run failed for {req.purpose}: {exc}") from exc
+    claude_code.record_notional(res.notional_usd)
+    usage_ = Usage(input_tokens=res.input_tokens, output_tokens=res.output_tokens,
+                   cache_read_tokens=res.cache_read_tokens, cache_write_tokens=res.cache_write_tokens)
+    stop_reason = "refusal" if res.status == "denied" else "end_turn"
+    return _Raw(text=res.text, usage=usage_, model=res.model or req.model, stop_reason=stop_reason,
+                request_id=res.session_id, fake=False, cost=res.notional_usd if res.billed_to_api else 0.0)
 
 
 def _call_api(req: LLMRequest) -> _Raw:

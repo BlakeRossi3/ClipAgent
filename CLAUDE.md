@@ -228,6 +228,11 @@ Usage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 - Thinking is adaptive (model default); `effort` defaults: haiku `low`, sonnet `medium`.
   Thinking tokens bill as output - leave headroom (Haiku scoring: ~1024; Sonnet: ~4096).
 - Sonnet calls use the beta endpoint with `fallbacks="default"` (server-side refusal fallback).
+- **`LLM_BACKEND`** (`Settings.llm_backend`, default `plan`): `plan` runs every call on the owner's Claude
+  subscription via `assistant.claude_code.run_prompt` (`llm._call_plan`: `claude -p`, no tools, model alias
+  haiku/sonnet, JSON schema appended to the prompt, recorded at `cost_override=0.0`, no truncation retry); a
+  limited plan or `usage.constrained()` raises `budget.BudgetExceeded` (never falls back to the API key);
+  `api` = the Anthropic API. An injected client (`set_client`) always takes the API path; FAKE_LLM wins over both.
 - Fakes: `set_fake_handler(fn)`, `fake_handler(fn)` context manager, `reset()`, `set_client(client)`.
   A handler receives an `LLMRequest(tier, model, system, user, purpose, max_tokens, json_schema,
   effort, cache_system, source_id, clip_id, attempt)` and returns `str` | `dict`/`list` | `FakeReply(text, data, usage, stop_reason, model)`.

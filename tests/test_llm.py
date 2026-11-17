@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import anthropic
@@ -203,6 +204,7 @@ def test_api_error_wrapped_and_logged():
 
 def test_missing_key_without_fake(monkeypatch):
     monkeypatch.setenv("FAKE_LLM", "false")
+    monkeypatch.setenv("LLM_BACKEND", "api")
     config.reset_settings()
     with pytest.raises(llm.LLMError, match="ANTHROPIC_API_KEY"):
         llm.complete("haiku", system="s", user="u", purpose="p")
@@ -244,3 +246,89 @@ def test_end_to_end_through_real_sdk_with_mock_transport():
     assert body["output_config"]["format"]["schema"]["additionalProperties"] is False
     assert res.data["score"] == 8 and res.usage.cache_write_tokens == 600
     assert res.cost_usd == pytest.approx((50 * 2.0 + 20 * 10.0 + 600 * 2.5) / 1e6)
+
+
+# -- LLM_BACKEND=plan: the Shorts pipeline on the owner's Claude subscription -----------------------
+
+def _plan(monkeypatch, out):
+    """FAKE_LLM off, plan backend, a fake ``claude -p`` that answers ``out``; returns the recorded calls."""
+    from pathlib import Path
+
+    from assistant import claude_code
+
+    monkeypatch.setenv("FAKE_LLM", "false")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-never-used")
+    config.reset_settings()
+    monkeypatch.setattr(claude_code, "find_claude", lambda: Path("claude"))
+    calls = []
+
+    def runner(argv, *, input, env, cwd, timeout):
+        calls.append({"argv": argv, "input": input})
+        result = {"type": "result", "subtype": "success", "is_error": False, "result": out, "session_id": "s1",
+                  "num_turns": 1, "total_cost_usd": 0.004, "modelUsage": {"claude-haiku-5-5": {"outputTokens": 9}},
+                  "usage": {"input_tokens": 120, "output_tokens": 9}}
+        return claude_code.Completed(0, json.dumps(result) + "\n", "")
+
+    claude_code.set_runner(runner)
+    monkeypatch.setattr(llm, "_call_api", lambda req: pytest.fail("the API must not be used on the plan"))
+    return calls
+
+
+@pytest.fixture
+def _cc_reset():
+    from assistant import claude_code
+
+    yield
+    claude_code.set_runner(None)
+
+
+def test_plan_backend_is_the_default_and_costs_nothing(monkeypatch, clock, _cc_reset):
+    calls = _plan(monkeypatch, 'Here you go:\n{"score": 8, "reason": "great hook", "tags": ["a"], "kind": "awe"}')
+    assert config.get_settings().llm_backend == "plan"
+    res = llm.complete("haiku", system="Score it.", user="window text", purpose="pick.score_window",
+                       json_schema=SCORE_SCHEMA)
+    assert res.data["score"] == 8 and res.cost_usd == 0.0 and not res.fake
+    (call,) = calls
+    argv = call["argv"]
+    assert argv[argv.index("--model") + 1] == "haiku" and argv[argv.index("--system-prompt") + 1] == "Score it."
+    assert argv[argv.index("--max-turns") + 1] == "1" and "window text" in call["input"]
+    assert '"enum":["funny","awe","drama"]' in call["input"]           # the schema travels in the prompt
+    row = db.list_llm_usage(1)[0]
+    assert row.purpose == "pick.score_window" and row.cost_usd == 0.0 and row.input_tokens == 120
+    assert budget.spent_today() == 0.0
+
+
+def test_plan_backend_waits_for_a_limited_plan(monkeypatch, clock, _cc_reset):
+    from assistant import claude_code
+
+    calls = _plan(monkeypatch, "{}")
+    monkeypatch.setattr(claude_code, "backoff_until", lambda: db.utcnow())
+    with pytest.raises(budget.BudgetExceeded, match="Claude plan"):
+        llm.complete("sonnet", system="s", user="u", purpose="pick.finalize")
+    assert calls == []                                                   # nothing ran, no API either
+
+
+def test_plan_backend_waits_when_usage_is_tight(monkeypatch, clock, _cc_reset):
+    from assistant import usage
+
+    calls = _plan(monkeypatch, "{}")
+    monkeypatch.setattr(usage, "constrained", lambda *a, **k: (True, None))
+    with pytest.raises(budget.BudgetExceeded):
+        llm.complete("haiku", system="s", user="u", purpose="pick.score_window")
+    assert calls == []
+
+
+def test_plan_run_failure_is_an_llm_error(monkeypatch, clock, _cc_reset):
+    from assistant import claude_code
+
+    _plan(monkeypatch, "{}")
+    claude_code.set_runner(lambda argv, **kw: claude_code.Completed(1, "", "Not logged in. Please run /login"))
+    with pytest.raises(llm.LLMError, match="Claude plan run failed"):
+        llm.complete("haiku", system="s", user="u", purpose="pick.score_window")
+    assert db.list_events(module="llm", level="error")
+
+
+def test_api_backend_still_available(monkeypatch):
+    monkeypatch.setenv("LLM_BACKEND", "api")
+    config.reset_settings()
+    assert config.get_settings().llm_backend == "api"

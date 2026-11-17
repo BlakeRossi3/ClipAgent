@@ -107,7 +107,7 @@ def test_about_validates_and_saves(c, wiz):
     assert get_assistant_settings().name == "Sterling" and get_assistant_settings().owner_honorific == "sir"
 
 
-def test_brain_key_is_saved_tested_with_the_fake_and_never_shown(c, wiz):
+def test_brain_key_is_saved_tested_with_the_fake_and_never_shown(c, wiz, monkeypatch):
     csrf = _csrf(c)
     r = c.post("/setup/brain", data={"csrf": csrf, "api_key": SECRET_KEY, "pipeline_cap": "3",
                                      "assistant_cap": "2", "assistant_on": "1", "action": "test"})
@@ -122,10 +122,17 @@ def test_brain_key_is_saved_tested_with_the_fake_and_never_shown(c, wiz):
     r = c.post("/setup/brain", data={"csrf": csrf, "api_key": "not-a-key-SECRET", "pipeline_cap": "3",
                                      "assistant_cap": "2"})
     assert r.status_code == 400 and "not-a-key-SECRET" not in r.text
-    # clearing the key goes back to practice mode
+    # clearing the key: the pipeline keeps running on the Claude plan when Claude Code is installed ...
+    from assistant import claude_code
+
+    monkeypatch.setattr(claude_code, "find_claude", lambda: Path("claude"))
     c.post("/setup/brain", data={"csrf": csrf, "clear_api_key": "1", "pipeline_cap": "1", "assistant_cap": "1"})
     vals = config_store.read_values()
-    assert vals["ANTHROPIC_API_KEY"] == "" and vals["FAKE_LLM"] == "true"
+    assert vals["ANTHROPIC_API_KEY"] == "" and vals["FAKE_LLM"] == "false"
+    # ... and goes back to practice mode when it is not
+    monkeypatch.setattr(claude_code, "find_claude", lambda: None)
+    c.post("/setup/brain", data={"csrf": csrf, "clear_api_key": "1", "pipeline_cap": "1", "assistant_cap": "1"})
+    assert config_store.read_values()["FAKE_LLM"] == "true"
 
 
 def test_api_key_test_reports_problems(wiz, monkeypatch):

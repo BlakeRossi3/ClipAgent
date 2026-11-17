@@ -65,7 +65,7 @@
   {{ tile("/setup/memory", "Memory", sm.memory.notes ~ " notes", "book") }}
 </div></section>
 <section class="s-group" aria-labelledby="g-conn"><h2 class="sec-title" id="g-conn">Connections</h2><div class="s-grid">
-  {% set brain_line %}{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}{% if cc.turns_cap %}/{{ cc.turns_cap }}{% endif %} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}{% endset %}
+  {% set brain_line %}{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}{% if cc.turns_cap %}/{{ cc.turns_cap }}{% endif %} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if sm.brain.llm_backend == "plan" and not sm.brain.fake %}Claude plan{% elif secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}{% endset %}
   {{ tile("/setup/brain", "The brain", brain_line, "spark") }}
   {{ tile("/setup/phone", "Your phone", (sm.phone.owner_phone or "Not set") ~ (" · Twilio set" if sm.phone.twilio_sid else ""), "chat") }}
   {{ tile("/setup/youtube", "YouTube", "Connected" if sm.youtube.has_token else ("Sign-in file saved, not connected" if sm.youtube.has_secret else "Not connected"), "film") }}
@@ -195,7 +195,7 @@
       <p class="f-help">Only needed for automatic clip picking in the Shorts studio, paid to Anthropic per use (about $1 a day at most, capped below). Without a key the studio cannot pick clips by itself; {{ a.name }} and everything else still work on your Claude account.</p>
       {{ secret_field("api_key", "Anthropic API key", secrets.api_key, "sk-ant-...", "clear_api_key") }}
       <p class="f-help">Where do I get this? Sign in at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com → API keys</a>, press <em>Create key</em>, copy it and paste it here. Add a little credit under Billing first ($10 lasts weeks).</p>
-      <label class="f">Shorts studio: most it may spend per day (USD)<input name="pipeline_cap" value="{{ values.pipeline_cap }}" inputmode="decimal">{{ help("Picking clips costs a few cents per video. The weekly review sets its own daily budget (about $1) but can never go above this.") }}{{ err("pipeline_cap") }}</label>
+      <label class="f">Shorts studio: most it may spend per day (USD)<input name="pipeline_cap" value="{{ values.pipeline_cap }}" inputmode="decimal">{{ help("Only for LLM_BACKEND=api: picking clips then costs a few cents per video on the API key. On the Claude plan (the default) the Shorts studio spends nothing here.") }}{{ err("pipeline_cap") }}</label>
       <label class="f">{{ a.name }} on this key instead of your Claude account: most per day (USD)<input name="assistant_cap" value="{{ values.assistant_cap }}" inputmode="decimal">{{ help("Only used if you do not sign in with Claude. A chat or text costs roughly 1-5 cents.") }}{{ err("assistant_cap") }}</label>
       <div class="s-actions"><button type="submit" name="action" value="test" class="hbtn">Save &amp; test the key</button></div>
     </details>
