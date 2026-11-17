@@ -203,9 +203,11 @@ def test_plan_limit_without_a_key_says_when_it_is_back(env, monkeypatch, clock):
 
 
 def test_interrupt_stops_the_answer_and_the_next_question_follows(env):
+    import itertools
+
     def reply(said, client):
-        if said == "tell me a long story":
-            return [f"Sentence number {i}." for i in range(200)]
+        if said == "tell me a long story":     # never ends by itself, so the interrupt cannot race its end
+            return (f"Sentence number {i}." for i in itertools.count())
         return ["Here is the short answer."]
 
     brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: reply(
