@@ -167,6 +167,26 @@ def test_open_url_tool(cc):
     assert not bad.ok and len(opened) == 1
 
 
+@pytest.mark.parametrize("ctx", [tools.ToolContext(channel="voice-task", agent="main", source="voice"),
+                                 tools.ToolContext(channel="system", agent="studio", source="task:studio")])
+def test_background_work_never_opens_tabs_on_his_screen(cc, ctx):
+    """He found background tasks popping YouTube tabs open really annoying: they hand the link back instead."""
+    opened = []
+    tools.set_url_opener(lambda u: opened.append(u) or True)
+    res = tools.dispatch("open_url", {"url": "https://www.youtube.com/watch?v=x"}, ctx, allowed={"open_url"})
+    assert res.ok and opened == []
+    assert '"opened": false' in res.content and "https://www.youtube.com/watch?v=x" in res.content
+    assert any(e.message == "kept a page off the owner's screen (background work)" for e in db.list_events(limit=20))
+
+
+def test_background_worker_prompt_says_not_to_open_pages(cc):
+    from assistant import brain
+
+    worker, voice = brain.system_prompt(worker=True), brain.system_prompt(worker=False)
+    assert "never open pages or tabs on his screen" in worker
+    assert "never open pages or tabs on his screen" not in voice and "open_url to open a page" in voice
+
+
 def test_rate_limit_events_feed_usage_status_and_deferral(cc):
     cc.outputs = [_rate(0.85) + "\n" + _rate(0.4, kind="seven_day", status="allowed") + "\n" + _result()]
     runtime.run_turn("hi", channel="dashboard")

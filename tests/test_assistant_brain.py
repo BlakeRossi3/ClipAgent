@@ -611,7 +611,7 @@ def test_lean_voice_session_keeps_a_small_builtin_set_and_workers_keep_everythin
     assert opts.extra_args == {"no-chrome": None}                       # Chrome waits for need_tools(browser)
     assert "need_tools with kind=browser" in opts.system_prompt["append"]
     worker = b.options(mode="plan", resume=None, worker=True)
-    assert worker.tools is None and worker.extra_args == {"chrome": None}
+    assert worker.tools is None and worker.extra_args == {"no-chrome": None}   # background work never drives his Chrome
     b.escalated.add("browser")
     assert b.options(mode="plan", resume=None, table=table).extra_args == {"chrome": None}
     asettings.set_assistant_settings(s.replace(voice_lean=False, chrome=True))

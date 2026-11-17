@@ -474,8 +474,8 @@ def system_prompt(*, worker: bool = False, chrome: bool | None = None, lean: boo
     part = (VOICE_PROMPT if not worker else
             "# Background task\nYou are working on a task in the background while he gets on with his day. Do the "
             "work fully, then finish with a short plain answer: what you found or did, key facts first.")
-    chrome_on = s.chrome if chrome is None else chrome
-    note = claude_code.full_note(chrome=chrome_on)
+    chrome_on = (s.chrome and not worker) if chrome is None else chrome
+    note = claude_code.full_note(chrome=chrome_on, background=worker)
     if lean and s.chrome and not chrome_on:
         note += ("\n\nClaude in Chrome is set up but switched off to keep you quick: when a request needs you to drive "
                  "his browser (click, fill in, read a signed-in page), call need_tools with kind=browser first.")
@@ -615,7 +615,7 @@ class Brain:
         if not fast_search_ready():       # keyless it only hands back a query: one wasted model round
             names = [n for n in names if n != "fast_search"]
         allowed = set(names)
-        channel = "voice-task" if worker else CHANNEL
+        channel = tools.BACKGROUND_CHANNEL if worker else CHANNEL
 
         def registry_fn(name: str) -> Callable[[dict[str, Any]], tuple[str, bool]]:
             def run(args: dict[str, Any]) -> tuple[str, bool]:
@@ -770,7 +770,8 @@ class Brain:
         lean = s.voice_lean and not worker
         # lean voice session: Chrome only once need_tools(browser) asked for it (a reconnect, resuming the
         # conversation); his servers are configured but switched off after connecting (need_tools turns them on)
-        chrome = s.chrome and (not lean or "browser" in self.escalated)
+        # background workers never drive his Chrome: he found tasks popping tabs open on his screen annoying
+        chrome = s.chrome and not worker and (not lean or "browser" in self.escalated)
         settings_path, agents_path = claude_code.prepare_full_run(tag, chrome=chrome, mcp_tools=sorted(table),
                                                                   extra_servers=sorted(extra))
         agents: dict[str, Any] = {}

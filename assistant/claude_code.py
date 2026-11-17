@@ -799,7 +799,7 @@ def sync_native_skills() -> list[str]:
     return names
 
 
-def full_note(*, chrome: bool) -> str:
+def full_note(*, chrome: bool, background: bool = False) -> str:
     s = get_assistant_settings()
     dirs = working_dirs()
     folders = "\n".join(f"- {d}" for d in dirs[2:]) or "- (none found)"
@@ -807,6 +807,13 @@ def full_note(*, chrome: bool) -> str:
                "read them, click and download in his own signed-in Chrome."
                if chrome else
                f"Use {TOOL_PREFIX}open_url to open a page in his default browser (his own signed-in Chrome).")
+    browser_para = (f"Browser: you can open any URL in {s.owner_name}'s own signed-in browser on this laptop. {browser}\n"
+                    "Pages that need his login (claude.ai, YouTube, Instagram...) work that way because they use his "
+                    "own\nsession, so do it yourself instead of saying you cannot access them.")
+    if background:   # he found background tasks popping YouTube tabs open really annoying
+        browser_para = ("Browser: this is background work, so never open pages or tabs on his screen (no open_url, "
+                        "no\nStart-Process/start/explorer with a URL). Read pages with WebFetch or page_read and put "
+                        "any link\nhe needs in your report.")
     return f"""
 
 # Your powers (Claude Code on {s.owner_name}'s laptop)
@@ -820,9 +827,7 @@ Folders:
 - Your data (database, vault, uploads, logs): {dirs[1]}
 {folders}
 
-Browser: you can open any URL in {s.owner_name}'s own signed-in browser on this laptop. {browser}
-Pages that need his login (claude.ai, YouTube, Instagram...) work that way because they use his own
-session, so do it yourself instead of saying you cannot access them. Never extract, read or store his
+{browser_para} Never extract, read or store his
 cookies, passwords or session tokens.
 
 Images he attaches are files under {uploads_dir()}: open them with Read.

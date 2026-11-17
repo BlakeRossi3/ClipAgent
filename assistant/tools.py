@@ -594,12 +594,26 @@ def set_url_opener(fn: Callable[[str], bool] | None) -> None:
     _url_opener = fn or _default_url_opener
 
 
+BACKGROUND_CHANNEL = "voice-task"   # brain.run_worker: background tasks, heartbeat, initiative, schedules
+
+
+def is_background(ctx: ToolContext) -> bool:
+    """Work he is not watching: a background worker, or a scheduled agent task (runtime.run_task)."""
+    return ctx.channel == BACKGROUND_CHANNEL or str(ctx.source or "").startswith("task:")
+
+
 def _open_url(ctx: ToolContext, a: dict[str, Any]) -> Any:
     url = str(a.get("url") or "").strip()
     if not re.match(r"^https?://[^\s\"'<>]+$", url, re.I) or len(url) > 2000:
         raise ToolError("only a single http(s) URL can be opened")
     from assistant.settings import get_assistant_settings
 
+    if is_background(ctx):
+        # He found background tasks popping tabs (YouTube) open really annoying: they hand the link back instead.
+        db.log_event("assistant", "kept a page off the owner's screen (background work)",
+                     data={"url": url[:300], "agent": ctx.agent, "channel": ctx.channel})
+        return {"opened": False, "url": url,
+                "note": "background work never opens tabs on his screen: put this link in your report instead"}
     if _url_opener is _default_url_opener and get_assistant_settings().fake:
         # Fake mode = tests, nightly evals, self-edit test runs: never pop a real browser tab on his screen.
         return {"opened": True, "url": url, "note": "fake mode: nothing was opened"}
