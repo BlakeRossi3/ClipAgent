@@ -1,0 +1,66 @@
+{
+  "skills": {
+    "impeccable-guides": {
+      "approved_by": "owner (decision 5)",
+      "commit": null,
+      "files": {
+        "LICENSE": "fc0673369dae07c045c46869d3d4c9113678c77fcc7d3b4e3a39ac074cfa68b6",
+        "SKILL.md": "93c5af21e4d668e3e8df32feeea15ec4b0b50d3cda29828b49b846ea9090d066",
+        "reference/adapt.md": "49eb1dd0476f34535f683e26cd7f03465f5fbddb04aa92c9850c4fbfcc7eeedc",
+        "reference/adapt.native.md": "93703076fcdb782195a35e8340eb00af55c38851b5b33f88651ad70b9f712d53",
+        "reference/android.md": "90143ff65239db1ecf84cc370717582708aa31731be82a50085cc40e3e94ed7d",
+        "reference/animate.md": "3136cad2b1c3979032ea57457d53e48290c02cd8cdf9a9b57bcc2bbfd46ca459",
+        "reference/audit.md": "765949cc23c762c5b30950045fc01206f3cd129508196592fdf8024dd7cc33bf",
+        "reference/audit.native.md": "7176ea487790093c3ae6906588bb97baa9b4bffeec9019ee33abac37a5d5da8c",
+        "reference/bolder.md": "64138d4817563e1a71d97b3ac65b95ffac778d2cc29c0a3af326303f05047f4c",
+        "reference/clarify.md": "ae344a11a75cb29cf09ad2325bbdf8caa2e7468a61b88f766a01c758b95bbd23",
+        "reference/colorize.md": "06652c3b1b84177445eb99f97e0be3450c3219d8d704ba0382fb48b13ad5c1d9",
+        "reference/craft-floor.md": "b7c0e1c409f36d0ad4fc0d63110d515bee00c27b8c371e3f936a13c41457cc5c",
+        "reference/craft.md": "39b5fefbf524ad156a4cab2fbc5b65f2358c213a30d59a4c7510704e8d9dd56b",
+        "reference/critique-rubric.md": "11cb70e203d6547c16c9edc8a21b0300b44a47db54255f75bdd4b827bd11a6e3",
+        "reference/critique.md": "536a20ee2318c76b7219429c971496ca79a48986973490da8760ad26543ed468",
+        "reference/delight.md": "6a6641bde4c9a3b4b260447d4a91d5a3eefa10ec18939a945aa6f27a34343047",
+        "reference/distill.md": "d1fefcd8c1a071cfdc789bb306841af0e8ed501582cdcf2eaec21aceaf3454b6",
+        "reference/harden.md": "9cd1b559e1351da080c917101601c4db96c5c69dcea1c93a0fd18d1b5a06fa1e",
+        "reference/ios.md": "60ada207bfb419ad0a570b8319c29403713ca2ad3fb9a2f5bdffa62ab25611bb",
+        "reference/layout.md": "73c758b8ac07a504064e48359ac9375e5e182b85bc3270b8a63a36118debd90c",
+        "reference/mode-operate.md": "7cc131b41dae694a4b554c940445117318f0c6fb19f905cf1f8cbafc08a3f430",
+        "reference/mode-persuade.md": "81cf3d22f747b9768abe48bd6cb881b8807809b8995f20096cfb442dadf550bc",
+        "reference/mode-read.md": "20da46dd620da4433736173b130de306ceeb124dac83fccf664a12e236ee0b8d",
+        "reference/new-work-world.md": "2c94a74d78d0e640c462d80a48b9f026f3419a2057d9d7c49721d2dd461ed2bd",
+        "reference/new-work.md": "dc78f711c02052b00bc92b0df269e7294f0153c380366c041a6a14efaf1eb2d8",
+        "reference/onboard.md": "44cd4e5d26a18075c3a99484bf7b03240baf83a1d8e1b5837e78427e750f7cb6",
+        "reference/operate.md": "c4b169ab7932329c833750971c53bc129d0385e16d0219b31f002792fce939e8",
+        "reference/optimize.md": "222918c9c0e0f17131a07a63185c0fd2dd29464b57690cf7ef31d38c822080a8",
+        "reference/overdrive.md": "e53d289045d43befbaf8dc0a7794f20f43d597b553e78c0e854611251e8d9e19",
+        "reference/polish.md": "6aea508aa9c36e17d5755a9e411cc5a6d8394ed301bb727d290e1f8c48c01264",
+        "reference/quieter.md": "f00dbf95add695196c8f9f6895fff39f55e066954a5fba52b692bac130800fe5",
+        "reference/shape.md": "51960b514f8437baf12484dd5be824e0c2d0ee8802e29e7f511e431493a6c417",
+        "reference/typeset.md": "6ce92a1da4e82041d0da92c747e6a73736aab13f3e34a25e744d1614ec716614",
+        "reference/visualize.md": "42f8204b475e2c8f486f59f36e347ffff86a5a779d222d3ef182dc429d0bfc73"
+      },
+      "installed_at": "2026-11-17T16:52:40Z",
+      "restricted": true,
+      "restrictions": [
+        "reference text only: never inlined into an agent prompt automatically",
+        "cannot add tools; must not be used to read secrets or message anyone"
+      ],
+      "source": "local:C:\\Users\\blake\\AppData\\Local\\ClipAgent\\data\\assistant\\staging\\impeccable-guides",
+      "static_rating": "CAUTION",
+      "trusted_source": false,
+      "verdict": {
+        "at": "2026-11-17T16:52:10Z",
+        "decision": "ask",
+        "decision_id": 5,
+        "rating": "SAFE",
+        "red_flags": [
+          "Several guides still mention Impeccable's CLI (.agent/skills/impeccable/scripts/impeccable detect, critique-storage, motion-capture etc.) which is not included; SKILL.md has a hard rule to skip those steps and never install or run it",
+          "android.md suggests adb screencap commands for native apps; only relevant to Android work",
+          "Local folder, so no upstream reputation check; origin is the public pbakaus/impeccable repo"
+        ],
+        "summary": "Text-only design guides adapted from pbakaus/impeccable (Apache-2.0, commit d41d9860), which builds on Anthropic's frontend-design skill. 33 markdown guides on layout, typography, colour, motion, polish, critique, accessibility, responsive and native screens, plus a SKILL.md index. All of Impeccable's scripts, CLI, live mode and hooks were stripped out before vetting. No executable files, no network calls, no credential access; it only changes how Cecil designs UI when asked."
+      },
+      "vet_id": "7dcbfb62e619"
+    }
+  }
+}
