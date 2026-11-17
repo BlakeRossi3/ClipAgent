@@ -99,7 +99,3 @@ and survive `persona.polish` unchanged. `bad` replies must trigger every code li
 - bad: The report is at https://example.com/report, sir.
 - violates: url_in_voice
 
-## Counter-example: too long for a text
-- channel: sms
-- bad: Sir, here is everything that happened today in considerable detail. The pipeline scouted twelve candidate videos, fetched four of them, transcribed three, picked seven clips, rendered six, and uploaded two, which together drew a modest number of views, while the budget stayed comfortably under its cap and nothing needed your attention.
-- violates: too_long

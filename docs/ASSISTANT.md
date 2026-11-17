@@ -315,7 +315,7 @@ check every golden reply passes and every counter-example is caught and fixed.
   owner's PAUSE switch; after it, usage is written to `llm_usage` (`purpose assistant.<agent>`,
   `tier assistant`) and each agent run to `as_agent_runs` (audit trail).
 * **Owner-only messaging**: `message_owner` has no recipient parameter; it goes through phase-1
-  `notify` (owner's number, quiet hours, DRY_RUN), capped at `ASSISTANT_MAX_SMS_PER_DAY`.
+  `notify` (owner's number, quiet hours, DRY_RUN), no daily cap.
 * **Approval**: anything irreversible goes through `request_approval` -> the phase-1 decision flow
   (call / SMS, `YES <id>`); only registered handlers can act on an approval.
 * **Standing approvals** (`assistant/approvals.py`): after approving he can say "always allow this kind"

@@ -215,7 +215,7 @@ def current_values(step: str) -> dict[str, Any]:
     if step == "brain":
         return {"pipeline_cap": f"{s.max_daily_llm_budget_usd:g}", "assistant_cap": f"{a.daily_budget_usd:g}",
                 "assistant_on": a.enabled or not s.setup_complete, "fake": s.fake_llm, "backend": a.backend,
-                "turns_cap": a.max_turns_per_day, "llm_backend": s.llm_backend}
+                "turns_cap": 0, "llm_backend": s.llm_backend}
     if step == "money":
         j = _job()
         return {"job_name": j.name if j else "", "rate": f"{j.hourly_rate:g}" if j else "",

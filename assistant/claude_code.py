@@ -522,12 +522,8 @@ def check_guards(*, count_turn: bool = True) -> None:
         raise _budget_exc("limit", f"Claude plan limit; back {friendly_time(until)}", friendly_time(until))
     if until is not None and _api_budget_left() <= 0.0:
         raise _budget_exc("daily", "today's API allowance for the plan-limit fallback is spent")
-    if count_turn:
-        cap = get_assistant_settings().max_turns_per_day
-        if cap > 0 and turns_today() >= cap:
-            if db.kv_set_if_absent(f"assistant:cc:turn_cap_alerted:{db.local_today().isoformat()}", db.now_iso()):
-                db.log_event("assistant", "daily Claude run cap reached", level="warning", data={"cap": cap})
-            raise _budget_exc("turns", f"daily Claude run cap ({cap}) reached")
+    # No daily run cap (Blake: "there should be no cap at all"): runs are only counted; the plan's own
+    # usage windows (backoff above, usage.constrained for optional work) are the limit.
 
 
 def _set_backoff(text: str, *, alert_channel: str) -> datetime:
@@ -1362,7 +1358,7 @@ def status(*, probe: bool = True, refresh: bool = False) -> dict[str, Any]:
     out: dict[str, Any] = {
         "backend": s.backend, "installed": exe is not None, "path": str(exe) if exe else None, "version": None,
         "logged_in": None, "plan_hint": db.kv_get(KV_PLAN_HINT), "model_in_use": model_in_use("main"),
-        "sub_model_in_use": model_in_use("sub"), "turns_today": turns_today(), "turns_cap": s.max_turns_per_day,
+        "sub_model_in_use": model_in_use("sub"), "turns_today": turns_today(), "turns_cap": 0,
         "backoff_until": None, "backoff_text": "", "notional_today": round(notional_today(), 4),
         "last_error": db.kv_get(KV_LAST_ERROR), "error": None, "auth_method": None,
     }

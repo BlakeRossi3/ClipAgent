@@ -220,16 +220,16 @@ def test_untrusted_delimiters_cannot_be_forged(fake_model, clock):
 # outbound messages, inbound hand-off, tasks
 # ---------------------------------------------------------------------------
 
-def test_message_owner_daily_cap_and_dry_run(fake_model, clock):
-    _settings(max_sms_per_day=2)
+def test_message_owner_has_no_daily_cap_and_dry_run(fake_model, clock):
+    _settings()
     ctx = tools.ToolContext(channel="system", agent="briefer")
     allowed = {"message_owner"}
     r1 = tools.dispatch("message_owner", {"text": "First update!"}, ctx, allowed=allowed)
     r2 = tools.dispatch("message_owner", {"text": "Second", "kind": "reply"}, ctx, allowed=allowed)
     r3 = tools.dispatch("message_owner", {"text": "Third"}, ctx, allowed=allowed)
-    assert r1.ok and r2.ok and not r3.ok and "cap" in r3.content
+    assert r1.ok and r2.ok and r3.ok                                   # no daily text cap
     notes = db.list_notifications(limit=10)
-    assert len(notes) == 2 and {n.status for n in notes} == {"dry_run"}
+    assert len(notes) == 3 and {n.status for n in notes} == {"dry_run"}
     assert {n.kind for n in notes} == {"assistant_update"}  # the model cannot claim the reply exemption
     assert notes[-1].body == "First update."  # polished
     # replies to the owner never count against the cap

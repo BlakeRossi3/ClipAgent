@@ -1052,9 +1052,7 @@ def claude_code_checks(*, network: bool = False) -> list[Check]:
     out.append(Check("assistant models", "pass", f"Claude plan: main {st['model_in_use']}, sub-agents "
                      f"{st['sub_model_in_use']}"))
     used, cap = st["turns_today"], st["turns_cap"]
-    out.append(Check("Claude runs today", "warn" if cap and used >= cap else "pass",
-                     f"{used} of {cap}" if cap else f"{used} (no daily cap)",
-                     "raise ASSISTANT_MAX_TURNS_PER_DAY (shares your Claude plan's limits)"))
+    out.append(Check("Claude runs today", "pass", f"{used} (no daily cap)"))
     if st.get("backoff_until"):
         out.append(Check("Claude plan limit", "warn", f"reached; assistant back {st['backoff_text']}",
                          "wait for the reset, or use the API key backend (ASSISTANT_BACKEND=api)"))
@@ -1076,7 +1074,7 @@ def assistant_checks(s: Settings, *, network: bool = False) -> list[Check]:
         out.append(Check("assistant models", "pass", f"main {a.model} ({a.effort}), sub-agents {a.subagent_model} "
                          f"({a.subagent_effort}){', FAKE' if a.fake else ''}"))
     out.append(Check("assistant budget", "pass" if a.daily_budget_usd > 0 else "warn",
-                     f"${a.daily_budget_usd:.2f}/day, ${a.max_turn_usd:.2f}/turn, {a.max_sms_per_day} texts/day "
+                     f"${a.daily_budget_usd:.2f}/day, ${a.max_turn_usd:.2f}/turn, no text cap "
                      f"(separate from the pipeline's ${budget.daily_cap_usd():.2f})",
                      "set ASSISTANT_DAILY_BUDGET_USD"))
     vault_ok = a.vault_dir.is_dir()
@@ -1152,7 +1150,7 @@ def assistant_cli(args: argparse.Namespace) -> int:
     elif args.acmd == "status":
         print(f"assistant {'ENABLED' if a.enabled else 'disabled'}  name {a.name}  fake {a.fake}  vault {a.vault_dir}")
         print(f"spend today ${store.assistant_spent_today():.4f} of ${a.daily_budget_usd:.2f}   "
-              f"texts today {tools.outbound_sms_today()}/{a.max_sms_per_day}")
+              f"texts today {tools.outbound_sms_today()}")
         s = ledger.summary(weeks=4)
         print("money: " + (ledger.brief_line(s) or "no job set"))
         if s["missing"]:

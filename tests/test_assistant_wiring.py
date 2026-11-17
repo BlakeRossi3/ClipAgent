@@ -107,13 +107,12 @@ def test_controls_quiet_hours_and_caps(env, clock):
     assert store.get_checkin(cid).status == "skipped" and checkins.plan_day() == []
     sms(env, "START CHECK-INS")
     assert db.kv_get("checkins:stopped") is None
-    # the assistant's own SMS cap: nudges lose to questions
-    aset.set_assistant_settings(aset.get_assistant_settings().replace(max_sms_per_day=1))
+    # no daily text cap: nothing is skipped for being one text too many (one open question at a time still holds)
     clock.set(datetime(2026, 11, 14, 17, 0, tzinfo=UTC))            # 12:00 local Saturday
     q = store.add_checkin("onboarding:pay_rate", "What is your hourly pay, sir?", db.now_iso())
     nudge = store.add_checkin("wellbeing", "How are you, sir?", db.now_iso())
     checkins.send_due()
-    assert store.get_checkin(q).sent_at and store.get_checkin(nudge).status == "skipped"
+    assert store.get_checkin(q).sent_at and store.get_checkin(nudge).status != "skipped"
     sms(env, "$27.50 an hour")
     assert store.list_jobs()[0].hourly_rate == 27.5
 
