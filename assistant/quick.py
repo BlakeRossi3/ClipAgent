@@ -75,7 +75,16 @@ def get_backend() -> Any:
 def call(backend: Any, req: runtime.ModelRequest, on_text: Callable[[str], None] | None = None) -> runtime.ModelReply:
     if on_text is not None and getattr(backend, "streams", True) and hasattr(backend, "stream"):
         return backend.stream(req, on_text)
-    return backend.create(req)
+    try:
+        return backend.create(req)
+    except Exception as exc:  # noqa: BLE001
+        if _is_out_of_credit(exc) and not isinstance(backend, ClaudeCodeQuick):
+            return ClaudeCodeQuick().create(req)  # API credit gone: use the Claude plan instead
+        raise
+
+
+def _is_out_of_credit(exc: Exception) -> bool:
+    return "credit balance is too low" in str(exc).lower()
 
 
 def record(agent: str, reply: runtime.ModelReply, fake: bool) -> float:
