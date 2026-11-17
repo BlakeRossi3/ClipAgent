@@ -219,7 +219,10 @@ def test_interrupt_stops_the_answer_and_the_next_question_follows(env):
         time.sleep(0.01)
     assert brain.interrupt()
     res2 = brain.ask("short version").wait(10)
-    assert t1.wait(1)["status"] == "cancelled" and len(t1.sentences) < 200
+    assert t1.wait(1)["status"] == "cancelled"
+    spoken = len(t1.sentences)
+    time.sleep(0.1)
+    assert len(t1.sentences) == spoken                                 # the story really stopped
     assert res2["reply"] == "Here is the short answer."
 
 
