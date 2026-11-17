@@ -206,8 +206,11 @@ def test_startup_merges_cecils_own_branch_when_running_the_published_one(repo, m
     (r / "app.py").write_text("VERSION = 5\n")
     _git(r, "commit", "-qam", "update")
     monkeypatch.setattr(selfedit.time, "sleep", lambda s: None)
-    monkeypatch.setattr(selfedit.threading, "Thread",
-                        lambda target, **kw: type("T", (), {"start": lambda self: target()})())
+    # Swap selfedit's own reference only: patching threading.Thread globally breaks subprocess's
+    # stdout/stderr reader threads on Windows (Popen._readerthread TypeError).
+    import types as _types
+    monkeypatch.setattr(selfedit, "threading", _types.SimpleNamespace(
+        Thread=lambda target, **kw: type("T", (), {"start": lambda self: target()})()))
     selfedit.startup_recover()
     assert selfedit.current_branch() == "sterling/self"
     assert (r / "usage_tile.py").exists() and (r / "app.py").read_text() == "VERSION = 5\n"

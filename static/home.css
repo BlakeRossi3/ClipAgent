@@ -894,3 +894,36 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .rail-task-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line, rgba(255,255,255,.15));
   background: transparent; color: var(--muted); cursor: pointer; line-height: 1; font-size: 15px; }
 .rail-task-x:hover, .rail-task-x:focus-visible { color: var(--ink); border-color: var(--accent); }
+
+/* --- Invincible's corner: a silly toy for the studio specialist (static/invincible.js) --- */
+.inv-body { display: grid; gap: 10px; }
+.inv-sky { position: relative; height: 150px; border-radius: 14px; overflow: hidden; border: 1px solid var(--border);
+  background: radial-gradient(120% 90% at 50% 110%, var(--field-hi), var(--field-mid) 60%, var(--page)); }
+.inv-star { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: var(--ink); opacity: .6; animation: inv-twinkle 2.6s ease-in-out infinite; }
+.inv-star:nth-child(2n) { animation-delay: 1.1s; }
+@keyframes inv-twinkle { 50% { opacity: .1; } }
+.inv-hero { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: 54px; height: 76px; padding: 0; border: 0; background: none; cursor: pointer;
+  animation: inv-hover 2.4s ease-in-out infinite; transition: transform .5s cubic-bezier(.2,1.6,.4,1); }
+.inv-hero:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 12px; }
+@keyframes inv-hover { 50% { translate: -50% calc(-50% - 8px); } }
+.inv-head { position: absolute; left: 13px; top: 0; width: 28px; height: 26px; border-radius: 12px 12px 10px 10px; background: var(--amber);
+  display: flex; gap: 6px; justify-content: center; align-items: center; z-index: 2; }
+.inv-eye { width: 5px; height: 6px; border-radius: 50%; background: var(--accent-ink); }
+.inv-torso { position: absolute; left: 9px; top: 24px; width: 36px; height: 40px; border-radius: 12px 12px 16px 16px; background: var(--accent);
+  color: var(--accent-ink); font: 800 18px/40px var(--font); text-align: center; z-index: 2; }
+.inv-cape { position: absolute; left: 2px; top: 22px; width: 50px; height: 52px; border-radius: 6px 6px 18px 18px; background: var(--amber); opacity: .55;
+  transform-origin: top center; animation: inv-flap .7s ease-in-out infinite alternate; }
+@keyframes inv-flap { to { transform: skewX(-8deg) scaleY(1.06); } }
+.inv-hero.is-zoom { transform: translate(140px, -120px) rotate(25deg) scale(.4); }
+.inv-hero.is-spin { transform: rotate(360deg) scale(1.15); }
+.inv-hero.is-sleepy { animation-duration: 6s; }
+.inv-hero.is-sleepy .inv-eye { height: 2px; }
+.inv-pow { position: absolute; right: 12px; top: 10px; font: 900 22px/1 var(--font); color: var(--amber); letter-spacing: .04em;
+  text-shadow: 0 0 12px var(--glow); opacity: 0; transform: scale(.4) rotate(-12deg); transition: opacity .2s, transform .25s cubic-bezier(.2,1.8,.4,1); pointer-events: none; }
+.inv-pow.is-on { opacity: 1; transform: scale(1) rotate(-8deg); }
+.inv-quip { margin: 0; min-height: 2.6em; color: var(--ink-2); font-style: italic; }
+.inv-stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.inv-stats strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.inv-meter { height: 6px; border-radius: 6px; background: var(--accent-track); overflow: hidden; }
+.inv-meter span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--amber)); transition: width .4s; }
+@media (prefers-reduced-motion: reduce) { .inv-hero, .inv-cape, .inv-star { animation: none; } .inv-hero { transition: none; } }

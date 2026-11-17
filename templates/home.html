@@ -216,8 +216,30 @@
       </div>
     </section>
 
+    {# --- Invincible's corner: a silly toy for the studio specialist (static/invincible.js) --- #}
+    <section class="card inv-card wg-item" aria-labelledby="inv-title" data-widget="invincible">
+      <h2 class="sec-title" id="inv-title"><span class="sec-glyph">{{ glyph("spark") | safe }}</span>Invincible's corner<span class="sec-extra">the Shorts guy</span></h2>
+      <div class="inv-body" data-inv>
+        <div class="inv-sky" aria-hidden="true">
+          <span class="inv-star" style="left:12%;top:20%"></span><span class="inv-star" style="left:70%;top:14%"></span>
+          <span class="inv-star" style="left:40%;top:62%"></span><span class="inv-star" style="left:86%;top:55%"></span>
+          <button type="button" class="inv-hero" data-inv-hero aria-label="Poke Invincible">
+            <span class="inv-cape"></span><span class="inv-head"><span class="inv-eye"></span><span class="inv-eye"></span></span><span class="inv-torso">I</span>
+          </button>
+          <span class="inv-pow" data-inv-pow></span>
+        </div>
+        <p class="inv-quip" data-inv-quip aria-live="polite">Click me. I dare you.</p>
+        <div class="inv-stats">
+          <span>Pokes <strong data-inv-pokes>0</strong></span>
+          <span>Hype <strong data-inv-hype>0%</strong></span>
+          <span>Mood <strong data-inv-mood>chill</strong></span>
+        </div>
+        <div class="inv-meter" aria-hidden="true"><span data-inv-bar></span></div>
+      </div>
+    </section>
+
   </div>
 </div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/dashboard/static/jarvis.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/cecil.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/home.js?v={{ asset_v }}" defer></script>{% endblock %}
+{% block scripts %}<script src="/dashboard/static/jarvis.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/cecil.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/home.js?v={{ asset_v }}" defer></script><script src="/dashboard/static/invincible.js?v={{ asset_v }}" defer></script>{% endblock %}
