@@ -549,9 +549,12 @@ def activity() -> dict[str, Any]:
         snap["ui"] = hud.ui_state()
     except Exception as exc:  # the rail must still load
         log.warning("ui state unreadable: %s", exc)
-    live = {t["id"]: t for t in snap["tasks"]}
-    for t in tasks.list_tasks():   # tasks from before this server started (kv) fill the gaps
-        live.setdefault(t["id"], tasks.public(t))
+    # kv is the truth for Cecil's own tasks: it overrides the in-memory bus, and a "retrying" bus row whose
+    # kv row is gone (deleted or trimmed) is dropped, so a removed task cannot linger on the rail.
+    # Claude Code's own background agents live only on the bus and are kept as they are.
+    stored = {t["id"]: tasks.public(t) for t in tasks.list_tasks() if t.get("id")}
+    live = {t["id"]: t for t in snap["tasks"] if t["id"] in stored or t.get("status") != "retrying"}
+    live.update(stored)
     snap["tasks"] = sorted(live.values(), key=lambda x: x.get("started") or "")[-10:]
     snap["voice"] = {**get_voice_settings().public(), "smart_turn_ready": smart_turn_ready()}
     try:   # what needs him, said the moment he opens the app (plain code, no tokens)
