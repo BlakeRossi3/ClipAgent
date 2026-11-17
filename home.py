@@ -721,6 +721,8 @@ def assistant_state() -> dict[str, Any]:
         until = _safe(claude_code.backoff_until, None, "claude backoff")
         if until is not None and _safe(claude_code.api_fallback_active, False, "api fallback"):
             until = None  # plan limited, but the API key carries on (conversation only) until the reset
+        if until is not None and not _safe(claude_code.refused_recently, False, "recent refusal"):
+            until = None  # only a refusal Claude just gave locks the mic: paid extra usage may cover the rest
         if until is not None:
             reason = (f"I've reached your Claude plan's limit for now, {s.owner_honorific}. "
                       f"I'll be back {claude_code.friendly_time(until)}.")
