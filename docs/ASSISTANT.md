@@ -133,11 +133,13 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   public scoreboard JSON -> a wide tile (key `nfl-scores`, 16 h) with every game of the week, his team first
   and marked (kv `nfl:team`, default NYG), and stats (team star, shootout, rout, nail-biters, top passer).
   Jobs `assistant_nfl_monday` (Mon 08:05) and `assistant_nfl_mnf` (Mon 23:40). Tests: `nfl.set_http`.
-* **Page reader** (`assistant/page_reader.py`, tool `page_read`, CLI `python -m assistant.page_reader [show|clear]`):
-  the unpacked Chrome extension `extension/page-reader/` (activeTab, nothing read until he clicks or presses
-  Alt+Shift+C) posts the tab's url, title, selection, headings, text and control labels (never field values or
-  password fields) to `POST /pagereader/capture` (Origin `chrome-extension://` + dashboard auth). One capture is
-  kept (kv `page_reader:latest`), secrets masked; Cecil uses it to guide him through a site step by step.
+* **Page reader** (`assistant/page_reader.py`, tools `page_read` + `page_act`, CLI `python -m assistant.page_reader [show|clear]`):
+  the unpacked Chrome extension `extension/page-reader/` keeps the active tab's url, title, selection, headings, text
+  and numbered control labels (never field values or password fields) current in `POST /pagereader/capture` by itself
+  (tab switch, page load, 30 s refresh when changed; Alt+Shift+C forces one; Options can turn auto-reading off or list
+  sites never to read). One capture is kept (kv `page_reader:latest`), secrets masked. `page_act` clicks, types,
+  submits, scrolls, navigates or goes back in that tab: the extension long-polls `POST /pagereader/next` and answers
+  on `POST /pagereader/result` with a fresh capture (all Origin `chrome-extension://` + dashboard auth).
 * **GTA VI countdown**: a collapsible panel on the Jarvis rail counting down to `GTA6_RELEASE_DATE`.
 
 ### Guardrails for full powers

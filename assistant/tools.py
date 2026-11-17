@@ -99,6 +99,7 @@ PLANNED_TOOLS: dict[str, str] = {
     "tile_list": "assistant.tiles",
     "nfl_scores": "assistant.nfl",
     "page_read": "assistant.page_reader",
+    "page_act": "assistant.page_reader",
     "ledger_log_hours": "assistant.ledger",
     "ledger_summary": "assistant.ledger",
     "meals_suggest": "assistant.meals",
@@ -175,7 +176,7 @@ RESTRICTED_SKILL_BLOCKED = frozenset({
     "message_owner", "request_approval", "open_url", "fast_search", "show_map", "show_media", "twilio_diagnose",
     "twilio_fix", "config_get", "config_set", "settings_get", "settings_set", "app_update", "app_delete",
     "desktop_mode_run", "schedule_prompt", "reel_watch", "skill_vet", "skill_install", "skill_request_install",
-    "history_import_from_manifest", "selfcheck_run",
+    "history_import_from_manifest", "selfcheck_run", "page_act",
 })
 
 

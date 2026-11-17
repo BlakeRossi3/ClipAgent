@@ -4,9 +4,11 @@
   <meta charset="utf-8">
   <title>Cecil Page Reader</title>
   <style>
-    body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 520px; color: #222; }
+    body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 560px; color: #222; }
     label { display: block; margin: 14px 0 4px; font-weight: 600; }
-    input { width: 100%; padding: 6px; box-sizing: border-box; }
+    label.check { font-weight: 400; }
+    input[type=text], input[type=password], textarea { width: 100%; padding: 6px; box-sizing: border-box; }
+    textarea { height: 70px; }
     button { margin-top: 16px; margin-right: 8px; padding: 6px 14px; }
     #msg { margin-top: 12px; }
     small { color: #666; }
@@ -14,9 +16,15 @@
 </head>
 <body>
   <h2>Cecil Page Reader</h2>
-  <p>Click the toolbar button (or press Alt+Shift+C) on any page to let Cecil read it. Nothing is read until you click.</p>
+  <p>Cecil keeps up with the tab you are on and can click and type there when you ask him to.
+    The toolbar button (or Alt+Shift+C) reads the page right now.</p>
+  <label class="check"><input id="auto" type="checkbox"> Read pages automatically (when you switch tabs or a page changes)</label>
+  <label class="check"><input id="act" type="checkbox"> Let Cecil click, type and scroll on the page</label>
+  <label for="blocked">Never read these sites</label>
+  <textarea id="blocked" placeholder="one per line, e.g. mybank.com"></textarea>
+  <small>Cecil cannot see or touch these sites or their subdomains, even when you click the button.</small>
   <label for="server">ClipAgent address</label>
-  <input id="server" placeholder="http://127.0.0.1:8000">
+  <input id="server" type="text" placeholder="http://127.0.0.1:8000">
   <label for="token">Dashboard token</label>
   <input id="token" type="password" placeholder="leave empty if the dashboard opens without one on this laptop">
   <small>Only needed if your dashboard asks for a password on this laptop.</small>

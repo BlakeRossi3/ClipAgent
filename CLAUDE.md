@@ -634,9 +634,13 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   Store v9 adds `as_tiles.rows` (JSON `{text, note, mark}` list, `tiles.show(rows=)`) = a wide scoreboard tile.
 - `assistant/nfl.py`: tool `nfl_scores` (ESPN scoreboard -> wide tile `nfl-scores`, his team = kv `nfl:team`, default NYG,
   first and marked, plus week stats); jobs `assistant_nfl_monday` Mon 08:05 + `assistant_nfl_mnf` Mon 23:40; tests `nfl.set_http`.
-- `assistant/page_reader.py` + Chrome extension `extension/page-reader/` (MV3, activeTab, click/Alt+Shift+C only):
-  `POST /pagereader/capture` (Origin must be `chrome-extension://`, plus `dashboard._guard`), `GET /pagereader/status`
-  (auth only); kv `page_reader:latest`, redacted (`admin.redact` + bare 32-hex); tool `page_read(max_chars, offset, find)`.
+- `assistant/page_reader.py` + Chrome extension `extension/page-reader/` (MV3 v2, `<all_urls>`): auto-captures the active
+  tab (tab/window switch, load, 30 s alarm, only when changed; Options: auto on/off, "Never read" hosts, "Let Cecil click").
+  `POST /pagereader/capture|next|result` (Origin must be `chrome-extension://`, plus `dashboard._guard`), `GET /pagereader/status`
+  (auth only); kv `page_reader:latest` (controls numbered `n`), redacted (`admin.redact` + bare 32-hex); tool
+  `page_read(max_chars, offset, find)`. Tool `page_act(action, label|n, text, url, direction)` queues one action in kv
+  `page_reader:action`, the extension long-polls `/next`, acts (`cecilPage("do")` in capture.js), posts outcome + fresh capture
+  to `/result`; kv `page_reader:seen` = connected. Tests: `page_reader.set_sleeper`. In `RESTRICTED_SKILL_BLOCKED`.
 - `tasks.detail(id)` / `GET /voice/api/task/{id}` + jarvis.js `TASKROW`: task rows expand (request, steps, full
   `result` <= 4000 chars, the conversation around it). `assistant/retry.py`: conversation tasks (no `on_finish`, not
   self-edit; `row["retry"]`) ending error/timeout/stopped/rounds go `retrying` with backoff 5/15/30/60 min and

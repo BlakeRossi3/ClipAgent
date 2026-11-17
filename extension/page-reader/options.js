@@ -1,11 +1,23 @@
-const DEFAULTS = { server: "http://127.0.0.1:8000", token: "" };
+const DEFAULTS = { server: "http://127.0.0.1:8000", token: "", auto: true, act: true, blocked: "" };
 const $ = (id) => document.getElementById(id);
 const say = (t) => { $("msg").textContent = t; };
 
-chrome.storage.local.get(DEFAULTS).then((s) => { $("server").value = s.server; $("token").value = s.token; });
+chrome.storage.local.get(DEFAULTS).then((s) => {
+  $("server").value = s.server;
+  $("token").value = s.token;
+  $("auto").checked = !!s.auto;
+  $("act").checked = !!s.act;
+  $("blocked").value = s.blocked;
+});
 
 $("save").addEventListener("click", async () => {
-  await chrome.storage.local.set({ server: $("server").value.trim() || DEFAULTS.server, token: $("token").value.trim() });
+  await chrome.storage.local.set({
+    server: $("server").value.trim() || DEFAULTS.server,
+    token: $("token").value.trim(),
+    auto: $("auto").checked,
+    act: $("act").checked,
+    blocked: $("blocked").value.trim(),
+  });
   say("Saved.");
 });
 
