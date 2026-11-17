@@ -361,7 +361,8 @@ def check_usage() -> str:
     if not isinstance(out, dict):
         raise RuntimeError("unexpected answer")
     left = [f"{k} {v['left_pct']}% left" for k, v in (out.get("windows") or {}).items() if v.get("left_pct") is not None]
-    line = f"{out.get('runs_today', 0)} of {out.get('runs_cap', 0)} runs today"
+    cap = out.get("runs_cap") or 0
+    line = f"{out.get('runs_today', 0)} of {cap} runs today" if cap else f"{out.get('runs_today', 0)} runs today"
     if out.get("limited"):
         raise Warn(f"Plan usage read: limited until {out.get('limited_text') or 'later'}; {line}.")
     return "Plan usage read: " + (", ".join(left) + "; " if left else "") + line + "."

@@ -804,12 +804,14 @@ def _run_case(case: Case, root: Path, *, live: bool) -> CaseResult:
                     if key in case.context:
                         FIXTURES[key](case.context[key])
             if case.message is not None:
-                tr = runtime.run_turn(case.message, channel=case.channel, deliver=case.channel == "sms")
+                tr = runtime.run_turn(case.message, channel=case.channel, deliver=case.channel == "sms",
+                                       track=False)
                 channel = case.channel
             else:
                 t = case.task or {}
                 deliver = bool(t.get("deliver", False))
-                tr = runtime.run_task(t["agent"], t["text"], deliver=deliver, kind=t.get("kind", "task"))
+                tr = runtime.run_task(t["agent"], t["text"], deliver=deliver, kind=t.get("kind", "task"),
+                                      track=False)
                 channel = "sms" if deliver else case.channel
             ctx = _Ctx(case, tr.text, tr.raw_text, channel, list(tr.tool_calls), list(backend.requests),
                        tr.status, live, _judge if live else None)

@@ -76,6 +76,18 @@
     {% else %}<p class="muted">Nothing yet.</p>{% endif %}
     <p class="f-help">{% if snap.surprise_time %}Every morning at {{ snap.surprise_time }}{% else %}Off{% endif %} (setting <code>ASSISTANT_MORNING_SURPRISE</code>).</p>
   </section>
+  <section class="card"><h2 class="sec-title">Ideas of the day</h2>
+    {% if snap.ideas %}
+      <ul class="s-ideas">
+      {% for i in snap.ideas %}
+        <li><details><summary><strong>{{ i.title }}</strong> <span class="muted">· {{ i.day }}</span></summary>
+          {% if i.idea %}<p class="voice">{{ i.idea }}</p>{% endif %}{% if i.why %}<p class="muted">{{ i.why }}</p>{% endif %}
+        </details></li>
+      {% endfor %}
+      </ul>
+      <p class="s-btnrow"><a class="hbtn" href="/dashboard/memory?note={{ 'Agent/Ideas of the Day.md' | urlencode }}">All of them</a></p>
+    {% else %}<p class="muted">None yet. Every idea of the day is kept here and in the vault.</p>{% endif %}
+  </section>
   <section class="card"><h2 class="sec-title">Usage handoff</h2>
     {% if snap.handoff %}
       <p>Picks up {{ snap.handoff.when }}: <strong>{{ snap.handoff.title }}</strong></p>

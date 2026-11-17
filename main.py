@@ -673,6 +673,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "date", {}, "read the Claude plan usage at startup (no tokens)"),
         JobSpec("assistant_task_retry", lambda: __import__("assistant.tasks", fromlist=["x"]).retry_due(),
                 "interval", {"minutes": 5}, "retry background tasks that failed, ran out of time or were cut off"),
+        JobSpec("assistant_autofix", lambda: __import__("assistant.autofix", fromlist=["x"]).tick()["status"],
+                "interval", {"minutes": 5}, "find out why something failed, fix it if possible, and tell you"),
         JobSpec("assistant_evals", lambda: __import__("assistant.evals", fromlist=["x"]).run_evals_isolated(),
                 "cron", {"hour": 2, "minute": 45}, "nightly assistant evals"),
         JobSpec("assistant_history", lambda: __import__("assistant.history_import", fromlist=["x"]).nightly(),
@@ -1006,7 +1008,8 @@ def claude_code_checks(*, network: bool = False) -> list[Check]:
     out.append(Check("assistant models", "pass", f"Claude plan: main {st['model_in_use']}, sub-agents "
                      f"{st['sub_model_in_use']}"))
     used, cap = st["turns_today"], st["turns_cap"]
-    out.append(Check("Claude runs today", "warn" if used >= cap else "pass", f"{used} of {cap}",
+    out.append(Check("Claude runs today", "warn" if cap and used >= cap else "pass",
+                     f"{used} of {cap}" if cap else f"{used} (no daily cap)",
                      "raise ASSISTANT_MAX_TURNS_PER_DAY (shares your Claude plan's limits)"))
     if st.get("backoff_until"):
         out.append(Check("Claude plan limit", "warn", f"reached; assistant back {st['backoff_text']}",

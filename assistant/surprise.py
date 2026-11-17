@@ -101,7 +101,11 @@ def brief(day: date, kind: str) -> str:
             f"- Save it (or a description and the content) to the vault note {FOLDER}/{day}.md with memory_write.\n"
             "- Put a small preview on his Jarvis screen with display or show_data/show_map (hold: sticky).\n"
             "- Do not message him; he hears about it when he next opens the app.\n"
-            "Finish with the first line 'TITLE: <a short catchy title>' and then two plain sentences on what you made.")
+            "- Also give him an idea of the day (something he could make, try, build or post - a fresh one, not one "
+            "from his list in Agent/Ideas of the Day.md): save it with idea_save; if you put it on screen as a tile, "
+            "it is kept anyway.\n"
+            "Finish with the first line 'TITLE: <a short catchy title>', then the line 'IDEA: <idea title> - <the idea "
+            "in a sentence or two>', then two plain sentences on what you made.")
 
 
 def run_morning() -> str:
@@ -153,6 +157,12 @@ def on_finished(d: store.Deferred, row: dict[str, Any], full: str, status: str) 
     kind = str(meta.get("surprise_kind") or "")
     title = _title(full, f"Something {kind.replace('_', ' ')}" if kind else "Something cool")
     rel = f"{FOLDER}/{day}.md"
+    try:   # the idea of the day is kept even if the worker forgot idea_save
+        from assistant import ideas
+
+        ideas.from_text(full, day=day)
+    except Exception as exc:
+        log.warning("surprise idea not kept: %s", exc)
     body = re.sub(r"^\s*TITLE:.*$", "", full or "", count=1, flags=re.M | re.I).strip()
     try:
         if vault.note_exists(rel):

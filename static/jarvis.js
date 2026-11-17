@@ -913,8 +913,9 @@
       var line = running ? 'Working · ' + took + (last ? ' · ' + last : '')
         : word(st) + ' · ' + took + (t.summary ? ' · ' + t.summary : '');
       var task = String(t.task || 'Task'), heard = String(t.heard || '').trim();
+      var who = t.meta && t.meta.label ? String(t.meta.label) : '';   // "Text", "Chat", or the staff member on it
       return {
-        title: task, line: line, status: st,
+        title: (who ? who + ' · ' : '') + task, line: line, status: st,
         detail: {
           request: task,
           heard: heard && heard !== task ? heard : '',
@@ -951,12 +952,41 @@
     });
     box.appendChild(ul);
   }
+  /* Bring a list's children in line with freshly built rows WITHOUT rebuilding it: a row whose data-k
+     (its structure) is unchanged keeps its node and only gets the text of its `volatile` parts (the
+     ticking clocks) copied over. Tearing the rail down every second while a task ran made the page
+     jump back up as he scrolled (the nodes under the cursor / the scroll anchor kept vanishing). */
+  function reconcile(listEl, rows, volatile) {
+    var kids = listEl.children;
+    rows.forEach(function (row, i) {
+      var cur = kids[i];
+      if (cur && cur.getAttribute('data-k') === row.getAttribute('data-k')) {
+        (volatile || []).forEach(function (sel) {
+          var a = cur.querySelectorAll(sel), b = row.querySelectorAll(sel);
+          for (var j = 0; j < a.length && j < b.length; j++) {
+            if (a[j].textContent !== b[j].textContent) a[j].textContent = b[j].textContent;
+            if (b[j].title && a[j].title !== b[j].title) a[j].title = b[j].title;
+          }
+        });
+      } else if (cur) {
+        listEl.replaceChild(row, cur);
+      } else {
+        listEl.appendChild(row);
+      }
+    });
+    while (listEl.children.length > rows.length) listEl.removeChild(listEl.lastChild);
+  }
   function renderTasks() {
     renderTrail();
     var list = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; })
       .sort(function (a, b) { return (a.started || '') < (b.started || '') ? -1 : 1; }).slice(-6).reverse();
-    tasksEl.textContent = '';
-    if (!list.length) { tasksEl.appendChild(el('li', 'rail-empty', 'Nothing running in the background.')); return; }
+    if (!list.length) {
+      var empty = el('li', 'rail-empty', 'Nothing running in the background.');
+      empty.setAttribute('data-k', 'empty');
+      reconcile(tasksEl, [empty]);
+      return;
+    }
+    var rows = [];
     list.forEach(function (t) {
       var v = TASKROW.view(t, Date.now()), open = !!openTasks[t.id];
       var li = el('li', 'rail-task is-' + v.status + (open ? ' is-open' : ''));
@@ -994,8 +1024,14 @@
         if (!full) box.appendChild(el('p', 'rail-task-meta', 'Loading the conversation…'));
         li.appendChild(box);
       }
-      tasksEl.appendChild(li);
+      var full2 = open ? taskDetail[t.id] : null;
+      li.setAttribute('data-k', [t.id, v.status, open ? 1 : 0, v.title, t.status, open ? v.detail.steps.join('\u0001') : '',
+        open ? v.detail.result + '\u0001' + v.detail.heard : '',
+        full2 ? [(full2.result || '').length, full2.announced || '', (full2.conversation || []).length,
+          (full2.followups || []).length].join('/') : ''].join('|'));
+      rows.push(li);
     });
+    reconcile(tasksEl, rows, ['.rail-task-head small', '.rail-task-detail > .rail-task-meta']);
   }
   if (tasksEl) tasksEl.addEventListener('click', function (ev) {
     var cx = ev.target && ev.target.closest ? ev.target.closest('[data-cancel-task]') : null;
@@ -1020,6 +1056,7 @@
   function secs(ms) { var s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
   function trailRow(cls, ico, label, time) {
     var li = el('li', 'jv-tr ' + cls);
+    li.setAttribute('data-k', cls + '|' + ico + '|' + label + '|' + (time ? 1 : 0));
     if (ico === 'spin') li.appendChild(el('span', 'cc-spinner jv-tr-ico'));
     else { var i = el('span', 'jv-tr-ico', ico); i.setAttribute('aria-hidden', 'true'); li.appendChild(i); }
     var l = el('span', 'jv-tr-label', label); l.title = label; li.appendChild(l);
@@ -1048,8 +1085,7 @@
     tasks.slice(-2).forEach(function (x) {
       rows.push(trailRow('is-task', '', 'Background: ' + (x.task || 'task'), elapsed(x.started)));
     });
-    trailList.textContent = '';
-    rows.forEach(function (r) { trailList.appendChild(r); });
+    reconcile(trailList, rows, ['.jv-tr-time']);   // only the clocks change twice a second: keep the nodes
     var show = rows.length > 0, live = !!(t && t.status === 'running') || tasks.length > 0;
     trailEl.classList.toggle('is-fading', show && !live && t && t.end && now - t.end > 3500);
     trailEl.hidden = !show;

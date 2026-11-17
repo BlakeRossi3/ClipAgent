@@ -300,3 +300,15 @@ def test_name_migration_leaves_a_chosen_name_alone(monkeypatch):
     db.kv_delete(asettings.NAME_MIGRATION_KV)
     p = _write_config("ASSISTANT_NAME=Sterling Archer\n")
     assert asettings.migrate_legacy_name() is False and "Sterling Archer" in p.read_text()
+
+
+def test_agent_page_runs_expand_to_the_full_details(client):
+    long_task = "Research race-day nutrition. " + "Every detail matters here. " * 20 + "END-OF-BRIEF"
+    long_result = "Carbs 60-90 g an hour. " * 30 + "END-OF-RESULT"
+    rid = store.record_agent_run("researcher", long_task, model="opus", duration_ms=4200, cost_usd=0, status="ok",
+                                 summary=long_result,
+                                 tool_calls=[{"agent": "researcher", "name": "web_search", "args": {}, "ok": True,
+                                              "result": "3 sources"}])
+    html = client.get("/dashboard/agents/researcher").text
+    assert '<details class="run-more">' in html and "END-OF-BRIEF" in html and "END-OF-RESULT" in html
+    assert "web_search" in html and f"run #{rid}" in html and "4.2s" in html

@@ -29,6 +29,7 @@ def assistant_env(tmp_path, monkeypatch):
         if key.startswith(_PREFIXES) or key in _KEYS:
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("ASSISTANT_SMS_BATCH_SEC", "0")   # texts answered at once (tests/test_assistant_sms_inbox.py sets its own)
     asettings.reset_assistant_settings()
     store._reset_migration_cache()
     runtime.reset()
@@ -48,8 +49,10 @@ def assistant_env(tmp_path, monkeypatch):
 
 def _reset_live() -> None:
     """The warm brain, its event bus, background-task runner and the page's voice engine."""
-    from assistant import brain, events, quick, tasks
+    from assistant import brain, events, quick, sms_inbox, tasks
 
+    sms_inbox.reset()
+    sms_inbox.set_sleeper(None)
     brain.reset()
     events.reset()
     quick.reset()

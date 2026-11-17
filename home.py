@@ -726,7 +726,7 @@ def assistant_state() -> dict[str, Any]:
         if until is not None:
             reason = (f"I've reached your Claude plan's limit for now, {s.owner_honorific}. "
                       f"I'll be back {claude_code.friendly_time(until)}.")
-        elif _safe(claude_code.turns_today, 0, "claude runs") >= s.max_turns_per_day:
+        elif s.max_turns_per_day and _safe(claude_code.turns_today, 0, "claude runs") >= s.max_turns_per_day:
             reason = (f"I have used today's {s.max_turns_per_day} Claude conversations, {s.owner_honorific}. "
                       "I will be back after midnight.")
     return {"name": s.name, "honorific": s.owner_honorific, "owner": s.owner_name, "enabled": s.enabled,

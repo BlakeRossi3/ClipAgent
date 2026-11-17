@@ -698,3 +698,32 @@ the same row), the x on a rail row -> `POST /voice/api/task/{id}/cancel`. Page a
 code any click/submit on buy/pay/send/post/delete/accept/security labels and typing into password/card/code fields or secrets.
 Voice end-of-turn waits are longer (holdFor 600/900/2200 ms, browser STT silence 1400 ms, Smart Turn 550 ms).
 
+
+### Staff at work, texts, self-repair, ideas (assistant/staff.py, sms_inbox.py, autofix.py, ideas.py)
+- **Staff runs**: on full powers Cecil hands work to staff with Claude Code's `Agent` tool (`subagent_type` = staff id),
+  not `delegate`. `staff.StaffTracker` turns each such call into an `as_agent_runs` row (opened `running`, closed with
+  the tool result): fed by `brain.watch_staff` (voice + `run_worker`) and by `claude_code.run_prompt` (stream-json,
+  live via `RunControl.on_line`, or replayed from a fake runner's stdout). `staff.roster_text()` (from agents/*.md) is
+  in the spoken and background prompts; `start_task(staff=<id>)` / `tasks.start(staff=)` gives a background task to a
+  specialist (`meta.staff`, `meta.label`, brief gets `tasks.staff_note`).
+- **Everything on the rail**: `tasks.track/track_step/track_done` = rows for work that is not a background worker
+  (`tracked: true`, never retried or announced, `on_cancel` stops the run, closed as `error` after a restart).
+  `runtime.run_turn` tracks `sms`/`dashboard` requests (`track=False` to skip; evals do), `run_task` tracks scheduled
+  staff jobs (not `history_distil`). Steps come from the stream (`runtime._step_watcher`).
+- **`claude_code.RunControl`**: `run_prompt(control=)`; the real runner streams (`_stream_runner`, Popen) when a
+  control is set; `cancel()` terminates the process -> `ClaudeCodeError("cancelled")`; `run_turn` then returns status
+  `cancelled` and sends nothing.
+- **Texts** (`assistant/sms_inbox.py`, `ASSISTANT_SMS_BATCH_SEC`, default 4, tests 0): every text is recorded on
+  arrival; the first handler leads, waits for quiet, answers all pending texts as ONE `run_turn(inbound_ids=...)`; a
+  text arriving mid-answer cancels it (`reason` = `SUPERSEDED`) and the leader reruns on everything. One SMS run at a time.
+- **Self-repair** (`assistant/autofix.py`, job `assistant_autofix` 5 min, `ASSISTANT_AUTOFIX*`): error events of the
+  last day grouped by `signature`; after the grace period one self-edit background task ("Self-repair") per problem
+  (cooldown 12 h, 1 h if the run did not finish; cap per day; not while usage is tight) ending
+  `STATUS: fixed|needs_you|transient|not_fixed`, `WHAT:`, `FIX:`; `on_finished` texts him + says it on the page.
+  Its own events (`module="autofix"`, `data.autofix`) never trigger a repair. Tool `autofix_log`.
+- **Ideas of the day** (`assistant/ideas.py`): `save` -> vault `Agent/Ideas of the Day.md` + kv `assistant:ideas`;
+  also from any tile whose key/title says "idea" (`tiles.show`), the surprise's `IDEA:` line, and a one-time backfill
+  from stored tiles. Tools `idea_save`, `ideas_list`; listed on the Scheduled page.
+- `ASSISTANT_MAX_TURNS_PER_DAY` now defaults to 0 = no daily run cap (the plan's usage windows decide).
+- The Jarvis rail/trail are reconciled in place (`reconcile` in static/jarvis.js, keyed by `data-k`): never rebuild
+  them on a timer (it made the page jump while he scrolled).

@@ -383,7 +383,7 @@ def constrained(threshold: float = DEFER_THRESHOLD) -> tuple[bool, datetime | No
         if w and not w.get("stale") and ((w.get("utilization") or 0.0) >= threshold or w.get("status") == "rejected"):
             return True, db.parse_iso(w["resets_at"]) if w.get("resets_at") else None
     s = get_assistant_settings()
-    if s.backend == "claude_code" and claude_code.turns_today() >= s.max_turns_per_day:
+    if s.backend == "claude_code" and s.max_turns_per_day and claude_code.turns_today() >= s.max_turns_per_day:
         tomorrow = datetime.combine(db.local_today() + timedelta(days=1), datetime.min.time(), db.local_tz())
         return True, tomorrow.astimezone(UTC)
     return False, None

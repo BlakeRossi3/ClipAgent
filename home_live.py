@@ -117,7 +117,8 @@ def staff_at_work(today: date | None = None) -> list[dict[str, Any]]:
     now = db.utcnow()
     snap = _safe(_bus_snapshot, {"current": None, "turns": [], "tasks": []}, "event bus")
     turn = next((t for t in snap.get("turns", []) if t.get("id") == snap.get("current")), None)
-    bg = _safe(_running_tasks, [], "background tasks")
+    bg_all = _safe(_running_tasks, [], "background tasks")
+    bg = [t for t in bg_all if not (t.get("meta") or {}).get("staff")]   # rows a staff member has are theirs
     out = []
     for m in _safe(h.staff_nav, [], "staff"):
         runs = store.list_agent_runs(6, agent=m["name"])
@@ -130,6 +131,9 @@ def staff_at_work(today: date | None = None) -> list[dict[str, Any]]:
                 state, doing = "working", last.task
             elif last.status == "error" and age < timedelta(hours=24):
                 state, doing = "error", (last.summary or last.task)
+        mine = [t for t in bg_all if (t.get("meta") or {}).get("staff") == m["name"]]
+        if mine and m["name"] != "main" and state != "working":
+            state, doing = "working", str(mine[-1].get("task") or "")
         if m["name"] == "main":
             if turn is not None and turn.get("status") == "running":
                 steps = [x for x in turn.get("steps", []) if x.get("status") == "running"]

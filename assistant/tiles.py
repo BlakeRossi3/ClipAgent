@@ -126,6 +126,12 @@ def show(title: str, body: str = "", *, value: str | None = None, kind: str = "i
         store.prune_tiles(db.to_iso(now - timedelta(days=KEEP_DAYS)), conn=c)
         tile = store.get_tile(tid, conn=c)
     db.log_event("assistant", f"tile up: {t}", data={"tile_id": tid, "expires_at": expires, "key": k})
+    try:   # an idea of the day is kept after the tile goes (assistant/ideas.py)
+        from assistant import ideas
+
+        ideas.from_tile(t, b, key=k, value=v)
+    except Exception as exc:
+        db.log_event("assistant", "idea tile not kept", level="warning", data={"error": repr(exc)[:200]})
     assert tile is not None
     return tile
 

@@ -196,8 +196,17 @@
 <h3 class="mini-head">Recent runs</h3>
 {% if a.runs %}
 <ul class="runs">{% for r in a.runs %}
-  <li class="run run-{{ r.status }}"><span class="run-meta">{{ r.ts | ago }} · {{ r.status }} · {{ r.cost_usd | usd }}</span>
-  <span class="run-text">{{ (r.summary or r.task) | truncate(160) }}</span></li>{% endfor %}</ul>
+  <li class="run run-{{ r.status }}"><details class="run-more">
+    <summary><span class="run-meta">{{ r.ts | ago }} · {{ r.status }} · {{ r.cost_usd | usd }}{% if r.duration_ms %} · {{ (r.duration_ms / 1000) | round(1) }}s{% endif %}</span>
+    <span class="run-text">{{ (r.summary or r.task) | truncate(160) }}</span></summary>
+    <div class="run-detail">
+      <p class="run-label">Asked</p><p class="run-full">{{ r.task }}</p>
+      {% if r.summary %}<p class="run-label">{{ "Result" if r.status != "error" else "What went wrong" }}</p><p class="run-full">{{ r.summary }}</p>{% endif %}
+      {% if r.tool_calls %}<p class="run-label">Steps ({{ r.tool_calls | length }})</p>
+      <ol class="run-steps">{% for c in r.tool_calls if c is mapping %}<li><code>{{ c.get("name") or c.get("tool") or "tool" }}</code>{% if c.get("ok") is sameas false %} <span class="run-bad">failed</span>{% endif %}{% if c.get("result") %} <span class="muted">{{ c.get("result") | string | truncate(300) }}</span>{% endif %}</li>{% endfor %}</ol>{% endif %}
+      <p class="run-meta">{{ r.ts }} · {{ r.model }}{% if r.parent_id %} · part of run #{{ r.parent_id }}{% endif %} · run #{{ r.id }}</p>
+    </div>
+  </details></li>{% endfor %}</ul>
 {% else %}<p class="muted">No runs yet — waiting to be called upon.</p>{% endif %}
 {% endmacro %}
 

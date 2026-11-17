@@ -136,7 +136,8 @@ How you work:
   to Lewis" -> settings_set voice=Lewis), open a page (open_url), a desktop mode, read your settings or
   status, check notes. What you say around them follows the rules above.
 - Anything that will take more than about a minute (coding, research, long reading, several steps):
-  call start_task with a clear, self-contained brief, then say so in one line, e.g. "That'll take a few
+  call start_task with a clear, self-contained brief (and staff=<id> when it is in a
+  specialist's area: see "Your staff" below), then say so in one line, e.g. "That'll take a few
   minutes, I'll let you know when it's done." You will be told when it finishes; then give the
   result in one or two sentences.
 - His screen (the Jarvis page) is yours to put things on, and anything visual he asks for goes there:
@@ -487,7 +488,22 @@ def system_prompt(*, worker: bool = False, chrome: bool | None = None, lean: boo
         style = speaking_style.prompt_block()
         style = "\n\n" + style if style else ""
     return persona_text + "\n\n" + part.format(owner=s.owner_name or "the owner", name=s.name, h=s.owner_honorific,
-                                               facts=facts) + style + note
+                                               facts=facts) + staff_block(worker=worker) + style + note
+
+
+def staff_block(*, worker: bool) -> str:
+    """Who the staff are and when to use them (generated from agents/*.md, so it never goes stale)."""
+    from assistant import staff
+
+    text = staff.roster_text()
+    if not text:
+        return ""
+    how = ("\nIn this background task, hand each part that is a specialist's to them with the Agent tool and put "
+           "their results together." if worker else
+           "\nSpoken turns: long work in a specialist's area -> start_task with staff=<their id>; a quick question "
+           "for one of them -> the Agent tool. Never say \"sub-agent\" or \"delegate\" aloud: say you have "
+           "asked them by name (\"I've got Allen on it.\").")
+    return "\n\n" + text + how
 
 
 def fast_search_ready() -> bool:
@@ -711,11 +727,19 @@ class Brain:
         cur = self.owner()
         if cur is not None and cur.cancelled:
             return STALE_TOOL, False
-        tid = tasks.start(brief, heard=cur.heard if cur else "", origin=cur.origin if cur else "any")
+        from assistant import staff
+
+        who = None
+        if args.get("staff"):
+            who = staff.resolve(str(args.get("staff")))
+            if who is None:
+                return (f"There is no staff member {args.get('staff')!r}; the staff are: "
+                        + ", ".join(r["name"] for r in staff.roster()) + "."), False
+        tid = tasks.start(brief, heard=cur.heard if cur else "", origin=cur.origin if cur else "any", staff=who)
         if cur is not None:
             cur.task_started = True
-        return (f"Task {tid} is running in the background. Tell him briefly it is under way and that you will "
-                "report back; do not wait for it or repeat the brief."), True
+        return (f"Task {tid} is running in the background{' with ' + who if who else ''}. Tell him briefly it is "
+                "under way and that you will report back; do not wait for it or repeat the brief."), True
 
     def _task_list(self, args: dict[str, Any]) -> tuple[str, bool]:
         from assistant import tasks
@@ -736,7 +760,10 @@ class Brain:
             elif name == "start_task":
                 desc = BRAIN_TOOLS["start_task"]
                 schema = {"type": "object", "required": ["task"], "additionalProperties": False,
-                          "properties": {"task": {"type": "string", "description": "A self-contained brief."}}}
+                          "properties": {"task": {"type": "string", "description": "A self-contained brief."},
+                                         "staff": {"type": "string", "description": "The staff member whose area "
+                                                   "this is (their id, e.g. researcher, studio, ledger); they do the "
+                                                   "work and he sees it on the Staff page. Omit for general work."}}}
             elif name == "task_list":
                 desc, schema = BRAIN_TOOLS["task_list"], {"type": "object", "properties": {}}
             elif name == "need_tools":
@@ -1285,6 +1312,12 @@ class Brain:
     def _on_message(self, msg: Any) -> None:
         t = _sdk()
         turn = self._inflight[0] if self._inflight else None
+        if isinstance(msg, (t.AssistantMessage, t.UserMessage)):   # jobs handed to the staff, even stale ones
+            if getattr(self, "_staff", None) is None:
+                from assistant import staff
+
+                self._staff = staff.StaffTracker(channel=CHANNEL)
+            watch_staff(self._staff, msg)
         if isinstance(msg, t.SystemMessage):
             if msg.subtype == "init":
                 self.session_id = (msg.data or {}).get("session_id") or self.session_id
@@ -1809,6 +1842,23 @@ def announce_task(row: dict[str, Any], full: str) -> bool:
     return True
 
 
+def watch_staff(tracker: Any, msg: Any) -> None:
+    """Feed one SDK message to an ``assistant.staff.StaffTracker``: an Agent call to a staff member opens
+    a run of theirs, its tool result closes it (the Staff page then shows who did what)."""
+    t = _sdk()
+    try:
+        if isinstance(msg, t.AssistantMessage):
+            for b in msg.content or []:
+                if isinstance(b, t.ToolUseBlock):
+                    tracker.tool_use(b.id, b.name, b.input or {})
+        elif isinstance(msg, t.UserMessage) and isinstance(msg.content, list):
+            for b in msg.content:
+                if isinstance(b, t.ToolResultBlock):
+                    tracker.tool_result(b.tool_use_id, ok=not bool(b.is_error), text=b.content)
+    except Exception as exc:   # bookkeeping never stops a turn
+        log.warning("staff tracking failed: %s", exc)
+
+
 def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                timeout: float | None = None, model: str | None = None,
                effort: str | None = None, with_kind: bool = False,
@@ -1843,6 +1893,9 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         text, seen = "", set()
         from assistant import usage as _usage
 
+        from assistant import staff as _staff
+
+        tracker = _staff.StaffTracker(channel="voice-task")
         start_used = _usage.five_hour_used()
         share = usage_share or s.task_usage_share
         guard = {"next": time.monotonic() + USAGE_CHECK_SEC, "why": ""}
@@ -1875,6 +1928,7 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                         guard["why"] = "usage"
                         await client.interrupt()
                         return None
+                    watch_staff(tracker, msg)
                     if isinstance(msg, t.AssistantMessage):
                         for b in msg.content or []:
                             if isinstance(b, t.ToolUseBlock) and b.id not in seen:
@@ -1897,6 +1951,7 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
             await client.query(brief)
             r = await asyncio.wait_for(pump(), timeout)
         finally:
+            tracker.close()
             try:
                 await client.disconnect()
             except Exception:

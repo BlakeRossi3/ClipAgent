@@ -905,7 +905,7 @@ def _turn_room() -> str:
         try:
             from assistant import claude_code
 
-            if claude_code.turns_today() >= max(0, s.max_turns_per_day - reserve):
+            if s.max_turns_per_day and claude_code.turns_today() >= max(0, s.max_turns_per_day - reserve):
                 return "reserve"
         except Exception:  # pragma: no cover - backend module broken
             return "disabled"

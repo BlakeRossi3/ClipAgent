@@ -24,6 +24,17 @@ owner, not a self-edit) whose run ends ``error`` (incl. a timeout), ``stopped`` 
 ``<retry>`` note in the brief, after first requeueing rows a restart cut off (:func:`_requeue_orphans`).
 A plan limit (``budget``) is not retried here: ``assistant.handoff`` resumes that work after the reset.
 Blockers he can fix are texted to him once.
+
+Everything he asks for shows on the rail, however it arrived (Blake: "if I text it to take a look at this
+reel, that should show up in the running tasks section"). Work that does not run as a background worker -
+a text or dashboard message being answered, a scheduled staff job - is a *tracked* row (:func:`track`,
+:func:`track_step`, :func:`track_done`): same list, same rail, cancellable (``on_cancel``), never retried
+or announced (the answer goes back the way the request came). A tracked row a restart cut off is closed
+as ``error`` by :func:`_requeue_orphans`.
+
+A task can be given to one of the staff (``start(..., staff="researcher")``): the worker hands the work to
+that specialist (Claude Code's Agent tool, recorded as their run by ``assistant.staff``) and the row shows
+who has it (``meta.staff`` / ``meta.label``).
 """
 
 from __future__ import annotations
@@ -55,6 +66,8 @@ CONVO_KEEP = 10         # lines of lead-up shown
 _lock = threading.Lock()
 _threads: dict[str, threading.Thread] = {}
 _on_finish: dict[str, Callable[[dict[str, Any], str, str], None]] = {}   # task id -> callback (in memory)
+_cancellers: dict[str, Callable[[], None]] = {}   # tracked row id -> stops its run (in memory)
+_tracked: set[str] = set()                         # tracked rows alive in this process
 Runner = Callable[..., tuple]   # runner(brief, context[, on_step]) -> (full_text, status[, kind])
 _runner: Runner | None = None
 
@@ -96,7 +109,7 @@ def public(task: dict[str, Any]) -> dict[str, Any]:
     """What the page sees. ``summary`` is the one-line collapsed view; ``result`` (the full answer,
     capped at :data:`RESULT_CHARS`) and ``heard`` fill the row when he expands it."""
     return {k: task.get(k) for k in ("id", "task", "status", "started", "finished", "summary", "origin", "steps",
-                                     "meta", "heard", "result", "attempts", "next_try", "last_error")}
+                                     "meta", "heard", "result", "attempts", "next_try", "last_error", "tracked")}
 
 
 def _msg_line(m: Any) -> dict[str, Any]:
@@ -156,7 +169,7 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
           model: str | None = None, effort: str | None = None, announce: bool = True,
           meta: dict[str, Any] | None = None,
           on_finish: Callable[[dict[str, Any], str, str], None] | None = None, self_edit: bool = False,
-          timeout: float | None = None, usage_share: float | None = None) -> str:
+          timeout: float | None = None, usage_share: float | None = None, staff: str | None = None) -> str:
     """Start ``task`` in the background; returns its id at once.
 
     Scheduled work (assistant/schedule.py) passes its own ``brief`` (the full prompt; ``task`` is then the
@@ -166,9 +179,13 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
     committed (or rolled back) before ``on_finish`` runs, which then sees ``row["edit"]`` = {status, summary,
     files, commit, commits}; a committed change restarts the app afterwards."""
     tid = uuid.uuid4().hex[:10]
+    meta = dict(meta or {})
+    if staff:
+        brief = (brief or brief_for(task, heard or task)) + staff_note(staff)
+        meta.update(staff=staff, label=_display(staff))
     row = {"id": tid, "task": " ".join(task.split())[:300], "heard": heard[:300], "origin": origin,
            "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": [],
-           "announce": announce, "meta": meta or {}}
+           "announce": announce, "meta": meta}
     if brief:
         row["brief"] = brief
     if model or effort:
@@ -187,6 +204,67 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
     db.log_event("assistant", "background task started", data={"task_id": tid, "task": row["task"][:200]})
     _start(row)
     return tid
+
+
+def _display(agent: str) -> str:
+    try:
+        import home
+
+        return home.agent_display(agent)
+    except Exception:
+        return agent.replace("-", " ").capitalize()
+
+
+def staff_note(agent: str) -> str:
+    """The part of a brief that gives the work to one of the staff."""
+    return (f"\n\n<assigned_to staff=\"{agent}\">\nThis is {_display(agent)}'s area. Hand the work to them with the "
+            f"Agent tool (subagent_type \"{agent}\") and a self-contained brief with every fact they need, check what "
+            "they bring back (send them back if it falls short), then finish with the answer. Do not do their part "
+            "yourself unless they cannot.\n</assigned_to>")
+
+
+# ---------------------------------------------------------------------------
+# tracked rows: work that runs elsewhere (a text being answered, a scheduled staff job)
+# ---------------------------------------------------------------------------
+
+def track(task: str, *, origin: str = "sms", heard: str = "", meta: dict[str, Any] | None = None,
+          on_cancel: Callable[[], None] | None = None) -> str:
+    """Put work that is running elsewhere on the rail; returns its id. Close it with :func:`track_done`."""
+    tid = uuid.uuid4().hex[:10]
+    row = {"id": tid, "task": " ".join(str(task).split())[:300] or "Request", "heard": heard[:300], "origin": origin,
+           "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": [],
+           "announce": False, "tracked": True, "meta": dict(meta or {})}
+    _tracked.add(tid)
+    if on_cancel is not None:
+        _cancellers[tid] = on_cancel
+    _save(row)
+    return tid
+
+
+def track_step(task_id: str, label: str) -> None:
+    label = " ".join(str(label or "").split())[:120]
+    row = get_task(task_id)
+    if not label or row is None or row.get("status") != "running":
+        return
+    steps = row.get("steps") or []
+    if steps and steps[-1].get("label") == label:
+        return
+    row["steps"] = steps[-(MAX_STEPS - 1):] + [{"label": label, "ts": db.now_iso()}]
+    _save(row)
+
+
+def track_done(task_id: str, text: str, status: str = "ok", *, summary: str | None = None) -> None:
+    """Close a tracked row. One he cancelled (or that a newer request replaced) keeps its cancelled state."""
+    _tracked.discard(task_id)
+    _cancellers.pop(task_id, None)
+    row = get_task(task_id)
+    if row is None or row.get("status") == "cancelled":
+        return
+    polished = persona.polish(text or "", "dashboard")
+    result = polished if len(polished) <= RESULT_CHARS else polished[:RESULT_CHARS - 1].rstrip() + "…"
+    row.update(status="done" if status in ("ok", "rounds") else status, finished=db.now_iso(),
+               summary=(summary or fallback_summary(text, 1))[:300], result=result)
+    _save(row)
 
 
 def _start(row: dict[str, Any]) -> None:
@@ -344,6 +422,11 @@ def _requeue_orphans(now: Any = None) -> int:
     stale = timedelta(seconds=s.cc_task_timeout_sec + ORPHAN_GRACE_SEC)
     n = 0
     for t in list_tasks():
+        if (t.get("status") == "running" and t.get("tracked") and t["id"] not in _tracked
+                and db.parse_iso(t["started"]) < now - stale):
+            t.update(status="error", finished=db.to_iso(now), summary="Interrupted: the app restarted while it ran")
+            _save(t)
+            continue
         if (t.get("status") == "running" and t.get("retry") and not _alive(t["id"])
                 and db.parse_iso(t["started"]) < now - stale):
             t.update(status="retrying", next_try=db.to_iso(now), last_error="the app restarted mid-task",
@@ -362,10 +445,16 @@ def cancel(task_id: str, why: str = "stopped at his request") -> dict[str, Any] 
     row = get_task(task_id)
     if row is None:
         return None
+    stop = _cancellers.pop(task_id, None)
     if row.get("status") not in ("done",):
         row.update(status="cancelled", next_try=None, finished=row.get("finished") or db.now_iso(),
                    summary=f"Cancelled: {why}"[:300])
     _save(row)
+    if stop is not None:
+        try:
+            stop()
+        except Exception as exc:
+            log.warning("could not stop a tracked run: %s", exc)
     db.log_event("assistant", "background task cancelled", data={"task_id": task_id, "why": why[:200]})
     return row
 

@@ -1236,7 +1236,7 @@ def assistant_inbound(body: str, media_params: dict[str, str] | None = None) -> 
     downloaded (Twilio auth) into data/assistant/uploads and handed to the assistant.
     """
     try:
-        from assistant import checkins, runtime
+        from assistant import checkins, sms_inbox
 
         if media_params:
             from assistant import messaging
@@ -1248,11 +1248,11 @@ def assistant_inbound(body: str, media_params: dict[str, str] | None = None) -> 
             note = messaging.media_note([m for m in media if m["path"] not in heard])
             said = messaging.voice_note_text(body, voice)
             text = "\n\n".join(x for x in (said, note) if x) or "(sent an attachment)"
-            runtime.run_turn(text, channel="sms", deliver=True, attachments=images or None)
+            sms_inbox.receive(text, attachments=images or None)
             return
         if checkins.handle_reply(body):
             return
-        runtime.handle_inbound_sms(body)
+        sms_inbox.receive(body)   # back-to-back texts are joined into one request, one reply
     except Exception as exc:
         db.log_event(MODULE, "assistant failed to handle an owner SMS", level="error",
                      data={"error": repr(exc)[:500]})

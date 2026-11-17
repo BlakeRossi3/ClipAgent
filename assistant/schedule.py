@@ -409,7 +409,18 @@ def snapshot(now: datetime | None = None) -> dict[str, Any]:
             "routine": routine, "recent": recent,
             "handoff": _row_item(pend, now, reset_eta) if pend else None,
             "surprise": surprise.latest(), "surprise_time": surprise.configured_time(),
+            "ideas": _ideas(),
             "initiative": initiative.schedule_summary(), "usage": _usage_line()}
+
+
+def _ideas() -> list[dict[str, Any]]:
+    try:
+        from assistant import ideas
+
+        return ideas.list_ideas(10)
+    except Exception as exc:   # the page still loads
+        log.warning("ideas unavailable: %s", exc)
+        return []
 
 
 def _usage_line() -> str:

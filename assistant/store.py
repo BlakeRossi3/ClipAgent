@@ -1242,6 +1242,12 @@ def list_live_tiles(now_iso: str | None = None, *, tile_key: str | None = None, 
         return _many(c, Tile, sql + " ORDER BY created_at DESC, id DESC LIMIT ?", (*params, limit))
 
 
+def list_all_tiles(limit: int = 500, *, conn: sqlite3.Connection | None = None) -> list[Tile]:
+    """Every stored tile (live, expired or removed; pruned after a week), oldest first."""
+    with transaction(conn) as c:
+        return _many(c, Tile, "SELECT * FROM as_tiles ORDER BY created_at ASC, id ASC LIMIT ?", (limit,))
+
+
 def remove_tile(tile_id: int, *, by: str = "assistant", conn: sqlite3.Connection | None = None) -> bool:
     """Take a live tile down. False when it does not exist or is already gone."""
     with transaction(conn) as c:

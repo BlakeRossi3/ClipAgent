@@ -65,7 +65,7 @@
   {{ tile("/setup/memory", "Memory", sm.memory.notes ~ " notes", "book") }}
 </div></section>
 <section class="s-group" aria-labelledby="g-conn"><h2 class="sec-title" id="g-conn">Connections</h2><div class="s-grid">
-  {% set brain_line %}{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}/{{ cc.turns_cap }} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}{% endset %}
+  {% set brain_line %}{% if sm.brain.backend == "claude_code" %}{{ a.name }}: Claude account ({{ cc.model_in_use }}, {{ cc.turns_today }}{% if cc.turns_cap %}/{{ cc.turns_cap }}{% endif %} runs today){% else %}{{ a.name }}: {% if secrets.api_key %}API key{% else %}practice mode{% endif %}{% endif %} · studio: {% if secrets.api_key %}key, ${{ sm.brain.pipeline_cap }}/day{% else %}no key{% endif %}{% endset %}
   {{ tile("/setup/brain", "The brain", brain_line, "spark") }}
   {{ tile("/setup/phone", "Your phone", (sm.phone.owner_phone or "Not set") ~ (" · Twilio set" if sm.phone.twilio_sid else ""), "chat") }}
   {{ tile("/setup/youtube", "YouTube", "Connected" if sm.youtube.has_token else ("Sign-in file saved, not connected" if sm.youtube.has_secret else "Not connected"), "film") }}
@@ -151,11 +151,11 @@
   <div class="s-claude{% if signed_in %} ok{% endif %}">
     <p class="s-kicker">{{ "Connected" if signed_in else "Recommended" }}</p>
     <h2>Sign in with your Claude account</h2>
-    <p>{{ a.name }} and all his helpers run on your Claude Pro plan: no extra bill. They share your plan's usage limits, so ClipAgent stops itself at {{ values.turns_cap }} Claude runs a day.</p>
+    <p>{{ a.name }} and all his helpers run on your Claude Pro plan: no extra bill. They share your plan's usage limits{% if values.turns_cap %}, so ClipAgent stops itself at {{ values.turns_cap }} Claude runs a day{% else %}; ClipAgent watches those limits and waits for the reset when they run out{% endif %}.</p>
     {% if signed_in %}
       <div class="s-result ok" role="status"><strong>Signed in with your Claude account.</strong> {{ a.name }} is using <strong>{{ cc.model_in_use }}</strong>{% if cc.sub_model_in_use and cc.sub_model_in_use != cc.model_in_use %}; helpers use {{ cc.sub_model_in_use }}{% endif %}.</div>
       <ul class="s-facts">
-        <li>Claude runs today: <strong>{{ cc.turns_today }}</strong> of {{ cc.turns_cap }}</li>
+        <li>Claude runs today: <strong>{{ cc.turns_today }}</strong>{% if cc.turns_cap %} of {{ cc.turns_cap }}{% endif %}</li>
         {% if cc.plan_hint %}<li>Plan: {{ cc.plan_hint }}</li>{% endif %}
         {% if cc.backoff_until %}<li class="s-warn">Your plan's limit was reached; {{ a.name }} is back {{ cc.backoff_text }}.</li>{% endif %}
         {% if cc.version %}<li>Claude Code {{ cc.version }}</li>{% endif %}

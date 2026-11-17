@@ -97,6 +97,9 @@ PLANNED_TOOLS: dict[str, str] = {
     "tile_show": "assistant.tiles",
     "tile_remove": "assistant.tiles",
     "tile_list": "assistant.tiles",
+    "idea_save": "assistant.ideas",
+    "ideas_list": "assistant.ideas",
+    "autofix_log": "assistant.autofix",
     "nfl_scores": "assistant.nfl",
     "page_read": "assistant.page_reader",
     "page_act": "assistant.page_reader",
@@ -169,7 +172,8 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
                      "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities",
                      "assistant.schedule", "assistant.handoff", "assistant.initiative",
-                     "assistant.tiles", "assistant.nfl", "assistant.page_reader", "assistant.tasks")
+                     "assistant.tiles", "assistant.nfl", "assistant.page_reader", "assistant.tasks", "assistant.ideas",
+                     "assistant.autofix")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs

@@ -188,6 +188,16 @@
 .run-meta { font-size: 0.74rem; color: var(--muted); }
 .run-text { font-size: 0.88rem; overflow-wrap: anywhere; }
 .run-error .run-meta { color: var(--critical-text); }
+.run-more > summary { display: grid; gap: 2px; cursor: pointer; list-style: none; }
+.run-more > summary::-webkit-details-marker { display: none; }
+.run-more > summary .run-text::after { content: " ▸"; color: var(--muted); }
+.run-more[open] > summary .run-text::after { content: " ▾"; }
+.run-more[open] > summary .run-text { display: none; }
+.run-detail { display: grid; gap: 4px; padding: 6px 0 2px; }
+.run-label { margin: 6px 0 0; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.run-full { margin: 0; font-size: 0.88rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-steps { margin: 0; padding-left: 1.2em; font-size: 0.82rem; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.run-bad { color: var(--critical-text); }
 .sheet-foot { margin: 12px 0 0; font-size: 0.88rem; }
 
 /* ---- chat --------------------------------------------------------------- */
@@ -323,6 +333,8 @@
 .rail-live { color: #1a1306; background: var(--jv); border-radius: 999px; padding: 2px 7px; letter-spacing: 0.12em; font-size: 0.58rem; }
 .rail-live[hidden] { display: none; }
 .rail-steps, .rail-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 0.86rem; }
+/* live lists that change while work runs are never the scroll anchor: the page stays where he scrolled it */
+.rail-steps, .rail-tasks, .jv-trail, .cc-orbits, [data-cc-live], [data-live] { overflow-anchor: none; }
 .rail-empty { color: var(--jv-dim); font-size: 0.82rem; }
 .rail-step { display: flex; align-items: baseline; gap: 8px; color: var(--jv-ink); min-width: 0; }
 .rail-step span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

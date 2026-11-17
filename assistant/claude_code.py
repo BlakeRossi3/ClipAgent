@@ -41,8 +41,8 @@ How a tools-only run works::
   (An owner-provided ``CLAUDE_CODE_OAUTH_TOKEN`` in config.env is passed through if present.)
 * Subscription use is not billed per call: ``llm_usage`` rows are written with ``cost_usd=0`` (the
   assistant's dollar cap is not consumed) and Claude Code's notional figure is kept per day in kv
-  for the dashboard. Instead :data:`ASSISTANT_MAX_TURNS_PER_DAY` caps ``claude -p`` runs per local
-  day, and a plan usage limit ("You've hit your session limit · resets 4pm") switches the assistant
+  for the dashboard. ``claude -p`` runs per local day are counted (``ASSISTANT_MAX_TURNS_PER_DAY`` can cap
+  them; 0, the default, = no cap: Blake asked for no daily limit), and a plan usage limit ("You've hit your session limit · resets 4pm") switches the assistant
   off until the reset time (told once; never retried in a loop).
 * Models: aliases (``opus``, ``sonnet``...) tried in order; a "not available on your plan" answer
   moves to the next one and the working model is remembered in kv.
@@ -52,6 +52,7 @@ Tests never start the real CLI: :func:`set_runner` injects a fake.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -195,8 +196,96 @@ def _popen_kwargs() -> dict[str, Any]:
     return {"creationflags": CREATE_NO_WINDOW} if _is_windows() else {}
 
 
+@dataclass
+class RunControl:
+    """A handle on one ``claude -p`` run while it runs (callers: the SMS inbox, task tracking).
+
+    ``on_line`` sees every stream-json line as it arrives (live steps on the task rail); :meth:`cancel`
+    stops the process (a text superseded by his next one). Fake runners do not stream: ``streamed``
+    stays False and :func:`run_prompt` replays the finished transcript instead."""
+
+    on_line: Callable[[str], None] | None = None
+    cancelled: bool = False
+    streamed: bool = False
+    reason: str = ""          # why it was stopped (shown on the task rail)
+    _proc: Any = None
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        p = self._proc
+        if p is not None and p.poll() is None:
+            try:
+                p.terminate()
+            except OSError as exc:  # already gone
+                log.debug("terminate: %s", exc)
+
+
+_control: contextvars.ContextVar[RunControl | None] = contextvars.ContextVar("claude_code_control", default=None)
+
+
+def _feed(ctl: RunControl, line: str) -> None:
+    if ctl.on_line is not None:
+        try:
+            ctl.on_line(line)
+        except Exception as exc:   # a watcher must never stop the run
+            log.warning("run watcher failed: %s", exc)
+
+
+def _stream_runner(argv: list[str], *, input: str | None, env: Mapping[str, str], cwd: str, timeout: float,
+                   ctl: RunControl) -> Completed:
+    """Like :func:`_subprocess_runner`, but stdout is read line by line (``ctl.on_line``) and the process
+    can be stopped from another thread (``ctl.cancel``)."""
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(env),
+                         cwd=cwd, text=True, encoding="utf-8", errors="replace", **_popen_kwargs())
+    ctl._proc = p
+    if ctl.cancelled:
+        p.terminate()
+    err: list[str] = []
+    t_err = threading.Thread(target=lambda: err.append(p.stderr.read() if p.stderr else ""), daemon=True)
+    t_err.start()
+
+    def write_input() -> None:
+        try:
+            if p.stdin is not None:
+                p.stdin.write(input or "")
+                p.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    threading.Thread(target=write_input, daemon=True).start()
+    timed_out = threading.Event()
+
+    def on_timeout() -> None:
+        timed_out.set()
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+    timer = threading.Timer(timeout, on_timeout)
+    timer.daemon = True
+    timer.start()
+    out: list[str] = []
+    try:
+        assert p.stdout is not None
+        for line in p.stdout:
+            out.append(line)
+            ctl.streamed = True
+            _feed(ctl, line)
+        p.wait()
+    finally:
+        timer.cancel()
+        t_err.join(5)
+    if timed_out.is_set():
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return Completed(p.returncode, "".join(out), "".join(err))
+
+
 def _subprocess_runner(argv: list[str], *, input: str | None, env: Mapping[str, str], cwd: str,
                        timeout: float) -> Completed:
+    ctl = _control.get()
+    if ctl is not None:
+        return _stream_runner(argv, input=input, env=env, cwd=cwd, timeout=timeout, ctl=ctl)
     p = subprocess.run(argv, input=input, env=dict(env), cwd=cwd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=timeout, check=False, **_popen_kwargs())
     return Completed(p.returncode, p.stdout or "", p.stderr or "")
@@ -435,7 +524,7 @@ def check_guards(*, count_turn: bool = True) -> None:
         raise _budget_exc("daily", "today's API allowance for the plan-limit fallback is spent")
     if count_turn:
         cap = get_assistant_settings().max_turns_per_day
-        if turns_today() >= cap:
+        if cap > 0 and turns_today() >= cap:
             if db.kv_set_if_absent(f"assistant:cc:turn_cap_alerted:{db.local_today().isoformat()}", db.now_iso()):
                 db.log_event("assistant", "daily Claude run cap reached", level="warning", data={"cap": cap})
             raise _budget_exc("turns", f"daily Claude run cap ({cap}) reached")
@@ -1043,10 +1132,13 @@ def read_calls(path: Path) -> list[Any]:
 def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | None = None,
                effort: str | None = None, web_search: bool = False, max_turns: int | None = None,
                count_turn: bool = True, alert_channel: str = "system", timeout: float | None = None,
-               full: bool = False, channel: str = "system", model: str | None = None) -> CCResult:
+               full: bool = False, channel: str = "system", model: str | None = None,
+               control: RunControl | None = None) -> CCResult:
     """One headless Claude Code run (tools via MCP when ``mcp`` is given; Claude Code's own tools,
     his folders and the channel's resumed session too when ``full``). Raises
-    ``AssistantBudgetExceeded`` (paused | limit | turns) or :class:`ClaudeCodeError`."""
+    ``AssistantBudgetExceeded`` (paused | limit | turns) or :class:`ClaudeCodeError` (kind ``cancelled``
+    when ``control.cancel()`` stopped it). Full runs record every job handed to a staff member
+    (``assistant.staff.StaffTracker``)."""
     s = get_assistant_settings()
     check_guards(count_turn=count_turn)
     exe = find_claude()
@@ -1064,6 +1156,20 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
         settings_path, agents_path = prepare_full_run(run_tag, chrome=s.chrome,
                                                       mcp_tools=list(mcp.allowed) if mcp else None)
     env = base_env(extra={"MCP_TIMEOUT": "30000", "MCP_TOOL_TIMEOUT": str(int(timeout * 1000))})
+    tracker = None
+    if full:
+        from assistant import staff
+
+        tracker = staff.StaffTracker(parent_id=mcp.run_id if mcp is not None else None, channel=channel)
+    ctl = control if control is not None else (RunControl() if tracker is not None else None)
+    outer = ctl.on_line if ctl is not None else None
+    if ctl is not None and tracker is not None:
+        def on_line(line: str, _t: Any = tracker, _o: Any = outer) -> None:
+            _t.feed_line(line)
+            if _o is not None:
+                _o(line)
+
+        ctl.on_line = on_line
     try:
         models = [model] if model else model_candidates(role)
         i = 0
@@ -1086,6 +1192,9 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                 argv += ["--max-budget-usd", f"{max(_api_budget_left(), 0.01):.2f}"]
             if count_turn:
                 db.kv_incr(KV_TURNS.format(day=db.local_today().isoformat()))
+            if ctl is not None and ctl.cancelled:
+                raise ClaudeCodeError("cancelled", "stopped before it started")
+            token = _control.set(ctl)
             try:
                 done = _runner(argv, input=prompt, env=env, cwd=str(REPO_ROOT if full else work_dir()),
                                timeout=timeout)
@@ -1093,6 +1202,15 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                 raise ClaudeCodeError("timeout", f"Claude Code took longer than {int(timeout)} s") from None
             except OSError as exc:
                 raise ClaudeCodeError("blocked", blocked_message(exc) or f"could not start Claude Code: {exc}") from exc
+            finally:
+                _control.reset(token)
+            if ctl is not None and not ctl.streamed:   # a fake runner: replay the transcript to the watchers
+                for line in (done.stdout or "").splitlines():
+                    _feed(ctl, line)
+            if ctl is not None:
+                ctl.streamed = False   # the next model attempt (if any) streams afresh
+                if ctl.cancelled:
+                    raise ClaudeCodeError("cancelled", "stopped: replaced by a newer request")
             try:  # plan usage (rate_limit_event lines in the stream-json transcript)
                 from assistant import usage
 
@@ -1141,6 +1259,10 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
             exc.calls = read_calls(calls_path)
         raise
     finally:
+        if ctl is not None:
+            ctl.on_line, ctl._proc = outer, None
+        if tracker is not None:
+            tracker.close()
         for f in (calls_path, cfg_path, settings_path, agents_path):
             if f is not None:
                 f.unlink(missing_ok=True)

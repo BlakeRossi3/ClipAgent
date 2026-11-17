@@ -61,7 +61,7 @@ class AssistantSettings:
     cc_subagent_model: str = "sonnet"        # ... and for every sub-agent (lighter on plan limits)
     cc_fallback_models: tuple[str, ...] = ("sonnet",)   # tried in order when a model is not on the plan
     api_fallback: bool = True                # plan limited -> use the Anthropic API key (if saved) meanwhile
-    max_turns_per_day: int = 60              # claude -p runs per local day (protects the plan's limits)
+    max_turns_per_day: int = 0               # claude -p runs per local day; 0 = no cap (the plan's usage windows decide)
     cc_timeout_sec: int = 240                # one claude -p run (tool calls included)
     claude_bin: str = ""                     # explicit path to the claude executable (else PATH / ~/.local/bin)
     cc_oauth_token: str = ""                 # optional CLAUDE_CODE_OAUTH_TOKEN the owner set himself (never shown)
@@ -94,6 +94,12 @@ class AssistantSettings:
     initiative: bool = True                  # ASSISTANT_INITIATIVE
     initiative_share: float = 0.35           # at most this share of each plan usage window
     initiative_idle_min: int = 30            # he has been quiet this many minutes
+    # --- texts (assistant/sms_inbox.py): back-to-back texts become one request
+    sms_batch_sec: float = 4.0               # ASSISTANT_SMS_BATCH_SEC: wait this long for a follow-up text
+    # --- self-healing (assistant/autofix.py): failures get diagnosed and fixed by a background task
+    autofix: bool = True                     # ASSISTANT_AUTOFIX
+    autofix_max_per_day: int = 6             # ASSISTANT_AUTOFIX_MAX_PER_DAY
+    autofix_grace_min: int = 3               # ASSISTANT_AUTOFIX_GRACE_MIN: let normal retries try first
 
     def replace(self, **changes: Any) -> "AssistantSettings":
         return replace(self, **changes)
@@ -142,7 +148,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         cc_model=s("ASSISTANT_CC_MODEL", "opus"),
         cc_subagent_model=s("SUBAGENT_CC_MODEL", "sonnet"),
         cc_fallback_models=tuple(m.strip() for m in s("ASSISTANT_CC_FALLBACK", "sonnet").split(",") if m.strip()),
-        max_turns_per_day=max(0, int(s("ASSISTANT_MAX_TURNS_PER_DAY", "60"))),
+        max_turns_per_day=max(0, int(s("ASSISTANT_MAX_TURNS_PER_DAY", "0") or 0)),
         cc_timeout_sec=max(30, int(s("ASSISTANT_CC_TIMEOUT_SEC", "240"))),
         claude_bin=s("ASSISTANT_CLAUDE_BIN", ""),
         cc_oauth_token=s("CLAUDE_CODE_OAUTH_TOKEN", ""),
@@ -170,6 +176,10 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         initiative=config._bool(env.get("ASSISTANT_INITIATIVE"), True),
         initiative_share=min(1.0, max(0.0, float(s("ASSISTANT_INITIATIVE_SHARE", "0.35")))),
         initiative_idle_min=max(0, int(s("ASSISTANT_INITIATIVE_IDLE_MIN", "30"))),
+        sms_batch_sec=min(60.0, max(0.0, float(s("ASSISTANT_SMS_BATCH_SEC", "4") or 0))),
+        autofix=config._bool(env.get("ASSISTANT_AUTOFIX"), True),
+        autofix_max_per_day=max(0, int(s("ASSISTANT_AUTOFIX_MAX_PER_DAY", "6"))),
+        autofix_grace_min=max(0, int(s("ASSISTANT_AUTOFIX_GRACE_MIN", "3"))),
     )
 
 

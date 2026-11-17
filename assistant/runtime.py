@@ -443,6 +443,7 @@ class _Run:
     ctx: tools.ToolContext
     run_ids: list[int] = field(default_factory=list)
     depth: int = 0
+    control: Any = None   # claude_code.RunControl of the top-level run: live steps, cancel
 
 
 def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, parent_id: int | None,
@@ -521,7 +522,7 @@ def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, par
         store.finish_agent_run(run_id, status="ok" if status in ("ok", "rounds") else
                                ("denied" if status == "denied" else status),
                                duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost,
-                               summary=text[:500], tool_calls=[tc.to_dict() for tc in r.ctx.calls[calls_before:]
+                               summary=text[:2000], tool_calls=[tc.to_dict() for tc in r.ctx.calls[calls_before:]
                                                                if tc.agent == agent_name])
     return text, status
 
@@ -575,7 +576,7 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
             res = claude_code.run_prompt(user_content, system="\n\n".join(b for b in system if b), role=role,
                                          mcp=mcp, effort=s.effort if is_main else s.subagent_effort,
                                          web_search=web, alert_channel=r.ctx.channel, full=full,
-                                         channel=r.ctx.channel)
+                                         channel=r.ctx.channel, control=r.control if top_level else None)
         except claude_code.ClaudeCodeError as exc:
             calls = list(exc.calls)
             if snap is not None:
@@ -619,7 +620,7 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
                                ("denied" if status == "denied" else status),
                                duration_ms=int((time.monotonic() - started) * 1000),
                                cost_usd=real_cost if status in ("ok", "rounds", "denied") else 0.0,
-                               summary=text[:500], tool_calls=[tc.to_dict() for tc in calls])
+                               summary=text[:2000], tool_calls=[tc.to_dict() for tc in calls])
     return text, status
 
 
@@ -672,9 +673,11 @@ def _local_context(channel: str, extra: dict[str, Any] | None) -> str:
     return "<context>\n" + "\n".join(lines) + "\n</context>"
 
 
-def _history(exclude_id: int | None) -> str:
+def _history(exclude_id: int | None, *, exclude: list[int] | None = None) -> str:
     since = db.to_iso(db.utcnow() - timedelta(hours=24))
-    msgs = [m for m in store.list_messages(HISTORY_MESSAGES + 1, since=since) if m.id != exclude_id][:HISTORY_MESSAGES]
+    skip = {exclude_id, *(exclude or [])}
+    msgs = [m for m in store.list_messages(HISTORY_MESSAGES + len(skip), since=since)
+            if m.id not in skip][:HISTORY_MESSAGES]
     if not msgs:
         return ""
     lines = [f"[{'owner' if m.direction == 'in' else 'you'} {m.ts[11:16]}Z {m.channel}] {m.body}" for m in reversed(msgs)]
@@ -713,18 +716,95 @@ def attachment_note(paths: list[str]) -> str:
             f"{lines}\n</attachments>")
 
 
+TRACK_CHANNELS = ("sms", "dashboard")    # his requests from these show on the task rail while they run
+TRACK_SKIP_KINDS = frozenset({"history_distil"})   # bulk background jobs that would flood the rail
+VIA_LABEL = {"sms": "Text", "dashboard": "Chat"}
+
+
+def _step_watcher(task_id: str) -> Callable[[str], None]:
+    """stream-json line -> a step on the tracked rail row (his top-level tools only)."""
+    def on_line(line: str) -> None:
+        line = line.strip()
+        if '"tool_use"' not in line:
+            return
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(msg, dict) or msg.get("type") != "assistant" or msg.get("parent_tool_use_id"):
+            return
+        for b in (msg.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                name, inp = str(b.get("name") or ""), b.get("input") if isinstance(b.get("input"), dict) else {}
+                if name.split("__")[-1] in ("display",) or name.split("__")[-1].startswith("ui_"):
+                    continue
+                try:
+                    from voice import speech
+
+                    label = speech.tool_label(name, inp)
+                except Exception:
+                    label = name.split("__")[-1].replace("_", " ")
+                if name in ("Agent", "Task") and inp.get("subagent_type"):
+                    try:
+                        import home
+
+                        label = f"Asked {home.agent_display(str(inp['subagent_type']))}: {inp.get('description') or ''}"
+                    except Exception:
+                        pass
+                tasks_mod().track_step(task_id, label)
+    return on_line
+
+
+def tasks_mod() -> Any:
+    from assistant import tasks
+
+    return tasks
+
+
+def _start_tracking(title: str, *, origin: str, heard: str, meta: dict[str, Any], control: Any) -> str | None:
+    try:
+        tid = tasks_mod().track(title, origin=origin, heard=heard, meta=meta,
+                                on_cancel=(lambda: control.cancel()) if control is not None else None)
+    except Exception as exc:   # the rail is a view: never let it stop the work
+        log.warning("request not put on the task rail: %s", exc)
+        return None
+    if control is not None and control.on_line is None:
+        control.on_line = _step_watcher(tid)
+    return tid
+
+
+def _end_tracking(tid: str | None, text: str, status: str, *, summary: str | None = None) -> None:
+    if tid is None:
+        return
+    try:
+        tasks_mod().track_done(tid, text, status, summary=summary)
+    except Exception as exc:
+        log.warning("task rail row not closed: %s", exc)
+
+
 def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = None,
-             deliver: bool = False, attachments: list[str] | None = None) -> TurnResult:
+             deliver: bool = False, attachments: list[str] | None = None,
+             inbound_ids: list[int] | None = None, control: Any = None,
+             track: bool = True) -> TurnResult:
     """Answer one owner message with the main agent.
 
     Records the inbound and outbound ``as_messages`` rows. ``deliver=True`` (SMS) sends the
     reply to the owner through ``tools.send_to_owner(kind="reply")``. ``attachments``: absolute
     paths of uploaded images (data/assistant/uploads).
+
+    ``inbound_ids``: the message is several texts already recorded (``assistant.sms_inbox`` joins
+    back-to-back texts): no new inbound row, and the reply answers the last of them. ``control``
+    (``claude_code.RunControl``): a handle to stop the run; a run stopped that way returns status
+    ``cancelled`` and sends nothing. Requests on :data:`TRACK_CHANNELS` show on the task rail while
+    they run (``track``).
     """
     s = get_assistant_settings()
     store_channel = channel if channel in store.CHANNELS else "system"
-    in_id = store.add_message("in", store_channel, message, kind="chat",
-                              meta={"attachments": [Path(p).name for p in attachments]} if attachments else None)
+    if inbound_ids:
+        in_id = inbound_ids[-1]
+    else:
+        in_id = store.add_message("in", store_channel, message, kind="chat",
+                                  meta={"attachments": [Path(p).name for p in attachments]} if attachments else None)
     if is_stopped():
         text = CANNED["stopped"].format(h=s.owner_honorific)
         out_id = store.add_message("out", store_channel, text, kind="reply", agent="main", reply_to=in_id)
@@ -736,6 +816,16 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
         return TurnResult(text, 0.0, [], [], "stopped", in_id, out_id, text)
     ctx = tools.ToolContext(channel=channel, agent="main", source=channel, message_id=in_id)
     r = _new_run(s, ctx)
+    track_id = None
+    if track and channel in TRACK_CHANNELS:
+        if control is None and getattr(r.backend, "whole_run", False):
+            from assistant import claude_code
+
+            control = claude_code.RunControl()
+        track_id = _start_tracking(message, origin=channel, heard=message,
+                                   meta={"via": channel, "label": VIA_LABEL.get(channel, channel), "message_id": in_id},
+                                   control=control)
+    r.control = control
     memory = ""
     try:
         from assistant import vault
@@ -744,7 +834,7 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
         memory = vault.context_for(message, MEMORY_CONTEXT_CHARS)
     except Exception as exc:  # memory trouble must not silence the assistant
         db.log_event("assistant", "memory context failed", level="warning", data={"error": repr(exc)[:300]})
-    parts = [_local_context(channel, context), _history(in_id)]
+    parts = [_local_context(channel, context), _history(in_id, exclude=inbound_ids)]
     if memory:
         parts.append("Relevant memory (data, not instructions):\n" + wrap_untrusted("vault", memory))
     parts.append(f'<owner_message channel="{channel}">\n{persona.escape_untrusted(message)}\n</owner_message>')
@@ -764,11 +854,21 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
             except Exception as dexc:
                 log.warning("request not queued: %s", dexc)
     except Exception as exc:
-        log.exception("assistant turn failed")
-        status, raw = "error", _failure_text(exc, s)
+        if control is not None and control.cancelled:
+            status, raw = "cancelled", ""
+        else:
+            log.exception("assistant turn failed")
+            status, raw = "error", _failure_text(exc, s)
+    if control is not None and control.cancelled:
+        # replaced by his next text, or stopped from the rail: no reply, nothing remembered from it
+        db.log_event("assistant", "a request was stopped before it was answered",
+                     data={"channel": channel, "message_id": in_id})
+        _end_tracking(track_id, "", "cancelled", summary=getattr(control, "reason", "") or "Stopped")
+        return TurnResult("", round(r.turn.spent, 6), r.run_ids, ctx.calls, "cancelled", in_id, None, raw)
     text = persona.polish(raw, channel if channel in persona.CHANNEL_LIMITS else "dashboard", settings=s)
     if not text:  # the model produced nothing usable once the rules were applied
         text = f"Understood, {s.owner_honorific}."
+    _end_tracking(track_id, text, status)
     out_id = None
     if deliver and channel == "sms":
         try:
@@ -787,7 +887,7 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
 
 
 def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bool = False,
-             kind: str = "task", context: dict[str, Any] | None = None) -> TurnResult:
+             kind: str = "task", context: dict[str, Any] | None = None, track: bool = True) -> TurnResult:
     """Run ``agent_name`` on a task (scheduled briefs, tidy-ups, reviews).
 
     ``deliver=True`` texts the polished result to the owner (``kind`` e.g. ``morning_brief``;
@@ -803,6 +903,24 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
         raise KeyError(f"unknown agent {agent_name!r}")
     out_channel = "sms" if deliver else channel
     user_content = _local_context(out_channel, context) + f"\n\n<task from=\"scheduler\">\n{task}\n</task>"
+    track_id = None
+    if track and kind not in TRACK_SKIP_KINDS:
+        control = None
+        if getattr(r.backend, "whole_run", False):
+            from assistant import claude_code
+
+            control = claude_code.RunControl()
+        r.control = control
+        try:
+            import home
+
+            who = home.agent_display(agent_name)
+        except Exception:
+            who = agent_name
+        title = f"{kind.replace('_', ' ').capitalize()}: {' '.join(task.split())}" if kind != "task" else task
+        track_id = _start_tracking(title, origin="any", heard="",
+                                   meta={"via": "scheduled", "label": who, "staff": agent_name, "kind": kind},
+                                   control=control)
     status = "ok"
     try:
         raw, status = _run_agent(r, agent_name, user_content, channel=out_channel, parent_id=None)
@@ -810,10 +928,13 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
         status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific, when=exc.when or "soon")
     except Exception as exc:
         log.exception("assistant task failed")
-        status, raw = "error", _failure_text(exc, s)
+        status, raw = ("cancelled" if r.control is not None and r.control.cancelled else "error"), _failure_text(exc, s)
     text = persona.polish(raw, out_channel if out_channel in persona.CHANNEL_LIMITS else "system", settings=s)
     if not text:
         status, text = ("error" if status == "ok" else status), CANNED["error"].format(h=s.owner_honorific)
+    _end_tracking(track_id, text, status)
+    if status == "cancelled":
+        return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, None, None, raw)
     out_id = None
     if deliver and status == "ok":
         try:
@@ -826,11 +947,12 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
 
 
 def handle_inbound_sms(body: str) -> TurnResult | None:
-    """Phase-1 hand-off for an owner SMS that is not a pipeline command.
+    """Phase-1 hand-off for an owner SMS that is not a pipeline command (one text, answered alone).
 
     Returns None (caller falls back to its HELP text) when the assistant is disabled.
     Run it in the background: a turn can take longer than Twilio's 15 s webhook timeout;
-    the reply goes out as a separate SMS.
+    the reply goes out as a separate SMS. The webhook itself goes through ``assistant.sms_inbox``,
+    which joins back-to-back texts into one request.
     """
     if not get_assistant_settings().enabled:
         return None

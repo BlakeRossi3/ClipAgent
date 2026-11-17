@@ -268,7 +268,10 @@
         if (!j || !j.html) return;
         Object.keys(j.html).forEach(function (k) {
           var box = document.querySelector('[data-live="' + k + '"]');
-          if (!box) return;
+          if (!box || typeof j.html[k] !== 'string') return;
+          var sig = String(j.html[k].length) + j.html[k];   // unchanged -> leave the nodes (and his scroll) alone
+          if (box.__sig === sig) return;
+          box.__sig = sig;
           var open = Array.prototype.map.call(box.querySelectorAll('details[open][id]'), function (d) { return d.id; });
           box.innerHTML = j.html[k];
           open.forEach(function (id) { var d = document.getElementById(id); if (d) d.open = true; });
