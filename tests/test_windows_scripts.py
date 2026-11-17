@@ -52,7 +52,7 @@ def test_setup_installs_prereqs_clones_and_starts():
 
 def test_launcher_runs_schedule_on_loopback_and_opens_browser():
     t = _text("ClipAgent.ps1")
-    for needle in ["main.py schedule --host 127.0.0.1", "/healthz", "Start-Process -FilePath \"$Url/\"",
+    for needle in ["main.py schedule --host 127.0.0.1", "/healthz", "Start-Process -FilePath \"$Url/\"", "'msedge.exe'",
                    "-WindowStyle Minimized", "'merge', '--ff-only'", "DASHBOARD_TRUST_LOOPBACK", "CLIPAGENT_DATA_DIR",
                    "[switch]$NoBrowser", "[switch]$NoUpdate", "logs", "Show-Problem", "PYTHONUTF8"]:
         assert needle in t, needle

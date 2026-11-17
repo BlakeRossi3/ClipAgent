@@ -47,6 +47,18 @@ function Show-Problem([string]$Text) {
     }
 }
 
+function Open-App {
+    # ClipAgent always opens in Microsoft Edge (its natural voices sound best), whatever the default browser is.
+    # Falls back to the default browser if Edge is missing. Cecil's own open_url still uses the default browser.
+    try {
+        Start-Process -FilePath 'msedge.exe' -ArgumentList "$Url/" -ErrorAction Stop
+    }
+    catch {
+        Write-Log "Edge not found ($($_.Exception.Message)); opening the default browser"
+        Start-Process -FilePath "$Url/"
+    }
+}
+
 function Test-Running {
     try {
         $r = Invoke-WebRequest -UseBasicParsing -Uri "$Url/healthz" -TimeoutSec 3
@@ -146,7 +158,7 @@ try {
     Write-Log "launcher started (port $Port)"
     if (Test-Running) {
         Write-Log 'already running'
-        if (-not $NoBrowser) { Start-Process -FilePath "$Url/" }
+        if (-not $NoBrowser) { Open-App }
         exit 0
     }
     if (-not (Test-Path -LiteralPath $VenvPython)) {
@@ -184,7 +196,7 @@ try {
         Start-Sleep -Seconds 2
         if (Test-Running) {
             Write-Log 'ClipAgent is up'
-            if (-not $NoBrowser) { Start-Process -FilePath "$Url/" }
+            if (-not $NoBrowser) { Open-App }
             exit 0
         }
         if ($proc.HasExited) { break }
@@ -206,7 +218,7 @@ try {
                 Start-Sleep -Seconds 2
                 if (Test-Running) {
                     Write-Log 'ClipAgent is up (previous version restored)'
-                    if (-not $NoBrowser) { Start-Process -FilePath "$Url/" }
+                    if (-not $NoBrowser) { Open-App }
                     exit 0
                 }
                 if ($proc.HasExited) { break }
