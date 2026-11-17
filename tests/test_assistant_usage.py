@@ -115,12 +115,20 @@ def test_poll_unavailable_or_failing_keeps_event_readings(plan, clock):
     assert len(warn) == 1                           # a repeated failure is logged once
 
 
-def test_poll_at_the_limit_sets_the_backoff(plan, clock):
+def test_poll_at_the_limit_never_pauses_cecil_but_background_waits(plan, clock):
+    """100% can be covered by paid extra usage: only a real refusal pauses his conversations."""
     plan.append(_answer({"utilization": 100.0, "resets_at": _iso_in(hours=1)},
                         {"utilization": 70.0, "resets_at": _iso_in(days=2)}))
     usage.poll_plan_usage(force=True)
-    assert claude_code.backoff_until() is not None
-    assert usage.constrained()[0]
+    assert claude_code.backoff_until() is None
+    assert usage.constrained()[0]                      # background work still waits for the reset
+
+
+def test_owner_turn_tries_the_plan_unless_claude_just_refused(clock):
+    claude_code._set_backoff("You've hit your limit · resets 3pm", alert_channel="dashboard")
+    assert claude_code.refused_recently()
+    clock.advance(minutes=4)
+    assert not claude_code.refused_recently()          # try again: extra usage may cover it
 
 
 def test_poll_skipped_when_assistant_off_or_on_the_api():

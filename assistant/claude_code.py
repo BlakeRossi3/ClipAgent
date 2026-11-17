@@ -396,6 +396,20 @@ def backoff_until() -> datetime | None:
     return until
 
 
+REFUSAL_RECHECK = timedelta(minutes=3)
+
+
+def refused_recently() -> bool:
+    """Claude itself refused (a limit error, not a usage reading) within :data:`REFUSAL_RECHECK`."""
+    v = db.kv_get(KV_BACKOFF)
+    if not isinstance(v, dict) or not v.get("set_at") or str(v.get("reason") or "").endswith(" limit"):
+        return False      # set from a usage reading ("five_hour limit"), not by a refusal
+    try:
+        return db.utcnow() - db.parse_iso(v["set_at"]) < REFUSAL_RECHECK
+    except Exception:
+        return False
+
+
 def clear_backoff() -> None:
     db.kv_delete(KV_BACKOFF)
 

@@ -1135,7 +1135,9 @@ class Brain:
             return ""
         if s.backend == "claude_code":
             until = claude_code.backoff_until()
-            if until is not None and not claude_code.api_fallback_active():
+            # He is talking to me: try the plan anyway (paid extra usage may cover the overflow). Only a refusal
+            # Claude itself gave in the last few minutes answers "limit" without asking again.
+            if until is not None and not claude_code.api_fallback_active() and claude_code.refused_recently():
                 return runtime.CANNED["limit"].format(h=h, when=claude_code.friendly_time(until))
         if billing() == "api" and runtime.remaining_today() <= 0:
             return runtime.CANNED["daily"].format(h=h)

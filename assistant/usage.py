@@ -163,9 +163,9 @@ def extra_usage_active() -> bool:
         return False
 
 
-def _after_reading(kind: str, status: str, peak: float, resets_iso: str | None) -> None:
+def _after_reading(kind: str, status: str, peak: float, resets_iso: str | None, *, set_backoff: bool = True) -> None:
     """A limit hit sets the backoff (unless paid extra usage covers it); nearly out writes the handoff."""
-    if status == "rejected" and resets_iso and not extra_usage_active():
+    if set_backoff and status == "rejected" and resets_iso and not extra_usage_active():
         from assistant import claude_code
 
         until = db.parse_iso(resets_iso)
@@ -239,7 +239,9 @@ def record_plan_usage(resp: dict[str, Any]) -> int:
         if u >= peak:
             peak, top = u, (k, status, resets)
     if n:
-        _after_reading(top[0], top[1], peak, top[2])
+        # A poll only reports numbers: 100% can still be covered by paid extra usage, so it never pauses
+        # Cecil (only a real refusal from Claude does); it may still write the handoff for background work.
+        _after_reading(top[0], top[1], peak, top[2], set_backoff=False)
     return n
 
 
