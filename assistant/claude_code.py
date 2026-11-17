@@ -280,9 +280,36 @@ _AUTH_RE = re.compile(r"(not logged in|please run /login|/login|oauth token (rev
 _RATE_RE = re.compile(r"(\b429\b|temporarily limiting requests|rate.?limit|overloaded|\b529\b)", re.I)
 
 
+KV_API_NO_CREDIT = "assistant:cc:api_no_credit_until"
+API_NO_CREDIT_HOLD = timedelta(hours=1)
+_CREDIT_RE = re.compile(r"credit balance is too low", re.I)
+
+
+def note_api_no_credit() -> None:
+    """The API key has no credit: stop the plan-limit fallback to it for a while, so Cecil goes back to the
+    Claude plan (his paid extra usage covers it there) instead of failing on the key every turn."""
+    db.kv_set(KV_API_NO_CREDIT, db.to_iso(db.utcnow() + API_NO_CREDIT_HOLD))
+    if backoff_until() is not None:
+        clear_backoff()
+    if db.kv_set_if_absent(f"assistant:cc:no_credit_noted:{db.local_today().isoformat()}", db.now_iso()):
+        db.log_event("assistant", "API key has no credit: using the Claude plan (and its extra usage) instead",
+                     level="warning")
+
+
+def api_has_no_credit() -> bool:
+    v = db.kv_get(KV_API_NO_CREDIT)
+    try:
+        return isinstance(v, str) and db.parse_iso(v) > db.utcnow()
+    except Exception:
+        return False
+
+
 def classify_error(text: str, data: Mapping[str, Any] | None = None) -> str:
-    """limit | model_limit | model | auth | rate | error."""
+    """limit | model_limit | model | auth | rate | credit | error. ``credit`` also lifts the API fallback."""
     t = text or ""
+    if _CREDIT_RE.search(t):
+        note_api_no_credit()
+        return "credit"
     if _MODEL_LIMIT_RE.search(t):
         return "model_limit"
     if _LIMIT_RE.search(t):
@@ -529,7 +556,7 @@ def api_fallback_active() -> bool:
         return False
     import config
 
-    if not config.get_settings().anthropic_api_key:
+    if not config.get_settings().anthropic_api_key or api_has_no_credit():
         return False
     return backoff_until() is not None
 

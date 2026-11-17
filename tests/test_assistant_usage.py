@@ -242,3 +242,24 @@ def test_cancelled_task_stops_mid_run():
     finally:
         brain.set_client_factory(None)
     assert status == "stopped" and Client.interrupted == 1
+
+
+def test_paid_extra_usage_keeps_cecil_on_the_plan():
+    from assistant import claude_code
+    now = int(db.utcnow().timestamp())
+    usage.record_window({"status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0, "resetsAt": now + 3600})
+    assert claude_code.backoff_until() is not None            # no extra usage: the old behaviour
+    usage.record_window({"status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0, "resetsAt": now + 3600,
+                         "overageStatus": "allowed"})
+    assert claude_code.backoff_until() is None and usage.extra_usage_active()
+    usage.record_window({"status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0, "resetsAt": now + 3600})
+    assert claude_code.backoff_until() is None                # still covered: no new backoff
+
+
+def test_no_api_credit_switches_back_to_the_plan(monkeypatch):
+    from assistant import claude_code
+    claude_code._set_backoff("You've hit your limit", alert_channel="dashboard")
+    assert claude_code.backoff_until() is not None
+    assert claude_code.classify_error("Credit balance is too low to access the Anthropic API") == "credit"
+    assert claude_code.backoff_until() is None and claude_code.api_has_no_credit()
+    assert not claude_code.api_fallback_active()

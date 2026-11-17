@@ -126,12 +126,46 @@ def record_window(info: dict[str, Any]) -> None:
         st = str(w.get("status") or (status if k == kind else ("rejected" if u >= 1.0 else "allowed")))
         _store(k, st, u, _iso_of(w.get("resetsAt")), "event")
         peak = max(peak, u)
+    _record_overage(info)
     _after_reading(kind, status, peak, resets_iso)
 
 
+KV_OVERAGE = "assistant:usage:overage"
+OVERAGE_OK = ("allowed", "allowed_warning")
+
+
+def _record_overage(info: dict[str, Any]) -> None:
+    """Paid extra usage on his Claude plan: ``overageStatus`` allowed / allowed_warning means the overflow is
+    covered (Claude Code keeps working past the 5-hour limit). Remember it, and lift any plan-limit backoff so
+    Cecil keeps using the plan instead of switching to the API key."""
+    ov = str(info.get("overageStatus") or info.get("overage_status") or "").strip().lower()
+    if not ov:
+        return
+    db.kv_set(KV_OVERAGE, {"status": ov, "resets_at": _iso_of(info.get("overageResetsAt") or info.get("overage_resets_at")),
+                           "disabled_reason": info.get("overageDisabledReason") or info.get("overage_disabled_reason"),
+                           "at": db.now_iso()})
+    if ov in OVERAGE_OK:
+        from assistant import claude_code
+
+        if claude_code.backoff_until() is not None:
+            claude_code.clear_backoff()
+            db.log_event("assistant", "plan limit reached, but extra usage covers it: staying on the Claude plan")
+
+
+def extra_usage_active() -> bool:
+    """His paid extra usage is covering the plan right now (a fresh reading, under 6 hours old)."""
+    v = db.kv_get(KV_OVERAGE)
+    if not isinstance(v, dict) or v.get("status") not in OVERAGE_OK:
+        return False
+    try:
+        return (db.utcnow() - db.parse_iso(v["at"])).total_seconds() < 6 * 3600
+    except Exception:
+        return False
+
+
 def _after_reading(kind: str, status: str, peak: float, resets_iso: str | None) -> None:
-    """A limit hit sets the backoff; nearly out writes the handoff for work in flight (plain code)."""
-    if status == "rejected" and resets_iso:
+    """A limit hit sets the backoff (unless paid extra usage covers it); nearly out writes the handoff."""
+    if status == "rejected" and resets_iso and not extra_usage_active():
         from assistant import claude_code
 
         until = db.parse_iso(resets_iso)
