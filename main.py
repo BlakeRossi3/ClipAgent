@@ -944,7 +944,18 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
                         f"version {version} of {db.SCHEMA_VERSION} at {s.db_path}",
                         "run: .venv/bin/python main.py init"))
 
-    if s.fake_llm:
+    if not s.fake_llm and s.llm_backend == "plan":
+        try:
+            from assistant import claude_code
+
+            cli = claude_code.find_claude()
+        except Exception:
+            cli = None
+        checks.append(Check("Shorts model calls", "pass" if cli else "fail",
+                            "on your Claude plan through Claude Code (no API bill)" if cli else
+                            "LLM_BACKEND=plan but Claude Code is not installed",
+                            "install Claude Code and sign in, or set LLM_BACKEND=api with ANTHROPIC_API_KEY"))
+    elif s.fake_llm:
         checks.append(Check("Anthropic", "warn", "no API key (FAKE_LLM=true): the Shorts pipeline cannot pick "
                             "clips by itself (optional; the assistant runs on the Claude account)",
                             "set ANTHROPIC_API_KEY and FAKE_LLM=false in config.env"))

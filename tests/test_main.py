@@ -377,10 +377,20 @@ def test_status_text(make_upload, make_source, clock):
 @pytest.mark.skipif(os.name == "nt", reason="assumes a Linux host")
 def test_doctor_reports_failures_with_fixes(monkeypatch, settings):
     monkeypatch.setattr(main, "_whisper_check", lambda s: main.Check("whisper model", "pass", "cached"))
-    config.set_settings(settings.replace(dry_run=False, fake_llm=False, ffmpeg_bin="/nonexistent/ffmpeg"))
+    config.set_settings(settings.replace(dry_run=False, fake_llm=False, ffmpeg_bin="/nonexistent/ffmpeg",
+                                         llm_backend="api"))
     checks = {c.name: c for c in main.doctor_checks()}
     assert checks["ffmpeg"].status == "fail" and "apt install ffmpeg" in checks["ffmpeg"].fix
     assert checks["Anthropic"].status == "fail" and checks["Twilio"].status == "fail"
+    from assistant import claude_code
+
+    config.set_settings(settings.replace(dry_run=False, fake_llm=False, llm_backend="plan"))
+    monkeypatch.setattr(claude_code, "find_claude", lambda: None)
+    plan = {c.name: c for c in main.doctor_checks()}["Shorts model calls"]
+    assert plan.status == "fail" and "Claude Code is not installed" in plan.detail
+    config.set_settings(settings.replace(dry_run=False, fake_llm=False, ffmpeg_bin="/nonexistent/ffmpeg",
+                                         llm_backend="api"))
+    checks = {c.name: c for c in main.doctor_checks()}
     assert checks["YouTube token"].status == "fail" and checks["strategy.json"].status == "pass"
     assert checks["database schema"].status == "warn"            # not initialised yet
     text = main.format_checks(list(checks.values()))
