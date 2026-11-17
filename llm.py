@@ -453,6 +453,8 @@ def complete(
 
         try:
             data = parse_json_text(raw.text)
+            if on_plan:   # no structured-output mode on the plan: tidy the usual near-misses first
+                data = coerce_to_schema(data, json_schema)
             problems = validate_json(data, json_schema)
         except (json.JSONDecodeError, ValueError) as exc:
             data, problems = None, [f"invalid JSON: {exc}"]
@@ -500,9 +502,28 @@ def _default_fake(req: LLMRequest) -> str | dict | list:
     return f"[fake {req.tier}:{req.purpose}] " + req.user[:80]
 
 
+_SCHEMA_WORDS = frozenset({"type", "properties", "required", "$schema", "title", "additionalProperties"})
+
+
+def coerce_to_schema(value: Any, schema: dict[str, Any]) -> Any:
+    """Tidy the two near-misses a model makes without structured-output mode (the Claude plan path):
+    an answer wrapped in a copy of the schema (``{"type": "object", "properties": {<answer>}}``) is
+    unwrapped, and keys the schema does not declare are dropped (recursively). Everything else is left
+    for :func:`validate_json` to judge."""
+    if isinstance(value, dict) and schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
+        props = schema["properties"]
+        inner = value.get("properties")
+        if isinstance(inner, dict) and "properties" not in props and set(value) <= _SCHEMA_WORDS:
+            value = inner
+        return {k: coerce_to_schema(v, props[k]) for k, v in value.items() if k in props}
+    if isinstance(value, list) and schema.get("type") == "array" and isinstance(schema.get("items"), dict):
+        return [coerce_to_schema(v, schema["items"]) for v in value]
+    return value
+
+
 PLAN_MODELS = {"haiku": "haiku", "sonnet": "sonnet"}   # Claude Code aliases (the plan's current models)
-PLAN_JSON_NOTE = ("\n\nAnswer with ONLY one JSON value that matches this JSON schema - no prose, no markdown "
-                  "fences, nothing before or after it:\n")
+PLAN_JSON_NOTE = ("\n\nAnswer with ONLY one JSON value that matches this JSON schema - the answer itself, not the "
+                  "schema; only the keys it lists; no prose, no markdown fences, nothing before or after it:\n")
 
 
 def _call_plan(req: LLMRequest) -> _Raw:

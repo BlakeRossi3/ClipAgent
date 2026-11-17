@@ -927,3 +927,34 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .inv-meter { height: 6px; border-radius: 6px; background: var(--accent-track); overflow: hidden; }
 .inv-meter span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--amber)); transition: width .4s; }
 @media (prefers-reduced-motion: reduce) { .inv-hero, .inv-cape, .inv-star { animation: none; } .inv-hero { transition: none; } }
+
+/* live Reels panel (templates/cecil_parts.html reels, home_live.reels) */
+.cc-reels { display: grid; gap: 10px; }
+.cc-reel-now { padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--info-bg); }
+.cc-reel-now.is-quiet { background: var(--warning-bg); }
+.cc-reel-now-h { margin: 0; font-size: 0.86rem; display: flex; align-items: center; gap: 6px; }
+.cc-reel-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: cc-reel-pulse 1.4s ease-in-out infinite; }
+.cc-reel-now.is-quiet .cc-reel-pulse { background: var(--warning); animation: none; }
+@keyframes cc-reel-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .cc-reel-pulse { animation: none; } }
+.cc-reel-bar { height: 5px; margin: 6px 0 4px; border-radius: 3px; background: var(--accent-track); overflow: hidden; }
+.cc-reel-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.6s ease; }
+.cc-reel-idle { margin: 0; font-size: 0.82rem; color: var(--muted); }
+.cc-reel-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.cc-reel-title { margin: 2px 0 0; font-size: 0.84rem; }
+.cc-reel-title a { color: var(--ink); text-decoration: none; }
+.cc-reel-steps { display: flex; gap: 3px; margin: 4px 0 2px; }
+.cc-reel-steps i { flex: 1; height: 4px; border-radius: 2px; background: var(--neutral-bg); }
+.cc-reel-steps i.on { background: var(--good); }
+.cc-reel-steps i.next { background: var(--accent); }
+.cc-reel.is-failed .cc-reel-steps i.on { background: var(--critical); }
+.cc-reel.is-rejected .cc-reel-steps i.on { background: var(--muted); }
+.cc-reel-why { margin: 2px 0 0; font-size: 0.76rem; color: var(--muted); }
+.cc-reel.is-failed .cc-reel-why { color: var(--critical-text); }
+.chip-failed { background: var(--critical-bg); color: var(--critical-text); }
+.chip-done { background: var(--good-bg); color: var(--good-text); }
+.chip-dry { background: var(--warning-bg); color: var(--warning-text); }
+.cc-reel-problems { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.76rem; }
+.cc-reel-problems li { color: var(--warning-text); }
+.cc-reel-problems li.is-error { color: var(--critical-text); }
+.cc-reel-problems time { color: var(--muted); }

@@ -123,6 +123,29 @@ def test_process_pending_orders_work_and_isolates_errors(stages, make_source, ma
     assert db.require_source(bad).status == "failed"
 
 
+def test_process_pending_reports_live_progress(stages, make_source, clock, monkeypatch):
+    import progress
+
+    seen: list[str] = []
+    real = progress.step
+    monkeypatch.setattr(progress, "step", lambda lane, stage, **kw: (seen.append(stage), real(lane, stage, **kw)))
+    make_source()
+    counters = main.process_pending()
+    assert seen == ["fetch", "transcribe", "score", "render", "finishing"]
+    lane = next(x for x in progress.lanes() if x["lane"] == "process")
+    assert lane["state"] == "finished" and lane["summary"]["clips_rendered"] == counters["clips_rendered"] == 1
+
+
+def test_process_pending_records_a_crash(stages, make_source, clock, monkeypatch):
+    import progress
+
+    monkeypatch.setattr(main, "retry_failed_sources", lambda: (_ for _ in ()).throw(RuntimeError("disk gone")))
+    with pytest.raises(RuntimeError):
+        main.process_pending()
+    lane = next(x for x in progress.lanes() if x["lane"] == "process")
+    assert lane["state"] == "finished" and "disk gone" in lane["error"]
+
+
 def test_licence_rejection_is_permanent(stages, make_source, clock):
     sid = make_source()
     stages["fail"]["fetch"] = fetch.LicenceRejected("C-SPAN")

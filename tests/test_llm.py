@@ -332,3 +332,20 @@ def test_api_backend_still_available(monkeypatch):
     monkeypatch.setenv("LLM_BACKEND", "api")
     config.reset_settings()
     assert config.get_settings().llm_backend == "api"
+
+
+def test_plan_answers_are_tidied_to_the_schema(monkeypatch, clock, _cc_reset):
+    schema = {"type": "object", "properties": {"score": {"type": "integer"}, "clips": {"type": "array", "items": {
+        "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}}},
+        "required": ["score", "clips"]}
+    _plan(monkeypatch, '{"type": "object", "properties": {"score": 7, "clips": [{"title": "Go", "hook_style": "q"}], '
+                       '"extra": 1}}')
+    res = llm.complete("haiku", system="s", user="u", purpose="pick.score_window", json_schema=schema)
+    assert res.data == {"score": 7, "clips": [{"title": "Go"}]} and res.attempts == 1
+
+
+def test_coerce_leaves_real_problems_for_validation():
+    schema = {"type": "object", "properties": {"score": {"type": "integer"}}, "required": ["score"]}
+    assert llm.coerce_to_schema({"reason": "x"}, schema) == {}
+    assert llm.validate_json(llm.coerce_to_schema({"reason": "x"}, schema), schema)       # still missing score
+    assert llm.coerce_to_schema("text", schema) == "text"

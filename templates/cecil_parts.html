@@ -150,3 +150,48 @@
 <p class="rail-empty">No release date set (GTA6_RELEASE_DATE).</p>
 {% endif %}
 {% endmacro %}
+
+{# live Reels panel (home_live.reels + progress.py): what the Shorts pipeline is doing right now #}
+{% macro reels(c) %}
+{% set r = c.reels %}
+{% if r %}
+<div class="cc-reels">
+  {% for x in r.live %}
+  <div class="cc-reel-now is-{{ x.state }}">
+    <p class="cc-reel-now-h"><span class="cc-reel-pulse" aria-hidden="true"></span><b>{{ x.label }}</b>{% if x.total %} · {{ x.done }}/{{ x.total }}{% endif %}{% if x.state == "quiet" %} · no update for {{ x.quiet_min }} min{% endif %}</p>
+    {% if x.title %}<p class="cc-reel-title">{{ x.title | truncate(80) }}</p>{% endif %}
+    {% if x.pct is not none %}<div class="cc-reel-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ x.pct }}" aria-label="{{ x.label }}"><i style="width: {{ x.pct }}%"></i></div>{% endif %}
+    <p class="cc-meta">{{ x.lane }} run · started {{ x.started | ago }}{% if x.detail %} · {{ x.detail }}{% endif %}</p>
+  </div>
+  {% else %}
+  {% set last = r.lanes | selectattr("state", "equalto", "finished") | list %}
+  <p class="cc-reel-idle">Not running right now.{% for l in last %} Last {{ l.lane }} run {{ l.finished | ago }}{% if l.error %}, stopped: {{ l.error | truncate(80) }}{% elif l.summary %}: {% for k, v in l.summary.items() if v %}{{ k | replace("_", " ") }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.{% endfor %}</p>
+  {% endfor %}
+
+  {% if r.sources %}
+  <ol class="cc-reel-list">
+    {% for s in r.sources %}
+    <li class="cc-reel is-{{ s.status }}">
+      <p class="cc-reel-title"><a href="/dashboard/sources/{{ s.id }}">{{ s.title | truncate(70) }}</a></p>
+      <p class="cc-reel-steps" aria-label="Stage: {{ s.label }}">{% for lbl in r.steps %}<i class="{% if s.step >= loop.index0 %}on{% endif %}{% if s.step == loop.index0 - 1 and s.status in ('candidate', 'fetched', 'transcribed', 'picked') %} next{% endif %}" title="{{ lbl }}"></i>{% endfor %}</p>
+      <p class="cc-meta"><span class="chip chip-{{ s.status }}">{{ s.label }}</span>{% for st, n in s.clips.items() %} · {{ n }} {{ st }}{% endfor %} · {{ s.updated | ago }}</p>
+      {% if s.reason and s.status in ("failed", "rejected", "done") %}<p class="cc-reel-why">{{ s.reason | truncate(110) }}</p>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% if r.more %}<p class="cc-meta">and {{ r.more }} more on the <a href="/dashboard/sources">Sources</a> page</p>{% endif %}
+  {% else %}
+  <p class="rail-empty">No videos in the works.</p>
+  {% endif %}
+
+  <p class="cc-meta cc-reel-clips">Clips: {% for st, n in r.clips.items() %}{{ n }} {{ st }}{% if not loop.last %} · {% endif %}{% else %}none yet{% endfor %}{% if r.dry_run %} · <span class="chip chip-dry">dry run, nothing posts</span>{% endif %}</p>
+  {% if r.problems %}
+  <ul class="cc-reel-problems">
+    {% for p in r.problems %}<li class="is-{{ p.level }}">{{ p.text | truncate(110) }} <time datetime="{{ p.ts }}">{{ p.ts | ago }}</time></li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% else %}
+<p class="rail-empty">Reels status unavailable.</p>
+{% endif %}
+{% endmacro %}

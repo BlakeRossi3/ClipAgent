@@ -96,6 +96,10 @@
       <h2 class="rail-h">Tasks</h2>
       <ul class="rail-tasks" data-jv-tasks><li class="rail-empty">Nothing running in the background.</li></ul>
     </section>
+    <section class="rail-sec cc-panel" data-widget="reels">
+      <h2 class="rail-h">Reels</h2>
+      <div data-cc-live="reels">{{ cc.reels(c) }}</div>
+    </section>
     {% if c.countdown %}
     <section class="rail-sec cc-panel cc-countdown-panel" data-widget="countdown">
       <h2 class="rail-h">{{ c.countdown.label }} release</h2>

@@ -55,6 +55,7 @@ from typing import Any, Mapping, Sequence
 import budget
 import db
 import llm
+import progress
 from config import get_settings
 from strategy import DEFAULT_MAX_WINDOWS_PER_SOURCE, Strategy, active_experiment, assign_variant, load_strategy
 
@@ -850,10 +851,13 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
         state["cost_usd"] = round(float(state.get("cost_usd", 0.0)) + cost, 6)
 
     # ---- stage 1: Haiku per window -------------------------------------------------
-    for w in windows:
+    for i, w in enumerate(windows):
         if w.key in scores:
             stats["windows_reused"] += 1
             continue
+        progress.step("process", "score", source_id=source_id, title=src.title or src.url,
+                      detail=f"{stats['score_errors']} unreadable" if stats["score_errors"] else "",
+                      done=i, total=len(windows))
         try:
             res = llm.complete("haiku", system=system, user=score_user_prompt(src, w, words),
                                purpose="pick.score_window", max_tokens=HAIKU_MAX_TOKENS,
@@ -895,6 +899,8 @@ def pick_clips(source_id: int, strategy: Strategy | None = None, *,
         return _finish(source_id, [], stats, state, reason="no window scored >= min_haiku_score")
 
     # ---- stage 2: one Sonnet call --------------------------------------------------
+    progress.step("process", "finalize", source_id=source_id, title=src.title or src.url,
+                  detail=f"{len(moments)} moment{'s' if len(moments) != 1 else ''} scored {min_score:g}+")
     max_clips = int(strategy["max_clips_per_source"])
     arms = _arms(strategy, max_clips)
     try:

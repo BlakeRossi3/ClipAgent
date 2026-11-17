@@ -32,6 +32,7 @@ approval before any major change.
 | `strategist.py` | weekly Sonnet review -> new strategy | **done** |
 | `notify.py` | Twilio voice/SMS + webhook `router` | **done** |
 | `dashboard.py` | FastAPI `router` + `templates/` | **done** |
+| `progress.py` | live pipeline progress per lane (`process`, `upload`) in kv `pipeline:live:<lane>`; `main`/`pick` report stages, `home_live.reels()` shows them in the Jarvis page "Reels" panel (part `reels` of `/dashboard/api/cecil`) | **done** |
 | `server.py` | FastAPI `app` (notify + dashboard routers) | **done** |
 | `main.py` | APScheduler jobs + CLI; portable locks (fcntl / msvcrt), Restart/Stop control | **done** |
 | `config_store.py` | comment-preserving atomic edits of `config.env` (wizard writes) | **done** |

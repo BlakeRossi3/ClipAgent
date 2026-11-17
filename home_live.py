@@ -1,5 +1,5 @@
 """The Cecil home's live panels: recent chats, staff at work, recently worked on, "new stuff", charts,
-the GTA VI release countdown.
+the GTA VI release countdown, and the live Reels panel (what the Shorts pipeline is doing now).
 
 Plain code over the database, the in-memory event bus and ``git log`` - no model call. Rendered into the
 home page (``templates/home.html`` via ``templates/cecil_parts.html``) and refreshed by
@@ -436,6 +436,52 @@ def release_countdown(now: datetime | None = None) -> dict[str, Any] | None:
 # the whole panel set + routes
 # ---------------------------------------------------------------------------
 
+REEL_STEPS = ("candidate", "fetched", "transcribed", "picked", "done")
+REEL_STEP_LABELS = {"candidate": "Queued", "fetched": "Downloaded", "transcribed": "Transcribed",
+                    "picked": "Clips picked", "done": "Done", "failed": "Failed", "rejected": "Rejected"}
+REEL_MODULES = frozenset({"main", "pick", "fetch", "transcribe", "edit", "upload", "llm", "scout"})
+REEL_SOURCES = 8
+REEL_PROBLEMS = 4
+REEL_RECENT = timedelta(hours=24)
+
+
+def reels() -> dict[str, Any]:
+    """The live Reels panel: {lanes (progress.lanes), sources [{id, title, status, label, step, reason,
+    updated, clips}], clips {status: n}, problems [{ts, level, text}], dry_run}. Sources = everything
+    still in the works plus whatever finished or failed in the last day, busiest first."""
+    import progress
+
+    now = db.utcnow()
+    since = db.to_iso(now - REEL_RECENT)
+    clips = db.list_clips()
+    per_source: dict[int, dict[str, int]] = {}
+    totals: dict[str, int] = {}
+    for c in clips:
+        per_source.setdefault(c.source_id, {}).setdefault(c.status, 0)
+        per_source[c.source_id][c.status] += 1
+        totals[c.status] = totals.get(c.status, 0) + 1
+    active = ("candidate", "fetched", "transcribed", "picked")
+    rows = []
+    for src in db.list_sources():
+        if src.status not in active and (src.updated_at or "") < since:
+            continue
+        step = REEL_STEPS.index(src.status) if src.status in REEL_STEPS else -1
+        rows.append({"id": src.id, "title": src.title or src.url, "status": src.status,
+                     "label": REEL_STEP_LABELS.get(src.status, src.status), "step": step,
+                     "reason": src.status_reason or "", "updated": src.updated_at,
+                     "clips": per_source.get(src.id, {})})
+    live = [x for x in progress.lanes() if x["state"] in ("running", "quiet")]
+    busy = {x.get("source_id") for x in live}
+    order = {"failed": 0, "picked": 2, "transcribed": 3, "fetched": 4, "candidate": 5, "done": 6, "rejected": 7}
+    rows.sort(key=lambda r: (r["id"] not in busy, order.get(r["status"], 9), -(r["step"]), r["updated"] or ""))
+    problems = [{"ts": e.ts, "level": e.level, "text": e.message}
+                for e in db.list_events(limit=80, since=db.to_iso(now - timedelta(hours=6)))
+                if e.module in REEL_MODULES and e.level in ("warning", "error")][:REEL_PROBLEMS]
+    return {"lanes": progress.lanes(), "live": live, "sources": rows[:REEL_SOURCES], "more": max(0, len(rows) - REEL_SOURCES),
+            "clips": totals, "problems": problems, "dry_run": config.get_settings().dry_run,
+            "steps": [REEL_STEP_LABELS[s] for s in REEL_STEPS]}
+
+
 def _brain_status() -> dict[str, Any]:
     from assistant import brain
 
@@ -467,6 +513,7 @@ def cecil_data() -> dict[str, Any]:
         "new": _safe(new_stuff, [], "new stuff"),
         "charts": _safe(lambda: charts(today), None, "charts"),
         "countdown": _safe(release_countdown, None, "countdown"),
+        "reels": _safe(reels, None, "reels"),
         "brain": brain,
         "working": sum(1 for x in staff if x["state"] == "working"),
         "tasks": len(_safe(_running_tasks, [], "tasks")),
@@ -474,7 +521,7 @@ def cecil_data() -> dict[str, Any]:
     }
 
 
-PARTS = ("chats", "staff", "work", "new", "charts", "countdown")
+PARTS = ("chats", "staff", "work", "new", "charts", "countdown", "reels")
 
 
 def render_parts(request: Request, data: dict[str, Any]) -> dict[str, str]:

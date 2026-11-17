@@ -474,7 +474,9 @@ def system_prompt(*, worker: bool = False, chrome: bool | None = None, lean: boo
     persona_text = _render(skills["persona"].body, s) if "persona" in skills else f"You are {s.name}."
     part = (VOICE_PROMPT if not worker else
             "# Background task\nYou are working on a task in the background while he gets on with his day. Do the "
-            "work fully, then finish with a short plain answer: what you found or did, key facts first.")
+            "work fully, then finish with a short plain answer: what you found or did, key facts first. Ending your "
+            "turn ends the task: never stop to wait for a process you started. Wait for it to finish (poll its "
+            "status), or if it will outlast you, say what is still running and where he can watch it.")
     chrome_on = (s.chrome and not worker) if chrome is None else chrome
     note = claude_code.full_note(chrome=chrome_on, background=worker)
     if lean and s.chrome and not chrome_on:

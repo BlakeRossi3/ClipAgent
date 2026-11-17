@@ -49,6 +49,7 @@ from urllib.parse import urlparse
 
 import budget
 import db
+import progress
 import strategy as strategy_mod
 from config import Settings, get_settings
 
@@ -182,11 +183,14 @@ def render_clips(source_id: int | None = None, strategy: strategy_mod.Strategy |
 
     strat = strategy or strategy_mod.load_strategy()
     done: list[int] = []
-    for clip in db.list_clips(["picked", "failed"], source_id=source_id):
+    todo = db.list_clips(["picked", "failed"], source_id=source_id)
+    for i, clip in enumerate(todo):
         if clip.status == "failed":
             if not _clip_retries_left(clip.id):
                 continue
             db.kv_incr(f"main:clip_retries:{clip.id}")
+        progress.step("process", "render", source_id=clip.source_id, clip_id=clip.id, title=clip.title or "",
+                      detail=f"clip {clip.id}", done=i, total=len(todo))
         try:
             edit.render_clip(clip.id, strat)
         except edit.RenderError as exc:
@@ -223,14 +227,17 @@ def process_source(source_id: int, *, allow_llm: bool = True,
     strat = strategy or strategy_mod.load_strategy()
     src = db.require_source(source_id)
     if src.status == "candidate":
+        progress.step("process", "fetch", source_id=source_id, title=src.title or src.url)
         fetch.fetch_source(source_id, strat)
         src = db.require_source(source_id)
     if src.status == "fetched":
+        progress.step("process", "transcribe", source_id=source_id, title=src.title or src.url)
         transcribe.transcribe_source(source_id)
         src = db.require_source(source_id)
     if src.status == "transcribed":
         if not allow_llm:
             return []
+        progress.step("process", "score", source_id=source_id, title=src.title or src.url)
         pick.pick_clips(source_id, strat)
         src = db.require_source(source_id)
     if src.status != "picked":
@@ -280,55 +287,68 @@ def _mark_failed(source_id: int, reason: str) -> None:
 
 
 def process_pending(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
-    """Advance up to ``max_sources`` sources (closest to done first), then render stray clips."""
+    """Advance up to ``max_sources`` sources (closest to done first), then render stray clips.
+
+    Reports live progress (lane ``process``) for the dashboard's Reels panel."""
+    with stage_lock("process"):
+        progress.start_run("process")
+        counts: Counter[str] = Counter()
+        try:
+            _process_pending(max_sources, counts)
+        except BaseException as exc:
+            progress.end_run("process", dict(counts), error=f"{type(exc).__name__}: {exc}")
+            raise
+        progress.end_run("process", dict(counts))
+    return dict(counts)
+
+
+def _process_pending(max_sources: int, counts: Counter[str]) -> None:
     import fetch
     import pick
     import transcribe
 
-    with stage_lock("process"):
-        strat = strategy_mod.load_strategy()
-        counts: Counter[str] = Counter()
-        counts["retried"] = len(retry_failed_sources())
-        llm_ok = not budget.is_paused()
-        by_status = {st: db.list_sources(st) for st in _WORK_ORDER}
-        work = [s for st in _WORK_ORDER for s in by_status[st]]
-        for src in work:
-            if counts["processed"] >= max_sources:
-                break
-            if src.status == "transcribed" and not llm_ok:
-                counts["waiting_for_budget"] += 1
-                continue
-            counts["processed"] += 1
-            try:
-                counts["clips_rendered"] += len(process_source(src.id, allow_llm=llm_ok, strategy=strat))
-            except budget.BudgetExceeded as exc:
-                llm_ok = False
-                counts["budget_stopped"] = 1
-                db.log_event(MODULE, f"LLM budget exhausted at source {src.id}; judgment paused until tomorrow",
-                             level="warning", data={"source_id": src.id, "error": str(exc)})
-            except pick.LLMUnavailable as exc:   # API outage/auth: not the source's fault
-                llm_ok = False
-                counts["llm_unavailable"] = 1
-                db.log_event(MODULE, f"LLM unavailable at source {src.id}; judgment skipped this run",
-                             level="warning", data={"source_id": src.id, "error": str(exc)[:300]})
-            except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this item
-                counts["skipped_concurrent"] += 1
-                log.info("source %s changed status concurrently: %s", src.id, exc)
-            except fetch.LicenceRejected:
-                counts["rejected"] += 1
-            except (fetch.FetchError, transcribe.TranscribeError, pick.PickError) as exc:
-                counts["failed"] += 1
-                log.warning("source %s failed: %s", src.id, exc)
-            except Exception as exc:  # an unexpected bug must not stop the other sources
-                counts["failed"] += 1
-                db.log_event(MODULE, f"source {src.id}: unexpected {type(exc).__name__}: {exc}", level="error",
-                             data={"source_id": src.id, "traceback": traceback.format_exc()[-2000:]})
-                _mark_failed(src.id, f"unexpected {type(exc).__name__}: {exc}")
-        # clips picked outside this run (requeued, earlier render failures with retries left)
-        counts["clips_rendered"] += len(render_clips(strategy=strat))
-        for src in db.list_sources("picked"):
-            _finish_source(src.id)
-    return dict(counts)
+    strat = strategy_mod.load_strategy()
+    counts["retried"] = len(retry_failed_sources())
+    llm_ok = not budget.is_paused()
+    by_status = {st: db.list_sources(st) for st in _WORK_ORDER}
+    work = [s for st in _WORK_ORDER for s in by_status[st]]
+    for src in work:
+        if counts["processed"] >= max_sources:
+            break
+        if src.status == "transcribed" and not llm_ok:
+            counts["waiting_for_budget"] += 1
+            continue
+        counts["processed"] += 1
+        try:
+            counts["clips_rendered"] += len(process_source(src.id, allow_llm=llm_ok, strategy=strat))
+        except budget.BudgetExceeded as exc:
+            llm_ok = False
+            counts["budget_stopped"] = 1
+            db.log_event(MODULE, f"LLM budget exhausted at source {src.id}; judgment paused until tomorrow",
+                         level="warning", data={"source_id": src.id, "error": str(exc)})
+        except pick.LLMUnavailable as exc:   # API outage/auth: not the source's fault
+            llm_ok = False
+            counts["llm_unavailable"] = 1
+            db.log_event(MODULE, f"LLM unavailable at source {src.id}; judgment skipped this run",
+                         level="warning", data={"source_id": src.id, "error": str(exc)[:300]})
+        except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this item
+            counts["skipped_concurrent"] += 1
+            log.info("source %s changed status concurrently: %s", src.id, exc)
+        except fetch.LicenceRejected:
+            counts["rejected"] += 1
+        except (fetch.FetchError, transcribe.TranscribeError, pick.PickError) as exc:
+            counts["failed"] += 1
+            log.warning("source %s failed: %s", src.id, exc)
+        except Exception as exc:  # an unexpected bug must not stop the other sources
+            counts["failed"] += 1
+            db.log_event(MODULE, f"source {src.id}: unexpected {type(exc).__name__}: {exc}", level="error",
+                         data={"source_id": src.id, "traceback": traceback.format_exc()[-2000:]})
+            _mark_failed(src.id, f"unexpected {type(exc).__name__}: {exc}")
+    # clips picked outside this run (requeued, earlier render failures with retries left)
+    counts["clips_rendered"] += len(render_clips(strategy=strat))
+    progress.step("process", "finishing")
+    for src in db.list_sources("picked"):
+        _finish_source(src.id)
 
 
 def upload_ready(limit: int | None = None) -> list[int]:
@@ -337,25 +357,38 @@ def upload_ready(limit: int | None = None) -> list[int]:
     Stops the batch on ``UploadCapReached`` / ``QuotaExhausted`` / ``UploadAuthError``;
     any other ``UploadError`` skips that clip.
     """
-    import upload
-
     ids: list[int] = []
     with stage_lock("upload"):
-        for clip in db.list_clips(["rendered", "scheduled"]):
-            if limit is not None and len(ids) >= limit:
-                break
-            try:
-                ids.append(upload.upload_clip(clip.id))
-            except (upload.UploadCapReached, upload.UploadAuthError) as exc:   # QuotaExhausted included
-                routine = type(exc) is upload.UploadCapReached                  # the daily cap, not a problem
-                db.log_event(MODULE, f"upload batch stopped: {exc}", level="info" if routine else "warning",
-                             data={"clip_id": clip.id, "reason": type(exc).__name__})
-                break
-            except upload.UploadError as exc:
-                log.warning("upload of clip %s failed: %s", clip.id, exc)
-            except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this clip
-                log.info("clip %s changed status concurrently: %s", clip.id, exc)
+        todo = db.list_clips(["rendered", "scheduled"])
+        if todo:
+            progress.start_run("upload")
+        try:
+            _upload_batch(todo, limit, ids)
+        finally:
+            if todo:
+                progress.end_run("upload", {"uploaded": len(ids)})
     return ids
+
+
+def _upload_batch(todo: list[db.Clip], limit: int | None, ids: list[int]) -> None:
+    import upload
+
+    for i, clip in enumerate(todo):
+        if limit is not None and len(ids) >= limit:
+            break
+        progress.step("upload", "upload", source_id=clip.source_id, clip_id=clip.id, title=clip.title or "",
+                      detail=f"clip {clip.id}", done=i, total=len(todo))
+        try:
+            ids.append(upload.upload_clip(clip.id))
+        except (upload.UploadCapReached, upload.UploadAuthError) as exc:   # QuotaExhausted included
+            routine = type(exc) is upload.UploadCapReached                  # the daily cap, not a problem
+            db.log_event(MODULE, f"upload batch stopped: {exc}", level="info" if routine else "warning",
+                         data={"clip_id": clip.id, "reason": type(exc).__name__})
+            break
+        except upload.UploadError as exc:
+            log.warning("upload of clip %s failed: %s", clip.id, exc)
+        except db.InvalidTransition as exc:  # a concurrent run moved it on: skip this clip
+            log.info("clip %s changed status concurrently: %s", clip.id, exc)
 
 
 def run_once(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
