@@ -1807,7 +1807,8 @@ def announce_task(row: dict[str, Any], full: str) -> bool:
 
 def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
                timeout: float | None = None, model: str | None = None,
-               effort: str | None = None, with_kind: bool = False) -> Any:
+               effort: str | None = None, with_kind: bool = False,
+               should_stop: Callable[[], bool] | None = None) -> Any:
     """A parallel worker session for one background task (fresh, full powers, the main model unless
     ``model``/``effort`` say otherwise, e.g. the cheap morning surprise). Returns (result text, status),
     or with ``with_kind`` (result text, status, kind) where kind says why it did not finish
