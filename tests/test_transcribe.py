@@ -383,6 +383,44 @@ class TestBackends:
         b.transcribe(tmp_path / "b.wav")  # model reused
         assert created["path"].endswith("b.wav")
 
+    def test_faster_whisper_gets_samples_not_a_path_for_our_wav(self, monkeypatch, tmp_path):
+        """faster-whisper 1.2 + PyAV >= 15 fails in av.open(metadata_errors=...); our 16 kHz WAV
+        is decoded here and handed over as a float32 array so PyAV is never used."""
+        np = pytest.importorskip("numpy")
+        wav = tmp_path / "audio.wav"
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16_000)
+            w.writeframes(np.array([0, 16384, -32768, 32767], dtype="<i2").tobytes())
+        seen: dict[str, Any] = {}
+
+        class StubModel:
+            def __init__(self, *a, **kw):
+                pass
+
+            def transcribe(self, audio, **kw):
+                seen["audio"] = audio
+                return iter(()), types.SimpleNamespace(language="en", duration=0.0)
+
+        monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=StubModel))
+        FasterWhisperBackend("tiny.en", device="cpu").transcribe(wav)
+        audio = seen["audio"]
+        assert isinstance(audio, np.ndarray) and audio.dtype == np.float32
+        assert audio.tolist() == [0.0, 0.5, -1.0, 32767 / 32768]
+
+    def test_load_wav_samples_rejects_other_formats(self, tmp_path):
+        assert transcribe.load_wav_samples(tmp_path / "missing.wav") is None
+        (tmp_path / "junk.wav").write_bytes(b"not a wav")
+        assert transcribe.load_wav_samples(tmp_path / "junk.wav") is None
+        stereo = tmp_path / "stereo.wav"
+        with wave.open(str(stereo), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(16_000)
+            w.writeframes(b"\x00" * 8)
+        assert transcribe.load_wav_samples(stereo) is None
+
     def test_import_does_not_load_faster_whisper(self):
         code = "import sys, transcribe; assert 'faster_whisper' not in sys.modules"
         subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(transcribe.__file__).parent)

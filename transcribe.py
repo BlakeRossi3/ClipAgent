@@ -169,8 +169,11 @@ class FasterWhisperBackend:
 
     def _transcribe(self, media_path: Path) -> dict:
         model = self._load()
+        # Hand faster-whisper decoded samples when we can: its own decoder (PyAV) breaks on
+        # version skew - faster-whisper 1.2 passes ``metadata_errors=`` which PyAV >= 15 removed.
+        audio = load_wav_samples(media_path)
         segments, info = model.transcribe(
-            str(media_path),
+            audio if audio is not None else str(media_path),
             language=self.language,
             beam_size=self.beam_size,
             word_timestamps=True,
@@ -261,6 +264,23 @@ def extract_audio(media_path: Path, out_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # transcript shape helpers
 # ---------------------------------------------------------------------------
+
+def load_wav_samples(path: Path) -> Any | None:
+    """Float32 numpy samples in [-1, 1) of a 16 kHz mono 16-bit PCM WAV (what :func:`extract_audio`
+    writes), or ``None`` if ``path`` is not such a file (the caller then passes the path instead)."""
+    import wave
+
+    try:
+        with wave.open(str(path), "rb") as w:
+            if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, SAMPLE_RATE):
+                return None
+            raw = w.readframes(w.getnframes())
+    except (OSError, EOFError, wave.Error):
+        return None
+    import numpy as np  # faster-whisper dependency; kept out of import time
+
+    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+
 
 def _r(x: Any) -> float:
     return round(float(x), 3)
