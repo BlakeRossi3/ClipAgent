@@ -62,6 +62,64 @@
       },
       "vet_id": "7dcbfb62e619"
     },
+    "taste-guides": {
+      "approved_by": "owner (decision 8)",
+      "commit": null,
+      "files": {
+        "LICENSE": "4575a543ab88dad12ccea7d97e563d0bce5b448b06072e65d3264497dad326df",
+        "SKILL.md": "f55f6aaf8effc8087c0d886f66b7b42fc1730f091e63c1b715607507c7570f10",
+        "library/palettes.json": "96d594648249b2dff17addcd0e2965b0eee0cf2815ae68542add82a87d856d6d",
+        "library/type.json": "144be2adc366028ec2d380782e9150436f6bf5f1e4177159674c84435250d830",
+        "references/backgrounds.md": "b8d593ffaadcc390503d86fc094ed3bf4e070c1ee7927c1e1c1251443409c9c1",
+        "references/cards.md": "f70d8c41c55ff7e777b5ce51cbe61fee05c024b268c744beb53528ec8a4869a1",
+        "references/copy-moves.md": "6e5c7eb52ab5cbe61c07eb936c3d17d4432f02dbae2da1f1bbab5e9aef7b2400",
+        "references/copy-registers.md": "8e2e6d5b9ef09e38bfdd2f1c9a32796bd91c1f3f99c6c51abbbe89d99119d6fd",
+        "references/copy-tells.md": "e113d4f788f64e44e92cefa0823be4cf0662f2806ed87f91aa52d9cf8877d6ed",
+        "references/copy-voice.md": "3a287b8f10384229aa52e6d75480fddc377aafd05f7d0ee9d1a180d2ebf44e8a",
+        "references/copy.md": "607520bc4213e06e6635f4fa44915d3fb5482b5b2e3779faa0a5c9d2abcc9e69",
+        "references/diagrams.md": "2aafd9ad74d2fc620174c23aa48f9ce6201ce33c1b441630973af9509a9b723e",
+        "references/effects-creative.md": "5d91932981577d300c8f1b2907811335777552eccb333b07c50ef5b1c000bbc9",
+        "references/effects-objects.md": "053eb08058dfa970cda3cb71ee469d14025fb86c4eb8d70b4a112ef47760c4cb",
+        "references/effects-usage.md": "4522bce7971e31e776c845b008b6f40997ab97a68d49cf2bb4493f72798a5342",
+        "references/icons.md": "d385f027d63d488a27ae63bef8bcff2cb4358e74cb0ad7454e4e9da6a49f8381",
+        "references/layout-v4.md": "6316217db46993977700cf4203cc29f96cad0d7bf3a97e877241b1be0901fd19",
+        "references/method.md": "0a1912586125f5fd03bd9a01468adb682dcbe098e3f52767bf0f81db221d8c71",
+        "references/moments.md": "eee7b8e18aaa268ac6ea31b58d7444b164ff10b1cf0ccea93b02904b9a0dd9e7",
+        "references/motion.md": "d7bc6fe01cab8a1c1e921309291828c68f875a25907317279842cf306391c373",
+        "references/perf.md": "fcf55304221bd2b371ba3a80dd2e9efa1e176c104c1d28eac1dd266f804871c8",
+        "references/photos.md": "b115cafc205ee20f19e6e90d061d24d31460966f1bd4315fb3434ca2d560c33e",
+        "references/scenes.md": "3de1b89ecd2b9b9777b8b04f69c5e5a2fc0fb8dbff0f3feb06f2fe9e5b90599b",
+        "references/sections-library.md": "ce1c6bc27c41a3b49430a9ad3f06e02efd22471b869e4d3ea802a947ae6fb0c9",
+        "references/sections.md": "999cb82dba04d205052725e93a240fcb59be1c1d7ab31129a191eb6f4ee31e89",
+        "references/system.md": "f6bfbdb36b49c4584b4fd10ff24e9e97098bd93d09da3e08e8424500ee641d01"
+      },
+      "installed_at": "2026-11-18T15:55:52Z",
+      "restricted": true,
+      "restrictions": [
+        "reference text only: never inlined into an agent prompt automatically",
+        "cannot add tools; must not be used to read secrets or message anyone"
+      ],
+      "source": "local:C:\\Users\\blake\\AppData\\Local\\ClipAgent\\data\\assistant\\staging\\taste-guides",
+      "static_rating": "CAUTION",
+      "trusted_source": false,
+      "verdict": {
+        "at": "2026-11-18T15:54:32Z",
+        "decision": "ask",
+        "decision_id": 8,
+        "rating": "SAFE",
+        "red_flags": [
+          "Static 'writes_outside' hit is a false positive: it is my wrapper's own line forbidding edits to .claude/settings.json",
+          "Guides still mention running node <skill>/scripts/*.mjs (photos, deal, gate, consistency, shoot, perf); those scripts are absent and the wrapper forbids running them or install.sh/npx",
+          "Upstream original installs a Stop hook and describes adding hooks to .claude/settings.json; both removed (gate.md dropped, frontmatter stripped)",
+          "Guides reference an assets/ kit (starter.html, system.css, fx components) that is not included, so some steps must be done by hand",
+          "Photo guidance points at Wikimedia Commons/Unsplash live search; only relevant when building a site, and licensing rules are kept",
+          "Local copy, so no repo reputation check; origin is github.com/Leonxlnx/taste-skill at f6b76575",
+          "About 540 KB of text: grep-scanned all of it for commands, URLs, secrets, hooks and injection phrases and spot-read files rather than reading every line"
+        ],
+        "summary": "Text-only design guides adapted from Leonxlnx/taste-skill (tasteskill v2.5.1, MIT, commit f6b76575, ~70k GitHub stars), the 'Taste' skill named in the reel. 21 markdown guides (page plans by kind of business, layout one section per screen, copy voice, openly licensed photographs, motion, cards, effects, perf), the original SKILL.md body as references/method.md, and two JSON libraries of palettes and type pairings, plus my own wrapper SKILL.md. Removed before vetting: all 12 scripts (including a 1 MB consistency.mjs), the 1,594-file asset kit, install.sh, the gate guide, and the original frontmatter Stop hook that ran node gate.mjs on every turn end. No executable files, no network calls, no credential access; it only changes how Cecil designs web pages when asked."
+      },
+      "vet_id": "e5eb1ccffd9c"
+    },
     "webapp-testing": {
       "approved_by": "owner via dashboard",
       "catalog": true,

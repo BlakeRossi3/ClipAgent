@@ -1309,6 +1309,36 @@ def stats_between(start_day: date | str, end_day: date | str, *, conn: sqlite3.C
         return _many(c, Stat, "SELECT * FROM stats WHERE day >= ? AND day <= ? ORDER BY day, youtube_video_id", (s, e))
 
 
+def unreported_views(*, conn: sqlite3.Connection | None = None) -> dict[str, int]:
+    """{video id: live views YouTube Analytics has not reported yet} for real uploads.
+
+    Analytics lags ~2 days, so a Short's newest views exist only in the Data API lifetime
+    counter (``uploads.lifetime_views``). The gap ``lifetime_views - SUM(stats.views)`` (never
+    negative) is those recent views. Videos with no gap are left out.
+    """
+    with transaction(conn) as c:
+        rows = c.execute(
+            """SELECT u.youtube_video_id AS vid,
+                      MAX(COALESCE(u.lifetime_views, 0) - COALESCE(t.v, 0), 0) AS gap
+               FROM uploads u
+               LEFT JOIN (SELECT youtube_video_id, SUM(views) AS v FROM stats GROUP BY youtube_video_id) t
+                      ON t.youtube_video_id = u.youtube_video_id
+               WHERE u.status IN ('uploaded', 'removed') AND u.dry_run = 0
+                 AND u.youtube_video_id IS NOT NULL""").fetchall()
+    return {r["vid"]: int(r["gap"]) for r in rows if r["gap"]}
+
+
+def recent_views(since_day: date | str, *, conn: sqlite3.Connection | None = None) -> int:
+    """Views from ``since_day`` up to now: Analytics days plus the not-yet-reported live views.
+
+    Use this (not a bare ``stats_between`` sum) for "views this week": without the live part,
+    every Short younger than the Analytics lag reads 0.
+    """
+    today = local_today()
+    reported = sum(s.views for s in stats_between(since_day, today, conn=conn))
+    return reported + sum(unreported_views(conn=conn).values())
+
+
 def upsert_retention(
     youtube_video_id: str,
     curve: Sequence[Sequence[float]],
@@ -1379,7 +1409,9 @@ def clip_performance(
     avg_view_pct and avg_view_duration_sec (view-weighted over the period's days, so a 3-view day
     does not count as much as a 3,000-view day; plain mean only when no day had views), days_tracked (stats days in
     the period), total_views (all days), lifetime_views / lifetime_likes / lifetime_comments (Data
-    API counters, None until fetched). Ordered by upload time.
+    API counters, None until fetched), live_views (``views`` plus the live views Analytics has not
+    reported yet when the period runs to now; equal to ``views`` when ``until_day`` is given).
+    Ordered by upload time.
     """
     since = since_day.isoformat() if isinstance(since_day, date) else since_day
     until = until_day.isoformat() if isinstance(until_day, date) else until_day
@@ -1436,6 +1468,9 @@ def clip_performance(
     out = [dict(r) for r in rows]
     for r in out:
         r["copyright_claim"] = bool(r["copyright_claim"])
+        # views not yet in Analytics (lag) are recent, so they belong to any period that runs to now
+        gap = max((r["lifetime_views"] or 0) - r["total_views"], 0) if until is None else 0
+        r["live_views"] = r["views"] + gap
     return out
 
 

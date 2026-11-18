@@ -335,7 +335,7 @@ def _fit(parts: list[str], limit: int = 320) -> str:
 
 def _shorts_line(day: date, *, label: str) -> str:
     posted = db.count_uploads_on(day)
-    views = sum(s.views for s in db.stats_between(day - timedelta(days=7), day))
+    views = db.recent_views(day - timedelta(days=7))  # up to now, live counts included
     bits = [f"Shorts: {posted} posted {label}"]
     if views:
         bits.append(f"{views:,} views over the past week")
@@ -416,7 +416,7 @@ def compose_weekly_review(h: str) -> str:
     s = ledger.summary(weeks=2)
     lw = s["this_week"]
     today = db.local_today()
-    views = sum(x.views for x in db.stats_between(today - timedelta(days=7), today))
+    views = db.recent_views(today - timedelta(days=7))
     posted = sum(db.count_uploads_on(today - timedelta(days=k)) for k in range(7))
     parts = [f"Your week, {h}:"]
     if s["jobs"]:

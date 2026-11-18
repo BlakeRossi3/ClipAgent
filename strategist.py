@@ -263,7 +263,7 @@ def gather(days: int = 7, strategy: Strategy | None = None) -> dict[str, Any]:
     end_iso = db.local_day_bounds(today)[1]
     rows = collect_clip_rows(since, strat)
     prev_rows = db.clip_performance(since - timedelta(days=days), since - timedelta(days=1))
-    period_views = sum(s.views for s in db.stats_between(since, today))
+    period_views = db.recent_views(since)
     spend = db.llm_spend_between(start_iso, end_iso)
     uploads = [u for u in db.list_uploads(include_dry_run=True) if u.created_at >= start_iso]
     up_counts: dict[str, int] = defaultdict(int)
