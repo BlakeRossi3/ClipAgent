@@ -91,7 +91,7 @@ class AssistantSettings:
     # --- initiative (assistant/initiative.py): build from the backlog by itself while he is away
     initiative: bool = True                  # ASSISTANT_INITIATIVE
     initiative_share: float = 0.35           # at most this share of each plan usage window
-    initiative_idle_min: int = 30            # he has been quiet this many minutes
+    initiative_idle_min: int = 0             # opt-in: wait until he has been quiet this many minutes
     # --- texts (assistant/sms_inbox.py): back-to-back texts become one request
     sms_batch_sec: float = 4.0               # ASSISTANT_SMS_BATCH_SEC: wait this long for a follow-up text
     # --- self-healing (assistant/autofix.py): failures get diagnosed and fixed by a background task
@@ -171,7 +171,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         semantic_memory=_auto_on_off(env.get("ASSISTANT_SEMANTIC_MEMORY")),
         initiative=config._bool(env.get("ASSISTANT_INITIATIVE"), True),
         initiative_share=min(1.0, max(0.0, float(s("ASSISTANT_INITIATIVE_SHARE", "0.35")))),
-        initiative_idle_min=max(0, int(s("ASSISTANT_INITIATIVE_IDLE_MIN", "30"))),
+        initiative_idle_min=max(0, int(s("ASSISTANT_INITIATIVE_IDLE_MIN", "0"))),
         sms_batch_sec=min(60.0, max(0.0, float(s("ASSISTANT_SMS_BATCH_SEC", "4") or 0))),
         autofix=config._bool(env.get("ASSISTANT_AUTOFIX"), True),
         autofix_max_per_day=max(0, int(s("ASSISTANT_AUTOFIX_MAX_PER_DAY", "6"))),

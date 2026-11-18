@@ -739,7 +739,7 @@ def _initiative_specs() -> list[JobSpec]:
     if not get_assistant_settings().initiative:
         return []
     return [JobSpec("assistant_initiative", lambda: __import__("assistant.initiative", fromlist=["x"]).tick()["status"],
-                    "interval", {"minutes": 20}, "initiative: work on the backlog while he is away"),
+                    "interval", {"minutes": 15}, "initiative: work on the backlog every 15 min"),
             JobSpec("assistant_initiative_harvest",
                     lambda: __import__("assistant.initiative", fromlist=["x"]).harvest()["status"],
                     "cron", {"hour": 3, "minute": 20}, "initiative: turn his recent messages into backlog items")]

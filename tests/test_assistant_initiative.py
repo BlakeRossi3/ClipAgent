@@ -99,10 +99,16 @@ def test_seed_once_in_order_without_duplicates(on):
 
 def test_idle_gate_and_busy_gate(on, clock, monkeypatch):
     store.add_message("in", "dashboard", "add a weather widget")
+    assert initiative.gate()[0]                    # default: works alongside him ("every 15 minutes, whether
+    monkeypatch.setenv("ASSISTANT_INITIATIVE_IDLE_MIN", "30")   # I'm interacting with it or not"); opt-in wait:
+    asettings.reset_assistant_settings()
     ok, why, when = initiative.gate()
     assert not ok and "active 0 min ago" in why and when == db.utcnow() + timedelta(minutes=30)
     clock.advance(minutes=31)
     assert initiative.gate()[0]
+    monkeypatch.setattr(initiative, "_talking_now", lambda: True)
+    assert "talking" in initiative.gate()[1]       # never in the middle of a turn with him
+    monkeypatch.setattr(initiative, "_talking_now", lambda: False)
     monkeypatch.setattr(selfedit, "in_flight", lambda: True)
     ok, why, _ = initiative.gate()
     assert not ok and "being tested" in why
@@ -114,6 +120,22 @@ def test_idle_gate_and_busy_gate(on, clock, monkeypatch):
     asettings.reset_assistant_settings()
     assert "initiative is off" in initiative.gate()[1] and initiative.tick()["status"] == "off"
 
+
+
+def test_empty_backlog_becomes_a_self_review_at_most_every_two_hours(on, clock):
+    initiative.seed()
+    for it in store.list_backlog("open"):
+        store.update_backlog(it.id, status="dropped")
+    res = initiative.tick()
+    assert res["status"] == "started" and res["title"].startswith("Self-review")
+    _wait()
+    assert "backlog_add" in on["briefs"][-1] and "every other place that reads" in on["briefs"][-1]
+    for it in store.list_backlog("open"):
+        store.update_backlog(it.id, status="dropped")
+    clock.advance(minutes=15)
+    assert initiative.tick()["status"] == "empty"                   # not again within two hours
+    clock.advance(hours=2)
+    assert initiative.tick()["title"].startswith("Self-review")
 
 def test_usage_share_gate(on, clock):
     _quiet(clock)

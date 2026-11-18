@@ -1,4 +1,4 @@
-"""Initiative: Cecil works on himself while the owner is away, from a backlog, within a share of the plan.
+"""Initiative: Cecil works on himself all day, from a backlog, within a share of the plan.
 
 The owner's words: "If I don't say anything all day it should still be doing things ... I should come back
 after a day and Cecil says: hey, I built this, this and this - your usage didn't go to waste."
@@ -10,14 +10,18 @@ after a day and Cecil says: hey, I built this, this and this - your usage didn't
   (assistant/capabilities.py), repeatedly failing agent runs and proposed lessons, de-duplicated against every
   title already on the list (also dropped ones, so a removed wish never comes back). Editable on
   ``/dashboard/initiative`` and with the ``backlog_*`` tools.
-* **Tick** (job ``assistant_initiative``, every 20 min, :func:`tick`): when :func:`gate` allows, the top open
+* **Tick** (job ``assistant_initiative``, every 15 min, :func:`tick`): when :func:`gate` allows, the top open
   item (lowest position, not tried in the last :data:`RETRY_AFTER`, fewer than :data:`MAX_ATTEMPTS` tries)
   becomes ONE background task (``tasks.start(..., self_edit=True)``: a full-power worker session wrapped in
   the self-edit guardrail, so code it changes is tested and committed, or rolled back). :func:`on_finished`
   records what was built, why, tests, what is left and the commits; the item becomes done / open / blocked.
-* **Gate**: assistant on, not stopped, ``ASSISTANT_INITIATIVE`` on; he has been quiet for
-  ``ASSISTANT_INITIATIVE_IDLE_MIN`` (no inbound message, voice turn or dashboard chat, and no turn in
-  progress); no background task or self-edit in flight; and the usage share allows it (:func:`usage_gate`):
+* **Empty backlog**: :func:`tick` adds a *self-review* item (at most every :data:`SELF_REVIEW_EVERY`):
+  find the next improvement (problems self-repair could not fix, capability gaps, trusted catalog skills for
+  what he keeps asking, his complaints), file them with ``backlog_add`` and build the most valuable one. He
+  asked for it to always be making progress: "every 15 minutes, whether I'm interacting with it or not".
+* **Gate**: assistant on, not stopped, ``ASSISTANT_INITIATIVE`` on; not mid-turn with him (and, only when
+  ``ASSISTANT_INITIATIVE_IDLE_MIN`` > 0 - default 0 - quiet that long); no background task or self-edit in
+  flight; and the usage share allows it (:func:`usage_gate`):
   never when ``usage.constrained()`` or a known window is >= :data:`RESERVE` used; per known window
   (5-hour / weekly), the initiative runs that started in it may use at most ``ASSISTANT_INITIATIVE_SHARE``
   of it (each run costs its observed utilisation rise, or :data:`EST_RUN_COST` when no fresh usage event
@@ -66,6 +70,18 @@ STALE_TASK = timedelta(minutes=20)          # beyond the task timeout: a lost ru
 MAX_LINE_CHARS = 500
 MAX_TOKENS = 1200
 SIMILAR = 0.82
+SELF_REVIEW_EVERY = timedelta(hours=2)      # empty backlog: at most one self-review item per this span
+KV_SELF_REVIEW = "initiative:self_review_at"
+SELF_REVIEW_DETAIL = (
+    "Your backlog is empty, so find the next improvement yourself and make it. Look, cheaply (tools, not long "
+    "reads): 1) autofix_log - problems marked needs_you that a code change could fix; 2) the capability log "
+    "(capability_check / Agent/Capabilities.md) - gaps you hit; 3) skills_catalog_search for a trusted skill "
+    "covering something he keeps asking for (propose it with skill_request_install; never install third-party "
+    "software yourself); 4) conversation_history of the last day - his complaints and wishes. File each concrete "
+    "finding with backlog_add (one line each, no duplicates), then build the single most valuable small one now. "
+    "When you fix how one place reads or shows some data, search the code for every other place that reads the "
+    "same data (grep the function, table or kv key) and fix those too - he notices when one screen is fixed and "
+    "another still shows the old number.")
 
 #: Things Blake asked for repeatedly in the build chat (source ``seed``), in this order.
 SEED_LIST: list[tuple[str, str]] = [
@@ -306,7 +322,7 @@ def gate(now: datetime | None = None) -> tuple[bool, str, datetime | None]:
         return False, "Cecil is stopped", None
     last = last_interaction()
     idle_need = timedelta(minutes=s.initiative_idle_min)
-    if last is not None and now - last < idle_need:
+    if idle_need and last is not None and now - last < idle_need:   # opt-in; default 0 = work alongside him
         return False, f"he was active {int((now - last).total_seconds() // 60)} min ago", last + idle_need
     why = busy(now)
     if why:
@@ -330,6 +346,18 @@ def pick(now: datetime | None = None) -> store.BacklogItem | None:
     return None
 
 
+def _self_review(now: datetime) -> store.BacklogItem | None:
+    """Empty backlog: add (and return) a self-review item, at most every :data:`SELF_REVIEW_EVERY`."""
+    last = db.kv_get(KV_SELF_REVIEW)
+    if isinstance(last, str) and now - db.parse_iso(last) < SELF_REVIEW_EVERY:
+        return None
+    db.kv_set(KV_SELF_REVIEW, db.to_iso(now))           # bookkeeping before the work
+    local = now.astimezone(db.local_tz())
+    item_id = store.add_backlog(f"Self-review {local.strftime('%a %H:%M')}: find and make the next improvement",
+                                detail=SELF_REVIEW_DETAIL, source="cecil")
+    return store.get_backlog(item_id)
+
+
 def brief(item: store.BacklogItem) -> str:
     s = get_assistant_settings()
     owner = s.owner_name or "the owner"
@@ -338,26 +366,29 @@ def brief(item: store.BacklogItem) -> str:
     if left:
         prev += f"\nLeft over from last time: {left}"
     return (f"<initiative_task item=\"{item.id}\">\n"
-            f"You are working on your own initiative while {owner} is away. He set this up himself: when he has been "
-            "quiet for a while and plan usage allows, take the top item of your backlog (things he said he wants and "
-            "things you should do better) and build it without asking him. He approved this mode: you may change "
-            "your own code (this app), skills and agent files, test them and keep them.\n\n"
+            f"You are working on your own initiative. {owner} set this up himself: every 15 minutes, while plan "
+            "usage allows, take the top item of your backlog (things he said he wants and things you should do "
+            "better) and build it without asking him, even while he is around. He approved this mode: you may "
+            "change your own code (this app), skills and agent files, test them and keep them.\n\n"
             f"Backlog item #{item.id}: {item.title}\n{item.detail}\n"
             f"Source: {item.source}. Attempt {item.attempts} of {MAX_ATTEMPTS}.{prev}\n\n"
             "How:\n"
             "1. capability_check first; prefer existing tools, installed skills and trusted catalog skills over new "
             "code.\n"
-            "2. Follow the test-driven-development, systematic-debugging and verification-before-completion skills "
+            "2. Before changing code, read docs/CODEMAP.md (where everything lives and who reads what) instead of "
+            "exploring file by file. When you change how one place reads or shows some data, grep for every other "
+            "reader of the same data and fix them in the same change.\n"
+            "3. Follow the test-driven-development, systematic-debugging and verification-before-completion skills "
             "(skill_read). Keep the change small and focused: one useful slice that works beats a big half-finished "
             "one. If the item is large, build the first useful slice and say what is left.\n"
-            "3. Do not git commit, push or switch branches: when you finish, your changes are tested with the full "
+            "4. Do not git commit, push or switch branches: when you finish, your changes are tested with the full "
             "suite and committed automatically (or rolled back if the tests fail). Every change is undoable from "
             "the Initiative page.\n"
-            "4. Never: read or change secrets (keys, tokens, passwords, config.env secret values), the approval "
+            "5. Never: read or change secrets (keys, tokens, passwords, config.env secret values), the approval "
             "rules, or Agent/Heartbeat.md; spend money; message or call anyone (him included - he hears about it "
             "when he is back); install third-party software or skills (skill_request_install proposes one for his "
             "approval); change anything outside this app and his vault.\n"
-            "5. If it needs him (a sign-in, OAuth, a purchase, a decision), do what you can without him and finish "
+            "6. If it needs him (a sign-in, OAuth, a purchase, a decision), do what you can without him and finish "
             "with STATUS: blocked and what you need.\n\n"
             "Finish with exactly these lines:\n"
             "STATUS: done | partial | blocked\n"
@@ -465,7 +496,7 @@ def _reconcile(now: datetime | None = None) -> int:
 
 
 def tick(now: datetime | None = None) -> dict[str, Any]:
-    """Scheduler job (every 20 min). Returns {status: off|stopped|waiting|empty|started, reason, ...}."""
+    """Scheduler job (every 15 min). Returns {status: off|stopped|waiting|empty|started, reason, ...}."""
     from assistant import runtime
 
     s = get_assistant_settings()
@@ -485,7 +516,7 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
     if not ok:
         res = {"status": "waiting", "reason": why}
     else:
-        item = pick(now)
+        item = pick(now) or _self_review(now)
         if item is None:
             res = {"status": "empty", "reason": "nothing on the backlog is ready"}
         else:

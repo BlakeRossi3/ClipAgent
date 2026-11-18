@@ -482,10 +482,28 @@ def _publish(reason: str) -> None:
         log.warning("publish not started: %s", exc)
 
 
+RESTART_QUIET_MAX_SEC = 600   # a restart waits at most this long for him to finish talking to Cecil
+
+
+def _owner_talking() -> bool:
+    try:
+        from assistant import initiative
+
+        return initiative._talking_now()
+    except Exception as exc:
+        log.debug("talking check failed: %r", exc)
+        return False
+
+
 def schedule_restart(delay: float = 4.0) -> None:
-    """Restart shortly after the reply has been stored (never inside the request)."""
+    """Restart shortly after the reply has been stored (never inside the request), and never in the middle
+    of a spoken turn: initiative work now runs while he is around, so its restart waits for a pause."""
     def go() -> None:
         time.sleep(delay)
+        waited = 0.0
+        while waited < RESTART_QUIET_MAX_SEC and _owner_talking():
+            time.sleep(5)
+            waited += 5
         if not _restart():
             db.log_event("assistant", "self-edit saved; restart ClipAgent to use it", level="warning")
 
