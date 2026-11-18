@@ -376,8 +376,13 @@ CREATE INDEX idx_stats_day_cover ON stats(day, views, watch_minutes, avg_view_pc
                                           subscribers_lost, likes, shares, estimated_revenue);
 """
 
+# v4: the short kicker label shown above the title on the rendered title card (e.g. "ASK AN ASTRONAUT").
+_SCHEMA_V4 = """
+ALTER TABLE clips ADD COLUMN card_tag TEXT NOT NULL DEFAULT '';
+"""
+
 # Append new migrations; never edit a shipped one. Index i -> schema version i+1.
-MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
+MIGRATIONS: list[str] = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]
 SCHEMA_VERSION = len(MIGRATIONS)
 
 _initialised: set[str] = set()
@@ -570,6 +575,7 @@ class Clip(_Row):
     created_at: str
     updated_at: str
     haiku_reason: str | None = None
+    card_tag: str = ""
     _JSON: ClassVar[tuple[str, ...]] = ("hashtags",)
 
     @property
@@ -892,7 +898,7 @@ def count_sources_by_status(*, conn: sqlite3.Connection | None = None) -> dict[s
 _CLIP_UPDATABLE = frozenset({
     "start_sec", "end_sec", "haiku_score", "sonnet_rationale", "title", "description", "hashtags",
     "hook_text", "credit_text", "strategy_version", "experiment_id", "experiment_variant",
-    "render_path", "status_reason", "haiku_reason",
+    "render_path", "status_reason", "haiku_reason", "card_tag",
 })
 
 
@@ -912,11 +918,13 @@ def add_clip(
     experiment_id: str | None = None,
     experiment_variant: str | None = None,
     haiku_reason: str | None = None,
+    card_tag: str = "",
     conn: sqlite3.Connection | None = None,
 ) -> int:
     """Insert a ``picked`` clip. Licence and source URL are copied from the source for audit.
 
     ``haiku_reason`` is the Haiku window scorer's one-line reason (audit / dashboard).
+    ``card_tag`` is the short kicker label over the title card (``edit.build_ass``).
     Raises ``ValueError`` if the source has no recorded licence (never clip unlicensed footage).
     """
     if end_sec <= start_sec:
@@ -932,7 +940,8 @@ def add_clip(
             "description": description, "hashtags": _dumps(list(hashtags)), "hook_text": hook_text,
             "credit_text": credit_text, "licence": src.licence, "source_url": src.url,
             "strategy_version": strategy_version, "experiment_id": experiment_id,
-            "experiment_variant": experiment_variant, "haiku_reason": haiku_reason, "status": "picked",
+            "experiment_variant": experiment_variant, "haiku_reason": haiku_reason,
+            "card_tag": card_tag or "", "status": "picked",
             "created_at": now, "updated_at": now,
         })
 
