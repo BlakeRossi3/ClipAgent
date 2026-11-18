@@ -155,6 +155,71 @@ def test_build_ass_long_hook_wraps_and_style_defaults():
     assert "Style: Caption,Inter Black,78," in ass          # defaults applied
 
 
+def test_title_card_is_the_default_opening():
+    ass = edit.build_ass(SENTENCE, 10.0, STYLE, hook_text="Backup hook", duration=20.0,
+                         title_text="The coolest thing an astronaut has seen in space", card_tag="Ask an astronaut")
+    assert dialogues(ass, "Hook") == []                                   # the old boxed hook is gone
+    assert "Style: Card," in ass
+    card = dialogues(ass, "Card")
+    texts = [visible_text(d[3]) for d in card]
+    assert "ASK AN ASTRONAUT" in texts                                    # kicker, upper-cased
+    for w in "The coolest thing an astronaut has seen in space".split():
+        assert texts.count(w) == 2                                        # enter phase + lift-away phase
+    # every card element is gone by 3.45 s, except the full-length top scrim
+    scrim = [d for d in card if d[1] == "0:00:20.00"]
+    assert scrim and all("\\p1" in d[3] and visible_text(d[3]).startswith("m ") for d in scrim)
+    assert all(d[1] <= "0:00:03.45" for d in card if d not in scrim)
+    # headline words rise in with a stagger and the bar wipes from zero width
+    word_moves = [re.search(r"\\move\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)", d[3]) for d in card
+                  if visible_text(d[3]) in ("The", "coolest") and d[0] == "0:00:00.00"]
+    (a, b) = word_moves
+    assert int(a.group(2)) - int(a.group(4)) == 60 and int(b.group(5)) - int(a.group(5)) == 50
+    assert any("\\fscx0\\t(200,650,0.5,\\fscx100)" in d[3] for d in card)
+    # accent colour follows the caption highlight colour
+    assert "\\1c&H00D4FF&" in ass
+
+
+def test_title_card_splits_colon_titles_and_falls_back_to_hook():
+    assert edit.split_card_text("Ask an astronaut: the coolest thing in space") == (
+        "Ask an astronaut", "the coolest thing in space")
+    assert edit.split_card_text("Mars: why", "") == ("", "Mars: why")          # too short after the colon
+    assert edit.split_card_text("A: b c", "Webb") == ("Webb", "A: b c")       # explicit tag wins
+    ass = edit.build_ass([], 0.0, {}, hook_text="Only a hook here", duration=5.0)
+    texts = {visible_text(d[3]) for d in dialogues(ass, "Card")}
+    assert {"Only", "a", "hook", "here"} <= texts
+
+
+def test_title_card_wraps_within_the_card_and_shrinks_long_titles():
+    measure = edit.approx_measure
+    size, lines = edit.layout_card_title("The coolest thing an astronaut has seen in space", measure)
+    assert size == 88 and 2 <= len(lines) <= 3
+    for line in lines:
+        w, x = line[-1]
+        assert x + measure(w, size) <= edit.CARD_W + 1
+    long = " ".join(["Extraordinarily"] * 12)
+    size2, lines2 = edit.layout_card_title(long, measure)
+    assert size2 == edit.CARD_TITLE_CSS[-1] and len(lines2) == edit.CARD_TITLE_MAX_LINES
+    assert lines2[-1][-1][0].endswith("\u2026")
+
+
+def test_title_card_short_clip_and_hostile_text():
+    ass = edit.build_ass([], 0.0, {}, title_text="{\\an8}Hi there friend", card_tag="{\\b0}x", duration=1.2)
+    card = dialogues(ass, "Card")
+    assert all(d[1] <= "0:00:01.20" for d in card)                       # never outlives the clip
+    body = " ".join(visible_text(d[3]) for d in card)
+    assert "\\an8" not in body and "(/AN8)Hi" not in body and "(/an8)Hi" in body
+
+
+def test_merged_caption_style_title_card_default():
+    assert edit.merged_caption_style({})["title_card"] == "card"
+    assert edit.merged_caption_style({"title_card": "bogus"})["title_card"] == "card"
+    assert edit.merged_caption_style({"title_card": "hook"})["title_card"] == "hook"
+
+
+def test_font_measurer_falls_back_cleanly():
+    assert edit.font_measurer("No Such Font Family 123") is None
+
+
 def test_merged_caption_style_tolerates_unknown_keys():
     st = edit.merged_caption_style({"framing": "blur_fill", "max_words_per_line": 99, "_comment": "x"})
     assert st["framing"] == "blur_fill" and st["max_words_per_line"] == 8 and "_comment" not in st
