@@ -965,8 +965,14 @@
      (its structure) is unchanged keeps its node and only gets the text of its `volatile` parts (the
      ticking clocks) copied over. Tearing the rail down every second while a task ran made the page
      jump back up as he scrolled (the nodes under the cursor / the scroll anchor kept vanishing). */
+  /* reconcile:begin - pure over a minimal DOM (children, getAttribute, querySelectorAll, replaceChild,
+     parentElement, scrollTop); tests/test_assistant_tasks_rail.py runs it in node with a fake DOM.
+     A row that DOES change (a new step, the conversation arriving) is replaced, and its scrollable parts
+     ([data-keep-scroll], the open task's detail box) used to come back at the top - the "jumps back up
+     as soon as I stop scrolling" bug. Their scroll, and that of every scrolled ancestor, now carries over. */
   function reconcile(listEl, rows, volatile) {
-    var kids = listEl.children;
+    var kids = listEl.children, outer = [];
+    for (var p = listEl.parentElement; p; p = p.parentElement) if (p.scrollTop) outer.push([p, p.scrollTop]);
     rows.forEach(function (row, i) {
       var cur = kids[i];
       if (cur && cur.getAttribute('data-k') === row.getAttribute('data-k')) {
@@ -978,13 +984,26 @@
           }
         });
       } else if (cur) {
+        var was = Array.prototype.map.call(cur.querySelectorAll('[data-keep-scroll]'), function (n) {
+          return [n.getAttribute('data-keep-scroll'), n.scrollTop];
+        });
         listEl.replaceChild(row, cur);
+        if (was.length) {
+          var now = row.querySelectorAll('[data-keep-scroll]');
+          for (var w = 0; w < was.length; w++) {
+            for (var m = 0; m < now.length; m++) {
+              if (now[m].getAttribute('data-keep-scroll') === was[w][0] && was[w][1]) { now[m].scrollTop = was[w][1]; break; }
+            }
+          }
+        }
       } else {
         listEl.appendChild(row);
       }
     });
     while (listEl.children.length > rows.length) listEl.removeChild(listEl.lastChild);
+    outer.forEach(function (o) { if (o[0].scrollTop !== o[1]) o[0].scrollTop = o[1]; });
   }
+  /* reconcile:end */
   function renderTasks() {
     renderTrail();
     var list = Object.keys(act.tasks).map(function (k) { return act.tasks[k]; })
@@ -1015,6 +1034,7 @@
       }
       if (open) {
         var d = v.detail, box = el('div', 'rail-task-detail');
+        box.setAttribute('data-keep-scroll', 'task-' + (t.id || ''));   // his place survives a re-render
         box.appendChild(el('p', 'rail-task-meta', d.meta));
         box.appendChild(el('p', 'rail-task-req', d.request));
         if (d.heard) box.appendChild(el('p', 'rail-task-heard', '“' + d.heard + '”'));

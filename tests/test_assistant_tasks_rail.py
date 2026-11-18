@@ -124,6 +124,48 @@ def test_page_wires_rows_as_click_toggles():
     assert ".rail-task-head" in css and ".rail-task-detail" in css and ".rail-task.is-open" in css
 
 
+RECONCILE = JS[JS.index("/* reconcile:begin"):JS.index("/* reconcile:end */")]
+FAKE_DOM = r"""
+function N(attrs, kids) {
+  var n = { attrs: attrs || {}, children: kids || [], scrollTop: 0, parentElement: null, textContent: '', title: '' };
+  n.children.forEach(function (c) { c.parentElement = n; });
+  n.getAttribute = function (k) { return k in n.attrs ? n.attrs[k] : null; };
+  n.querySelectorAll = function (sel) {            // only '[attr]' selectors are used here
+    var a = sel.slice(1, -1), out = [];
+    (function walk(x) { x.children.forEach(function (c) { if (a in c.attrs) out.push(c); walk(c); }); })(n);
+    return out;
+  };
+  n.replaceChild = function (nw, old) { n.children[n.children.indexOf(old)] = nw; nw.parentElement = n; };
+  n.appendChild = function (c) { n.children.push(c); c.parentElement = n; };
+  n.removeChild = function (c) { n.children.splice(n.children.indexOf(c), 1); };
+  Object.defineProperty(n, 'lastChild', { get: function () { return n.children[n.children.length - 1]; } });
+  return n;
+}
+%s
+function row(k) { return N({ 'data-k': k }, [N({ 'data-keep-scroll': 'task-a' })]); }
+var list = N({}, [row('a|1 step')]);
+var rail = N({}, [list]); rail.scrollTop = 140;
+list.children[0].children[0].scrollTop = 230;      // he scrolled halfway down the open task
+reconcile(list, [row('a|2 steps')]);                // a new step arrives: the row is rebuilt
+var kept = list.children[0].children[0].scrollTop;
+var same = list.children[0].getAttribute('data-k');
+console.log(JSON.stringify({ kept: kept, same: same, rail: rail.scrollTop }));
+"""
+
+
+def test_an_open_task_keeps_its_scroll_when_the_row_is_rebuilt():
+    """Blake: "I scroll through a task and it jumps back to the top as soon as I stop scrolling"."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    p = subprocess.run([node, "-e", FAKE_DOM % RECONCILE], capture_output=True, text=True, timeout=30, check=True)
+    out = json.loads(p.stdout)
+    assert out["same"] == "a|2 steps"           # the row really was replaced...
+    assert out["kept"] == 230                   # ...and the detail box is still where he left it
+    assert out["rail"] == 140                   # the rail around it did not move either
+    assert 'data-keep-scroll' in JS and "box.setAttribute('data-keep-scroll'" in JS
+
+
 def test_retrying_rows_count_down_to_the_next_try_and_say_why(rows):
     """Blake: "it says retrying 9 minutes and 20 seconds and it's counting up" - it counts down now."""
     assert rows["retrying"]["line"] == "Retrying in 4m 10s · auth: Not logged in"
