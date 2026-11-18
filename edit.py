@@ -126,7 +126,7 @@ Measure = Callable[[str, float], float]
 
 def approx_measure(text: str, css_px: float) -> float:
     """Rough width of ``text`` in a heavy sans at ``css_px`` (used when the font file can't be read)."""
-    return sum((0.42 if ch == " " else 0.80 if ch.isupper() or ch.isdigit() else 0.66) for ch in text) * css_px
+    return sum((0.33 if ch == " " else 0.78 if ch.isupper() or ch.isdigit() else 0.60) for ch in text) * css_px
 
 # Heavy, legible fonts tried in order when the configured font is not installed. Plain
 # "Montserrat" matches the variable-weight install (Bold=-1 then selects a heavy weight);
