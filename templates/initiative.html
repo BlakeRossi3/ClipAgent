@@ -70,7 +70,7 @@
     {% elif st.running %}<p>Working on <strong>{{ st.running[0].title }}</strong>.</p>
     {% elif st.can_start %}<p>Ready: the next item starts {{ st.next }}.</p>
     {% else %}<p>Waiting: {{ st.waiting_for }}.{% if st.next %} Next chance {{ st.next }}.{% endif %}</p>{% endif %}
-    <p class="f-help">{% if st.last_tick %}Last check {{ st.last_tick.at | ago }}: {{ st.last_tick.status }}{% if st.last_tick.reason %} ({{ st.last_tick.reason }}){% endif %}. {% endif %}He checks every 15 minutes{% if st.idle_min %}, after {{ st.idle_min }} quiet minutes{% else %}, even while you're using him{% endif %}, and uses at most {{ st.share_pct }}% of each Claude usage window, never once a window is 80% used.</p>
+    <p class="f-help">{% if st.last_tick %}{% set lt = st.last_tick %}Last check {{ lt.get("at") | ago }}: {{ lt.get("status") or "?" }}{% if lt.get("title") %} - {{ lt.get("title") }}{% endif %}{% if lt.get("reason") %} ({{ lt.get("reason") }}){% endif %}. {% endif %}He checks every 15 minutes{% if st.idle_min %}, after {{ st.idle_min }} quiet minutes{% else %}, even while you're using him{% endif %}, and uses at most {{ st.share_pct }}% of each Claude usage window, never once a window is 80% used.</p>
     {% if st.share_used %}<ul class="plain">{% for w in st.share_used %}<li>{{ w.window }} window: initiative used ~{{ w.used_pct }}% of {{ w.share_pct }}% · window {{ w.window_used_pct }}% used{% if w.resets %} · resets {{ w.resets }}{% endif %}</li>{% endfor %}</ul>
     {% else %}<p class="f-help">Plan usage not reported yet, so {{ st.fallback }}.</p>{% endif %}
   </section>

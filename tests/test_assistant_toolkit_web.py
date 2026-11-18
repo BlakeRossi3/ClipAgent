@@ -90,3 +90,16 @@ def test_twilio_check_with_problems_and_fix_button(client, monkeypatch):
         assert r.status_code == 200 and "now go to" in r.text and fc.updates
     finally:
         td.set_client(None)
+
+
+
+def test_initiative_page_after_a_tick_that_started_work(client, clock):
+    """Regression: last_tick has no 'reason' when the tick started an item -> UndefinedError 500."""
+    import db
+    from assistant import initiative
+
+    db.kv_set(initiative.KV_LAST_TICK, {"at": db.now_iso(), "status": "started", "item_id": 3, "title": "Hooks"})
+    r = client.get("/dashboard/initiative", headers=H)
+    assert r.status_code == 200 and "started - Hooks" in r.text
+    db.kv_set(initiative.KV_LAST_TICK, {"at": db.now_iso(), "status": "waiting", "reason": "plan usage is tight"})
+    assert "(plan usage is tight)" in client.get("/dashboard/initiative", headers=H).text
