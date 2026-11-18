@@ -878,6 +878,57 @@ def native_agents() -> dict[str, Any]:
     return out
 
 
+# -- Pyright code intelligence (official plugin) -------------------------------
+
+PYRIGHT_PLUGIN = "pyright-lsp@claude-plugins-official"
+PYRIGHT_MARKETPLACE = "anthropics/claude-plugins-official"
+KV_PYRIGHT = "claude_code:pyright"
+PYRIGHT_RETRY = timedelta(hours=12)
+
+
+def pyright_status() -> dict[str, Any]:
+    v = db.kv_get(KV_PYRIGHT, {})
+    return v if isinstance(v, dict) else {}
+
+
+def ensure_pyright(*, force: bool = False) -> dict[str, Any]:
+    """Install Anthropic's ``pyright-lsp`` plugin into Cecil's own Claude Code profile (CLAUDE_CONFIG_DIR),
+    once, so every run gets go-to-definition / find-references / type errors for Python: "who else reads
+    this?" answered by the language server instead of reading files. Plain code, no tokens.
+
+    Needs ``pyright-langserver`` on PATH (``npm i -g pyright``); the plugin only points Claude Code at it.
+    Status in kv ``claude_code:pyright`` {status: installed|no_server|failed|no_claude, detail, at}; a
+    failure is retried after :data:`PYRIGHT_RETRY`."""
+    st = pyright_status()
+    if not force and st.get("status") == "installed":
+        return st
+    if not force and st.get("at") and db.utcnow() - db.parse_iso(st["at"]) < PYRIGHT_RETRY:
+        return st
+    server = shutil.which("pyright-langserver")
+    exe = find_claude()
+    if server is None:
+        out = {"status": "no_server", "detail": "pyright-langserver is not on PATH (npm i -g pyright, then restart)"}
+    elif exe is None:
+        out = {"status": "no_claude", "detail": "Claude Code is not installed"}
+    else:
+        try:
+            done = _quick([str(exe), "plugin", "install", PYRIGHT_PLUGIN, "--scope", "user", "-y"], timeout=180)
+            if done.returncode != 0:  # the official marketplace not known to this profile yet: add it with the install
+                done = _quick([str(exe), "plugin", "install", PYRIGHT_PLUGIN.split("@")[0], "--marketplace",
+                               PYRIGHT_MARKETPLACE, "--scope", "user", "-y"], timeout=180)
+            text = " ".join(((done.stdout or "") + " " + (done.stderr or "")).split())[:300]
+            ok = done.returncode == 0 or "already installed" in text.lower()
+            out = {"status": "installed" if ok else "failed", "detail": text or f"exit {done.returncode}",
+                   "server": server}
+        except (OSError, subprocess.SubprocessError) as exc:
+            out = {"status": "failed", "detail": f"could not run claude plugin install: {exc}"[:300]}
+    out["at"] = db.now_iso()
+    db.kv_set(KV_PYRIGHT, out)
+    db.log_event("assistant", f"pyright code intelligence: {out['status']}",
+                 level="info" if out["status"] == "installed" else "warning", data=out)
+    return out
+
+
 def native_skill_names(specs: Mapping[str, Any] | None = None) -> list[str]:
     """Our own skills as Claude Code sees them (skills/*, minus persona and restricted third-party ones).
     The lean voice session lists only these (``ClaudeAgentOptions.skills``): Claude Code's bundled skills

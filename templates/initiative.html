@@ -6,7 +6,7 @@
 <div class="home">
 <div class="page-head-h">
   <h1>Initiative</h1>
-  <p class="lede-h">What {{ assistant_name }} works on by himself while you're away: things you said you want and things he should do better, top first. He builds, tests and keeps each change; every one can be undone below.</p>
+  <p class="lede-h">{{ assistant_name }}'s to-do list for improving himself. Every 15 minutes he takes the top open item, builds it, tests it and keeps it (each change can be undone below). Items come from what you've asked for, problems he hit and his own self-reviews. Items that turn out to be built already are closed automatically.</p>
 </div>
 {% if msg %}<p class="card voice" role="status">{{ msg }}</p>{% endif %}
 {% if error %}<p class="card voice" role="alert">{{ error }}</p>{% endif %}
@@ -70,7 +70,7 @@
     {% elif st.running %}<p>Working on <strong>{{ st.running[0].title }}</strong>.</p>
     {% elif st.can_start %}<p>Ready: the next item starts {{ st.next }}.</p>
     {% else %}<p>Waiting: {{ st.waiting_for }}.{% if st.next %} Next chance {{ st.next }}.{% endif %}</p>{% endif %}
-    <p class="f-help">You were last active {{ st.quiet_for }}. He starts after {{ st.idle_min }} quiet minutes and uses at most {{ st.share_pct }}% of each Claude usage window, never once a window is 80% used.</p>
+    <p class="f-help">{% if st.last_tick %}Last check {{ st.last_tick.at | ago }}: {{ st.last_tick.status }}{% if st.last_tick.reason %} ({{ st.last_tick.reason }}){% endif %}. {% endif %}He checks every 15 minutes{% if st.idle_min %}, after {{ st.idle_min }} quiet minutes{% else %}, even while you're using him{% endif %}, and uses at most {{ st.share_pct }}% of each Claude usage window, never once a window is 80% used.</p>
     {% if st.share_used %}<ul class="plain">{% for w in st.share_used %}<li>{{ w.window }} window: initiative used ~{{ w.used_pct }}% of {{ w.share_pct }}% · window {{ w.window_used_pct }}% used{% if w.resets %} · resets {{ w.resets }}{% endif %}</li>{% endfor %}</ul>
     {% else %}<p class="f-help">Plan usage not reported yet, so {{ st.fallback }}.</p>{% endif %}
   </section>

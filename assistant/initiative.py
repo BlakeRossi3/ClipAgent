@@ -59,9 +59,10 @@ RUNS_KEEP = 60
 MAX_ATTEMPTS = 3
 RETRY_AFTER = timedelta(hours=6)
 RESERVE = 0.80                              # never start when a window is this full: the rest is his
-FALLBACK_RUNS = 2                           # no usage data known: at most this many runs ...
+FALLBACK_RUNS = 8                           # no usage data known: at most this many runs ...
 FALLBACK_SPAN = timedelta(hours=5)          # ... per this span
-EST_RUN_COST = {"five_hour": 0.10, "seven_day": 0.02, "seven_day_opus": 0.03, "seven_day_sonnet": 0.02}
+EST_RUN_COST = {"five_hour": 0.05, "seven_day": 0.01, "seven_day_opus": 0.015, "seven_day_sonnet": 0.01}
+#: (the measured utilisation rise replaces these as soon as a usage reading follows a run)
 WINDOW_LEN = {"five_hour": timedelta(hours=5)}   # the weekly ones: 7 days
 HARVEST_AFTER_MESSAGES = 20
 HARVEST_MAX_MESSAGES = 120
@@ -214,9 +215,11 @@ def busy(now: datetime | None = None) -> str:
         return "a code change is being tested"
     if db.kv_get(selfedit.KV_PENDING):
         return "the last change is still being checked after its restart"
-    running = live_tasks(now)
+    # only another code-changing task blocks (two of them would edit the same files); ordinary background
+    # work runs in parallel - waiting for every task kept initiative idle most of the day
+    running = [t for t in live_tasks(now) if t.get("self_edit")]
     if running:
-        return f"a background task is running ({str(running[0].get('task', ''))[:60]})"
+        return f"another code change is in progress ({str(running[0].get('task', ''))[:60]})"
     if _talking_now():
         return "he is talking to Cecil right now"
     return ""
@@ -334,6 +337,49 @@ def gate(now: datetime | None = None) -> tuple[bool, str, datetime | None]:
 # the work
 # ---------------------------------------------------------------------------
 
+DONE_LOOKBACK_DAYS = 21
+
+
+def recent_commit_subjects(days: int = DONE_LOOKBACK_DAYS) -> list[tuple[str, str]]:
+    """(short sha, subject) of the app's commits in the last ``days`` (empty outside a git checkout)."""
+    from assistant import selfedit
+
+    try:
+        if not selfedit.is_repo():
+            return []
+        out = selfedit.git("log", f"--since={days} days ago", "--format=%h%x1f%s", timeout=20).stdout
+    except Exception as exc:
+        log.warning("git log for the done check failed: %s", exc)
+        return []
+    rows = [line.split("\x1f", 1) for line in out.splitlines() if "\x1f" in line]
+    # self-edit commits read "Sterling: <what he asked>"; compare the words, not the prefix
+    return [(sha, re.sub(r"^(sterling|cecil|initiative)\s*:\s*(initiative\s*:\s*)?", "", subj, flags=re.I))
+            for sha, subj in rows]
+
+
+def close_already_done(now: datetime | None = None) -> list[int]:
+    """Close open items that were already built: a recent commit or a finished item says the same thing.
+
+    Plain code, no tokens, every tick. The run itself double-checks (its brief starts with "is this already
+    done?"), so a near-miss here costs one short run, not a rebuild."""
+    now = now or db.utcnow()
+    commits = recent_commit_subjects()
+    finished = [it for it in store.list_backlog("done")]
+    closed = []
+    for it in store.list_backlog("open"):
+        hit = next((f"commit {sha}: {subj}" for sha, subj in commits if similar(it.title, subj)), None)
+        if hit is None:
+            dup = next((d for d in finished if d.id != it.id and similar(it.title, d.title)), None)
+            hit = f"same as finished item #{dup.id} ({dup.title})" if dup else None
+        if hit:
+            store.update_backlog(it.id, status="done", result=f"Already done - {hit}"[:500],
+                                 finished_at=db.to_iso(now))
+            closed.append(it.id)
+    if closed:
+        db.log_event(MODULE, f"closed {len(closed)} backlog item(s) that were already done", data={"ids": closed})
+    return closed
+
+
 def pick(now: datetime | None = None) -> store.BacklogItem | None:
     """The top open item not tried in the last :data:`RETRY_AFTER` with fewer than :data:`MAX_ATTEMPTS` tries."""
     now = now or db.utcnow()
@@ -373,6 +419,8 @@ def brief(item: store.BacklogItem) -> str:
             f"Backlog item #{item.id}: {item.title}\n{item.detail}\n"
             f"Source: {item.source}. Attempt {item.attempts} of {MAX_ATTEMPTS}.{prev}\n\n"
             "How:\n"
+            "0. First check it is not already done (git log --oneline -40, docs/CODEMAP.md, a quick grep). If it is, "
+            "do not rebuild it: finish at once with STATUS: done and BUILT: already in place - <where>.\n"
             "1. capability_check first; prefer existing tools, installed skills and trusted catalog skills over new "
             "code.\n"
             "2. Before changing code, read docs/CODEMAP.md (where everything lives and who reads what) instead of "
@@ -516,6 +564,7 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
     if not ok:
         res = {"status": "waiting", "reason": why}
     else:
+        close_already_done(now)
         item = pick(now) or _self_review(now)
         if item is not None:
             from assistant import autofix
@@ -815,7 +864,7 @@ def status(now: datetime | None = None) -> dict[str, Any]:
     for it in store.list_backlog(None):
         counts[it.status] = counts.get(it.status, 0) + 1
     if ok:
-        nxt = "at the next check (every 20 min)"
+        nxt = "at the next check (every 15 min)"
     elif when is not None:
         nxt = _when(when, now)
     else:

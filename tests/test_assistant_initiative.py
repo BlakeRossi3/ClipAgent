@@ -147,11 +147,11 @@ def test_usage_share_gate(on, clock):
     assert initiative.usage_gate()[0]
     started = db.now_iso()
     w = initiative.windows()
-    # three runs in flight (no fresh usage event since): 3 x 0.10 estimate < 0.35 share
-    db.kv_set(initiative.KV_RUNS, [{"id": f"r{i}", "started": started, "windows": w} for i in range(3)])
+    # six runs in flight (no fresh usage event since): 6 x 0.05 estimate < 0.35 share
+    db.kv_set(initiative.KV_RUNS, [{"id": f"r{i}", "started": started, "windows": w} for i in range(6)])
     assert initiative.share_used("five_hour", w["five_hour"]) == pytest.approx(0.30)
     assert initiative.usage_gate()[0]
-    db.kv_set(initiative.KV_RUNS, initiative.runs() + [{"id": "r4", "started": started, "windows": w}])
+    db.kv_set(initiative.KV_RUNS, initiative.runs() + [{"id": "r7", "started": started, "windows": w}])
     ok, why, _ = initiative.usage_gate()
     assert not ok and "35% share of the 5-hour window" in why
     # observed: a fresh event after the run shows it only used 2 %
@@ -167,10 +167,11 @@ def test_usage_share_gate(on, clock):
 
 def test_fallback_cap_without_usage_data(on, clock):
     _quiet(clock)
-    db.kv_set(initiative.KV_RUNS, [{"id": "a", "started": db.now_iso()},
-                                   {"id": "b", "started": db.to_iso(db.utcnow() - timedelta(hours=1))}])
+    n = initiative.FALLBACK_RUNS
+    db.kv_set(initiative.KV_RUNS, [{"id": "a", "started": db.to_iso(db.utcnow() - timedelta(hours=1))}]
+              + [{"id": f"b{i}", "started": db.now_iso()} for i in range(n - 1)])
     ok, why, when = initiative.usage_gate()
-    assert not ok and "at most 2 runs per 5 hours" in why
+    assert not ok and f"at most {n} runs per 5 hours" in why
     assert when == db.utcnow() - timedelta(hours=1) + timedelta(hours=5)
     clock.advance(hours=4, minutes=1)
     assert initiative.usage_gate()[0]
@@ -189,7 +190,8 @@ def test_pick_order_attempts_and_backoff(on, clock):
     assert initiative.pick().id == a
 
 
-def test_tick_runs_top_item_and_records_the_result(on, clock):
+def test_tick_runs_top_item_and_records_the_result(on, clock, monkeypatch):
+    monkeypatch.setattr(initiative, "FALLBACK_RUNS", 2)
     db.kv_set(initiative.KV_SEEDED, "x")                  # no seed list in this test
     first = store.add_backlog("A 'Hey Cecil' wake word", source="owner")
     store.add_backlog("Something else")
@@ -210,7 +212,8 @@ def test_tick_runs_top_item_and_records_the_result(on, clock):
     # the next tick: fallback cap allows a second run, then waits
     assert initiative.tick()["status"] == "started"
     _wait()
-    assert initiative.tick() == {"status": "waiting", "reason": "plan usage not reported yet: at most 2 runs per 5 hours"}
+    assert initiative.tick() == {"status": "waiting", "reason": "plan usage not reported yet: at most "
+                                                               f"{initiative.FALLBACK_RUNS} runs per 5 hours"}
     assert db.kv_get(initiative.KV_LAST_TICK)["status"] == "waiting"
 
 
@@ -482,3 +485,27 @@ def test_page_json_and_actions(on, clock, monkeypatch):
     # the Scheduled page shows a line about it
     sched = c.get("/dashboard/scheduled").text
     assert "Backlog and work log" in sched
+
+
+
+def test_items_already_built_are_closed_without_a_run(on, clock, monkeypatch):
+    """He found the page full of things already done: a recent commit or finished item closes them."""
+    initiative.seed()
+    a = store.add_backlog("Add an NFL scores tile to the Jarvis page", source="owner")
+    b = store.add_backlog("Teach Cecil to play chess", source="owner")
+    monkeypatch.setattr(initiative, "recent_commit_subjects",
+                        lambda days=21: [("abc1234", "NFL scores tile on the Jarvis page")])
+    closed = initiative.close_already_done()
+    assert a in closed and b not in closed
+    assert store.get_backlog(a).status == "done" and "abc1234" in store.get_backlog(a).result
+    assert store.get_backlog(b).status == "open"
+    store.update_backlog(b, status="done")
+    c = store.add_backlog("Teach Cecil to play chess", source="cecil")  # same as a finished item
+    assert c in initiative.close_already_done() and "#" in store.get_backlog(c).result
+
+
+def test_ordinary_background_work_does_not_block_initiative(on, clock, monkeypatch):
+    monkeypatch.setattr(initiative, "live_tasks", lambda now=None: [{"task": "memory pass"}])
+    assert initiative.busy() == ""
+    monkeypatch.setattr(initiative, "live_tasks", lambda now=None: [{"task": "Fix: x", "self_edit": True}])
+    assert "code change" in initiative.busy()
