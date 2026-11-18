@@ -126,6 +126,25 @@ def create_app() -> FastAPI:
         except Exception as exc:
             log.warning("page reader unavailable: %s: %s", type(exc).__name__, exc)
 
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Any, exc: Exception) -> Any:
+        """A page that crashes is a failure like any other: log it as an error event (so the needs list and
+        self-repair see it, with the cause), then answer 500. Before this, a broken page left no trace."""
+        import traceback
+
+        from fastapi.responses import PlainTextResponse
+
+        tb = traceback.extract_tb(exc.__traceback__)
+        where = [f"{f.filename.replace(chr(92), '/').rsplit('/', 2)[-1]}:{f.lineno} {f.name}" for f in tb[-4:]]
+        try:
+            db.log_event("server", f"page failed: {request.method} {request.url.path}: {type(exc).__name__}",
+                         level="error", data={"error": repr(exc)[:500], "where": where})
+        except Exception as log_exc:   # the database itself may be what broke
+            log.error("page failed (%r) and could not be logged: %r", exc, log_exc)
+        log.exception("unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+        return PlainTextResponse(f"Internal Server Error: {type(exc).__name__}: {str(exc)[:300]}\n"
+                                 f"(logged; Cecil's self-repair will look at it)", status_code=500)
+
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, Any]:
         return {"status": "ok", "schema_version": db.schema_version(), "dashboard": app.state.dashboard}
