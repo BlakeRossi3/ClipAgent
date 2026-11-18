@@ -257,7 +257,8 @@ def test_scheduler_jobs_and_options(settings):
     sched.start(paused=True)            # job defaults are applied when the scheduler starts
     jobs = {j.id: j for j in sched.get_jobs()}
     sched.shutdown(wait=False)
-    assert set(jobs) == {"scout", "process", "upload", "send_queued", "expire_decisions", "analytics", "cleanup",
+    assert set(jobs) == {"scout", "process", "upload", "send_queued", "expire_decisions", "analytics", "live_counts",
+                         "cleanup",
                          "daily_summary", "weekly_review"}
     assert str(sched.timezone) == settings.timezone
     for j in jobs.values():

@@ -407,7 +407,7 @@ def studio_snapshot(period_days: int = 7) -> dict[str, Any]:
     except Exception:  # strategy unreadable
         cap = None
     perf = db.clip_performance(since_day=since)
-    top = sorted(perf, key=lambda r: r.get("views") or 0, reverse=True)[:5]
+    top = sorted(perf, key=lambda r: r.get("live_views") or 0, reverse=True)[:5]
     revenue = [r["estimated_revenue"] for r in perf if r.get("estimated_revenue") is not None]
     day_start, day_end = db.local_day_bounds(today)
     period_start = db.local_day_bounds(since)[0]
@@ -423,12 +423,14 @@ def studio_snapshot(period_days: int = 7) -> dict[str, Any]:
         "pipeline_llm_spend_today_usd": pipeline_spend(day_start, day_end),
         "pipeline_llm_cap_usd": budget.daily_cap_usd(),
         "pipeline_paused": db.kv_get("budget:paused") is not None,
-        "period_views": sum(r.get("views") or 0 for r in perf),
+        # live counts included: Analytics lags ~2 days, so its numbers alone read 0 for new Shorts
+        "period_views": sum(r.get("live_views") or 0 for r in perf),
+        "period_views_analytics": sum(r.get("views") or 0 for r in perf),
         "period_clips_tracked": len(perf),
         "period_revenue_usd": round(sum(revenue), 2) if revenue else None,
         "period_pipeline_llm_spend_usd": pipeline_spend(period_start, day_end),
         "assistant_llm_spend_today_usd": round(store.assistant_spend_between(day_start, day_end), 4),
-        "top_clips": [{"title": r.get("title"), "views": r.get("views"), "youtube_status": r.get("youtube_status"),
+        "top_clips": [{"title": r.get("title"), "views": r.get("live_views"), "youtube_status": r.get("youtube_status"),
                        "copyright_claim": bool(r.get("copyright_claim"))} for r in top],
         "pending_approvals": [{"id": d.id, "kind": d.kind, "summary": d.summary}
                               for d in db.list_decisions("pending", limit=10)],

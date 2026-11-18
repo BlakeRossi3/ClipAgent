@@ -356,6 +356,7 @@ def set_service_factory(fn: Callable[[], tuple[Any, Any]] | None) -> None   # (y
 def collect_stats(day: date | None = None) -> int     # rows upserted into stats
 def refresh_channel_stats() -> None                    # today's channel_stats row
 def check_claims() -> int                              # flags copyright claims / blocked videos; returns count newly flagged
+def refresh_live_counts() -> int                       # hourly Data API lifetime counters (same-day views)
 ```
 `day` defaults to local today minus 2 (Analytics lag). Polls `db.live_video_ids()`; DRY_RUN or no
 token -> logs and returns 0.
@@ -441,7 +442,8 @@ CLI: `python main.py init | manual <url> [--source-type T] [--no-upload] | scout
 | cleanup | approve <id> | reject <id>`.
 Jobs (local time, off the hour): scout 06:10; process hourly at :20; upload hourly at :40;
 send_queued every 5 min; expire_decisions hourly at :50; analytics 07:25 (collect_stats +
-refresh_channel_stats + check_claims, each isolated); cleanup 03:35; daily_summary 20:55;
+refresh_channel_stats + check_claims, each isolated); live_counts hourly at :15
+(`analytics.refresh_live_counts`, Data API view counters); cleanup 03:35; daily_summary 20:55;
 weekly_review Sunday 18:05. `schedule` runs the scheduler and uvicorn together and exits 0 on SIGTERM.
 
 ### Notification kinds

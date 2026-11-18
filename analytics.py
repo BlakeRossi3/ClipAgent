@@ -7,6 +7,7 @@ Public API (CLAUDE.md contract)::
     refresh_channel_stats() -> None
     check_claims() -> int                 # videos newly flagged
     lifetime_stats(video_id) -> dict | None   # extension: Data API lifetime counters (uploads row)
+    refresh_live_counts() -> int          # extension: hourly lifetime-counter refresh (no Analytics call)
 
 Design notes
 ------------
@@ -30,7 +31,9 @@ Design notes
   with ``youtube_auth.py --monetary``, ``estimatedRevenue`` / ``cpm`` fill
   ``stats.estimated_revenue`` / ``stats.cpm``; otherwise those columns stay NULL.
 * **Same-day signal**: ``videos.list(part=statistics)`` lifetime counters (1 unit per 50 ids)
-  are stored on the upload row (``db.set_upload_lifetime``).
+  are stored on the upload row (``db.set_upload_lifetime``), daily with ``collect_stats`` and hourly
+  via ``refresh_live_counts``. Readers add the part Analytics has not reported yet
+  (``db.unreported_views`` / ``db.recent_views``), else every Short younger than the lag reads 0.
 * **Claims**: the Data API does not expose Content ID claim details to ordinary channels.
   ``check_claims`` only sees indirect signals (rejected/failed/deleted uploads, regional
   blocks, a video that vanished, a scheduled video that never went public). What YouTube
@@ -131,9 +134,10 @@ def _live_dates() -> dict[str, date]:
     for u in db.list_uploads("uploaded", include_dry_run=False):
         if not u.youtube_video_id:
             continue
-        ts = u.publish_at or u.uploaded_at
-        if ts:
-            out[u.youtube_video_id] = db.local_date_of(ts)
+        # earliest of the two: a Short can go public before its scheduled publish time
+        stamps = [t for t in (u.publish_at, u.uploaded_at) if t]
+        if stamps:
+            out[u.youtube_video_id] = min(db.local_date_of(t) for t in stamps)
     return out
 
 
@@ -314,6 +318,17 @@ def _refresh_lifetime(youtube: Any, ids: list[str]) -> int:
             db.set_upload_lifetime(vid, views=int(s.get("viewCount", 0)), likes=int(s.get("likeCount", 0)),
                                    comments=int(s.get("commentCount", 0)), conn=conn)
     return len(items)
+
+
+def refresh_live_counts() -> int:
+    """Refresh every live video's Data API counters (1 quota unit per 50 videos). Returns videos refreshed."""
+    ids = db.live_video_ids()
+    if not ids:
+        return 0
+    svcs = _services("refresh_live_counts")
+    if svcs is None:
+        return 0
+    return _refresh_lifetime(svcs[0], ids)
 
 
 def lifetime_stats(video_id: str) -> dict[str, Any] | None:

@@ -1730,6 +1730,13 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
     daily = stats_by_day(conn, w.prev_start or w.start, w.end)
     cur = window_metrics(conn, w.start, w.end, daily)
     prev = window_metrics(conn, w.prev_start, w.prev_end, daily) if w.prev_start and w.prev_end else None
+    live_extra = 0
+    if as_of is None or w.end >= as_of:
+        # Analytics lags ~2 days; the newest views exist only as live counts (Data API).
+        live_extra = sum(db.unreported_views(conn=conn).values())
+        cur["views"] += live_extra
+        cur["cost_per_1k"] = (cur["spend"] / cur["views"] * 1000) if cur["views"] else None
+    cur["live_views_included"] = live_extra
 
     def k(key, label, fmt, *, good_up=True, delta_kind="rel", hint=""):
         v = cur[key]
@@ -1738,7 +1745,8 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
                 "delta": _delta(v, p, kind=delta_kind) if prev else None, "hint": hint}
 
     kpis = [
-        k("views", "Views", "compact"),
+        k("views", "Views", "compact",
+          hint=f"includes {live_extra:,} live views YouTube Analytics has not reported yet" if live_extra else ""),
         k("watch_minutes", "Watch time", "hours"),
         k("subs_net", "Subscribers (net)", "signed"),
         k("published", "Shorts published", "int"),

@@ -670,6 +670,8 @@ def job_specs() -> list[JobSpec]:
         JobSpec("send_queued", notify.send_queued, "interval", {"minutes": 5}, "deliver queued calls/SMS"),
         JobSpec("expire_decisions", db.expire_decisions, "cron", {"minute": 50}, "expire unanswered approvals"),
         JobSpec("analytics", analytics_job, "cron", {"hour": 7, "minute": 25}, "stats, channel stats, claims"),
+        JobSpec("live_counts", lambda: analytics.refresh_live_counts(), "cron", {"minute": 15},
+                "live YouTube view counts (Analytics lags ~2 days)"),
         JobSpec("cleanup", cleanup, "cron", {"hour": 3, "minute": 35}, "delete old media"),
         JobSpec("daily_summary", notify.daily_summary, "cron", {"hour": 20, "minute": 55}, "evening call"),
         JobSpec("weekly_review", strategist.weekly_review, "cron", {"day_of_week": "sun", "hour": 18, "minute": 5},
