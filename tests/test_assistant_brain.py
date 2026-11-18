@@ -18,6 +18,16 @@ from voice import speech
 pytestmark = pytest.mark.usefixtures("assistant_env")
 
 
+def _appended(opts) -> str:
+    """The persona appended to Claude Code's prompt: a file, never inline (WinError 206 on Windows)."""
+    assert "append" not in opts.system_prompt
+    return open(opts.extra_args["append-system-prompt-file"], encoding="utf-8").read()
+
+
+def _flags(opts) -> dict:
+    return {k: v for k, v in opts.extra_args.items() if k != "append-system-prompt-file"}
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIPAGENT_CONFIG_FILE", str(tmp_path / "cfg" / "config.env"))
@@ -248,8 +258,8 @@ def test_real_sdk_options_and_in_process_tool_server(env, monkeypatch):
     assert opts.permission_mode == "dontAsk" and opts.include_partial_messages and opts.resume == "abc"
     assert opts.model == "sonnet" and opts.effort == "low" and opts.setting_sources == ["user"]
     assert opts.env["CLAUDE_CONFIG_DIR"] == str(claude_code.home_dir()) and opts.env.get("ANTHROPIC_API_KEY") == ""
-    assert "Never say \"channel\"" not in opts.system_prompt["append"] or True
-    assert "settings_set" in opts.system_prompt["append"] and opts.system_prompt["preset"] == "claude_code"
+    assert "Never say \"channel\"" not in _appended(opts) or True
+    assert "settings_set" in _appended(opts) and opts.system_prompt["preset"] == "claude_code"
 
 
 def test_speech_rules():
@@ -588,9 +598,9 @@ def test_his_mcp_servers_join_the_brain_and_their_keys_never_leak(env, tmp_path,
     assert opts.mcp_servers["gmail"]["env"]["GMAIL_TOKEN"] == secret       # the server needs it to start...
     rules = _json.loads(open(opts.settings, encoding="utf-8").read())
     assert {"mcp__gmail__*", "mcp__notion__*"} <= set(rules["permissions"]["allow"])
-    assert "gmail, notion" in opts.system_prompt["append"]
+    assert "gmail, notion" in _appended(opts)
     # ...but it is never shown: not in the prompt, the settings file, diagnostics or the event log
-    assert secret not in opts.system_prompt["append"] and secret not in open(opts.settings, encoding="utf-8").read()
+    assert secret not in _appended(opts) and secret not in open(opts.settings, encoding="utf-8").read()
     import server
 
     c = TestClient(server.create_app(), base_url="http://127.0.0.1:8000")
@@ -613,15 +623,15 @@ def test_lean_voice_session_keeps_a_small_builtin_set_and_workers_keep_everythin
     assert "need_tools" in table and "need_tools" not in b.tool_table(worker=True)
     opts = b.options(mode="plan", resume=None, table=table)
     assert list(opts.tools) == list(brain.VOICE_BUILTINS) and "CronCreate" not in opts.tools
-    assert opts.extra_args == {"no-chrome": None}                       # Chrome waits for need_tools(browser)
-    assert "need_tools with kind=browser" in opts.system_prompt["append"]
+    assert _flags(opts) == {"no-chrome": None}                       # Chrome waits for need_tools(browser)
+    assert "need_tools with kind=browser" in _appended(opts)
     worker = b.options(mode="plan", resume=None, worker=True)
-    assert worker.tools is None and worker.extra_args == {"no-chrome": None}   # background work never drives his Chrome
+    assert worker.tools is None and _flags(worker) == {"no-chrome": None}   # background work never drives his Chrome
     b.escalated.add("browser")
-    assert b.options(mode="plan", resume=None, table=table).extra_args == {"chrome": None}
+    assert _flags(b.options(mode="plan", resume=None, table=table)) == {"chrome": None}
     asettings.set_assistant_settings(s.replace(voice_lean=False, chrome=True))
     full = brain.Brain().options(mode="plan", resume=None)
-    assert full.tools is None and full.extra_args == {"chrome": None}
+    assert full.tools is None and _flags(full) == {"chrome": None}
 
 
 def test_need_tools_browser_reconnects_with_chrome_and_carries_on(env):
@@ -637,7 +647,7 @@ def test_need_tools_browser_reconnects_with_chrome_and_carries_on(env):
     res, heard = say("fill in the form on that page")
     assert heard == ["The form is filled in, sir."] and res["status"] == "ok"
     first, second = brain.FakeClient.instances[0], brain.FakeClient.instances[-1]
-    assert first is not second and second.options.extra_args == {"chrome": None}
+    assert first is not second and _flags(second.options) == {"chrome": None}
     assert second.options.resume == first.session_id                     # the same conversation, now with Chrome
     assert brain.get_brain().timing_for(res["turn"])["escalated_ms"] is not None
 

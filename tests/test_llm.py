@@ -263,7 +263,8 @@ def _plan(monkeypatch, out):
     calls = []
 
     def runner(argv, *, input, env, cwd, timeout):
-        calls.append({"argv": argv, "input": input})
+        sp = argv[argv.index("--system-prompt-file") + 1] if "--system-prompt-file" in argv else None
+        calls.append({"argv": argv, "input": input, "system": Path(sp).read_text(encoding="utf-8") if sp else None})
         result = {"type": "result", "subtype": "success", "is_error": False, "result": out, "session_id": "s1",
                   "num_turns": 1, "total_cost_usd": 0.004, "modelUsage": {"claude-haiku-5-5": {"outputTokens": 9}},
                   "usage": {"input_tokens": 120, "output_tokens": 9}}
@@ -290,7 +291,7 @@ def test_plan_backend_is_the_default_and_costs_nothing(monkeypatch, clock, _cc_r
     assert res.data["score"] == 8 and res.cost_usd == 0.0 and not res.fake
     (call,) = calls
     argv = call["argv"]
-    assert argv[argv.index("--model") + 1] == "haiku" and argv[argv.index("--system-prompt") + 1] == "Score it."
+    assert argv[argv.index("--model") + 1] == "haiku" and call["system"] == "Score it."
     assert argv[argv.index("--max-turns") + 1] == "1" and "window text" in call["input"]
     assert '"enum":["funny","awe","drama"]' in call["input"]           # the schema travels in the prompt
     row = db.list_llm_usage(1)[0]

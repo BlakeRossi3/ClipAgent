@@ -49,6 +49,8 @@ LOG_KEEP = 60
 LOOKBACK_HOURS = 24
 COOLDOWN_HOURS = 12
 RETRY_HOURS = 1
+TELL_AFTER_RUN_FAILURES = 2                  # a repair that could not run this many times is texted, once
+QUIET_RUN_STATUSES = ("budget", "stopped")   # plan limit (handoff resumes it) or cancelled: not a fault
 MAX_EVENTS = 400
 SAMPLES = 3
 STATUSES = ("fixed", "needs_you", "transient", "not_fixed")
@@ -206,8 +208,10 @@ def start_repair(p: dict[str, Any]) -> str:
     # bookkeeping BEFORE the work starts: a repair that ends at once updates this record in on_finished,
     # and writing it afterwards would overwrite that outcome (the 1-hour retry became a 12-hour wait)
     key = KV_SIG.format(sig=p["sig"])
-    db.kv_set(key, {"at": db.now_iso(), "task_id": None, "status": "running", "message": p["message"][:300],
-                    "until": db.to_iso(db.utcnow() + timedelta(hours=COOLDOWN_HOURS))})
+    fresh = {"at": db.now_iso(), "task_id": None, "status": "running", "message": p["message"][:300],
+             "until": db.to_iso(db.utcnow() + timedelta(hours=COOLDOWN_HOURS))}
+    db.kv_update(key, lambda st: {"run_failures": int((st if isinstance(st, dict) else {}).get("run_failures") or 0),
+                                  **fresh}, {})
     tid = tasks.start(title, brief=brief(p), announce=False, self_edit=True, usage_share=USAGE_SHARE,
                       meta={"kind": "autofix", "label": "Self-repair", "sig": p["sig"], "module": p["module"],
                             "failures": p["count"]},
@@ -248,19 +252,28 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
     edit = row.get("edit") or {}
     code_changed = bool(edit.get("commits") or edit.get("commit"))
     if status != "ok":   # the repair itself did not finish: try again in an hour
+        cause = " ".join(str(row.get("last_error") or full or status).split())[:240]
+        state: dict[str, Any] = {}
         if sig:
             until = db.to_iso(db.utcnow() + timedelta(hours=RETRY_HOURS))
-            db.kv_update(KV_SIG.format(sig=sig), lambda st: {**(st if isinstance(st, dict) else {}),
-                                                              "status": f"run_{status}", "until": until}, {})
+            broke = status not in QUIET_RUN_STATUSES
+            state = db.kv_update(KV_SIG.format(sig=sig), lambda st: {
+                **(st if isinstance(st, dict) else {}), "status": f"run_{status}", "until": until,
+                "run_failures": int((st if isinstance(st, dict) else {}).get("run_failures") or 0) + int(broke)}, {})
         db.log_event(MODULE, "repair did not finish; will try again", level="warning",
-                     data={"autofix": True, "task_id": row.get("id"), "status": status})
+                     data={"autofix": True, "task_id": row.get("id"), "status": status, "error": cause})
+        if int((state or {}).get("run_failures") or 0) == TELL_AFTER_RUN_FAILURES:
+            # the repair cannot even run (often the same fault): never retry silently forever
+            problem = " ".join(str((state or {}).get("message") or row.get("task") or "").split())[:160]
+            tell(f"I tried twice to fix \"{problem}\" but the repair itself would not run: {cause}. "
+                 "I will keep retrying hourly; this probably needs a code fix from you.")
         _remember({"sig": sig, "status": f"run_{status}", "what": row.get("task", ""), "fix": "", "task_id": row.get("id"),
                    "code_changed": code_changed})
         return
     res = parse(full)
     if sig:
         db.kv_update(KV_SIG.format(sig=sig), lambda st: {**(st if isinstance(st, dict) else {}),
-                                                          "status": res["status"]}, {})
+                                                          "status": res["status"], "run_failures": 0}, {})
     _remember({"sig": sig, **res, "task_id": row.get("id"), "code_changed": code_changed,
                "commits": edit.get("commits") or []})
     db.log_event(MODULE, f"repair {res['status']}: {res['what'][:160]}",

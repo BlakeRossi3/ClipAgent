@@ -18,11 +18,13 @@ Two kinds of run:
 
 How a tools-only run works::
 
-    claude -p --output-format stream-json --verbose --model <alias> --system-prompt <persona>
+    claude -p --output-format stream-json --verbose --model <alias> --system-prompt-file <file>
            --tools "" --setting-sources= --strict-mcp-config --mcp-config <file>
            --allowedTools mcp__clipagent__<tool>,... --permission-mode dontAsk
            --no-session-persistence --disable-slash-commands --max-turns N --effort E
-    (the conversation text goes in on stdin; never through a shell; no console window on Windows)
+    (the conversation text goes in on stdin and the system prompt in a per-run file, never on the command
+    line: Windows refuses a command line over 32,767 characters - WinError 206 - and the persona with
+    the staff roster, skills and notes is longer than that; never through a shell; no console window)
 
 * No built-in tools (no shell, no file edits, no web fetch), no user/project settings, no
   CLAUDE.md, no other MCP servers. The only capabilities are Cecil's own tools, served by
@@ -312,7 +314,25 @@ def blocked_message(exc: OSError) -> str | None:
                 "PBC\") in the antivirus, then press Sign in again.")
     if code == 5:
         return "Windows denied access to claude.exe. Try Sign in again; if it repeats, reinstall Claude Code."
+    if code == 206:
+        return ("could not start Claude Code: the command line was longer than Windows allows (WinError 206). "
+                "Something large is being passed as an argument instead of a file; this is a bug in ClipAgent.")
     return None
+
+
+WINDOWS_CMDLINE_MAX = 32_767   # CreateProcess limit, in characters, for the whole command line
+
+
+def write_system_prompt(tag: str, text: str) -> Path:
+    """The run's system prompt as a file for ``--system-prompt-file`` / ``--append-system-prompt-file``."""
+    path = runs_dir() / f"{tag}.system.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def cmdline_length(argv: list[str]) -> int:
+    """Length of ``argv`` as Windows would join it (quotes and escapes included)."""
+    return len(subprocess.list2cmdline(argv))
 
 
 def base_env(*, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -937,17 +957,17 @@ data folders, or changing system settings. Never print, copy or send secrets (AP
 passwords, config.env); those files are blocked for you anyway."""
 
 
-def build_full_argv(exe: str, *, model: str, system: str, mcp_config: str | None, settings_path: str,
+def build_full_argv(exe: str, *, model: str, system_file: str, mcp_config: str | None, settings_path: str,
                     agents_path: str | None, add_dirs: list[str], resume: str | None, effort: str | None,
                     max_turns: int, chrome: bool) -> list[str]:
     """``claude -p`` with Claude Code's own tools and system prompt kept (pure; tested).
 
-    The persona is *appended* (``--append-system-prompt``) so Claude Code's tool instructions stay.
+    The persona is *appended* (``--append-system-prompt-file``) so Claude Code's tool instructions stay.
     Only ClipAgent's own Claude Code profile is read (``--setting-sources user`` with
     CLAUDE_CONFIG_DIR = <data>/claude-code): never his personal settings, nor the repo's CLAUDE.md.
     """
     argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model,
-            "--append-system-prompt", system,
+            "--append-system-prompt-file", system_file,
             "--setting-sources", "user", "--settings", settings_path, "--permission-mode", "dontAsk",
             "--strict-mcp-config"]
     if mcp_config:
@@ -1061,10 +1081,11 @@ def _record_session(channel: str, res: "CCResult", resumed: bool, *, context_tok
         res.input_tokens + res.cache_read_tokens + res.cache_write_tokens})
 
 
-def build_argv(exe: str, *, model: str, system: str, allowed_tools: list[str], mcp_config: str | None,
+def build_argv(exe: str, *, model: str, system_file: str, allowed_tools: list[str], mcp_config: str | None,
                effort: str | None, web_search: bool, max_turns: int) -> list[str]:
     """The fixed ``claude -p`` command line (pure; tested)."""
-    argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model, "--system-prompt", system,
+    argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model,
+            "--system-prompt-file", system_file,
             "--tools", "WebSearch" if web_search else "",
             "--setting-sources=", "--strict-mcp-config"]
     if mcp_config:
@@ -1147,6 +1168,8 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
     run_tag = uuid.uuid4().hex[:12]
     cfg_path = calls_path = settings_path = agents_path = None
     resume = session_for(channel) if full else None
+    system_path = write_system_prompt(run_tag, system + (full_note(chrome=s.chrome) if full
+                                                         else (TOOL_NOTE if mcp else "")))
     if mcp is not None:
         calls_path = runs_dir() / f"{run_tag}.calls.jsonl"
         cfg_path = runs_dir() / f"{run_tag}.mcp.json"
@@ -1175,14 +1198,14 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
         while i < len(models):
             alias = models[i]
             if full:
-                argv = build_full_argv(str(exe), model=alias, system=system + full_note(chrome=s.chrome),
+                argv = build_full_argv(str(exe), model=alias, system_file=str(system_path),
                                        mcp_config=str(cfg_path) if cfg_path else None,
                                        settings_path=str(settings_path),
                                        agents_path=str(agents_path) if agents_path else None,
                                        add_dirs=[str(d) for d in working_dirs()[1:]], resume=resume,
                                        effort=effort, max_turns=max_turns or s.cc_max_turns, chrome=s.chrome)
             else:
-                argv = build_argv(str(exe), model=alias, system=system + (TOOL_NOTE if mcp else ""),
+                argv = build_argv(str(exe), model=alias, system_file=str(system_path),
                                   allowed_tools=list(mcp.allowed) if mcp else [],
                                   mcp_config=str(cfg_path) if cfg_path else None, effort=effort,
                                   web_search=web_search, max_turns=max_turns or (s.max_tool_rounds + 2))
@@ -1193,6 +1216,9 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
                 db.kv_incr(KV_TURNS.format(day=db.local_today().isoformat()))
             if ctl is not None and ctl.cancelled:
                 raise ClaudeCodeError("cancelled", "stopped before it started")
+            if cmdline_length(argv) > WINDOWS_CMDLINE_MAX:   # say why instead of a bare WinError 206
+                raise ClaudeCodeError("too_long", f"the Claude Code command line is {cmdline_length(argv):,} "
+                                      f"characters, over the Windows limit of {WINDOWS_CMDLINE_MAX:,}")
             token = _control.set(ctl)
             try:
                 done = _runner(argv, input=prompt, env=env, cwd=str(REPO_ROOT if full else work_dir()),
@@ -1262,7 +1288,7 @@ def run_prompt(prompt: str, *, system: str, role: str = "main", mcp: McpSpec | N
             ctl.on_line, ctl._proc = outer, None
         if tracker is not None:
             tracker.close()
-        for f in (calls_path, cfg_path, settings_path, agents_path):
+        for f in (calls_path, cfg_path, settings_path, agents_path, system_path):
             if f is not None:
                 f.unlink(missing_ok=True)
 

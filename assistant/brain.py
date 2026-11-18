@@ -817,17 +817,22 @@ class Brain:
             except Exception as exc:
                 log.warning("sub-agents not loaded: %s", exc)
         exe = claude_code.find_claude()
+        # the persona goes in a file, not on the command line: Windows refuses a command line over 32,767
+        # characters (WinError 206) and the persona with roster, skills and notes is longer than that
+        system_path = claude_code.write_system_prompt(
+            tag, system_prompt(worker=worker, chrome=chrome, lean=lean)
+            + _servers_note(sorted(extra), lean=lean and "my_servers" not in self.escalated))
+        extra_args: dict[str, str | None] = {"append-system-prompt-file": str(system_path)}
+        extra_args.update({"chrome": None} if chrome else {"no-chrome": None})
         kw: dict[str, Any] = dict(
-            system_prompt={"type": "preset", "preset": "claude_code",
-                           "append": system_prompt(worker=worker, chrome=chrome, lean=lean)
-                           + _servers_note(sorted(extra), lean=lean and "my_servers" not in self.escalated)},
+            system_prompt={"type": "preset", "preset": "claude_code"},
             mcp_servers={**extra, claude_code.MCP_SERVER_NAME: self.sdk_server(table)} if live else {},
             strict_mcp_config=True, permission_mode="dontAsk", settings=str(settings_path),
             setting_sources=["user"], cwd=str(claude_code.REPO_ROOT),
             add_dirs=[str(d) for d in claude_code.working_dirs()[1:]], env=build_env(mode),
             model=s.cc_model if worker else s.voice_model, effort=s.effort if worker else s.voice_effort,
             include_partial_messages=True, agents=agents or None, resume=resume,
-            max_turns=s.cc_max_turns, extra_args={"chrome": None} if chrome else {"no-chrome": None},
+            max_turns=s.cc_max_turns, extra_args=extra_args,
             stderr=lambda line: log.debug("claude: %s", line))
         if lean:
             kw["tools"] = list(VOICE_BUILTINS)

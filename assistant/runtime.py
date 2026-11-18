@@ -526,6 +526,7 @@ def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, par
         raise
     except Exception as exc:
         status = "error"
+        text = f"Failed: {error_text(exc)[1]}"   # the run row (agent page) shows the real cause, never blank
         db.log_event("assistant", f"agent {agent_name} failed", level="error", data={"error": repr(exc)[:500]})
         raise
     finally:
@@ -622,6 +623,7 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
         raise
     except Exception as exc:
         status = "error"
+        text = f"Failed: {error_text(exc)[1]}"   # the run row (agent page) shows the real cause, never blank
         db.log_event("assistant", f"agent {agent_name} failed", level="error", data={"error": repr(exc)[:500]})
         raise
     finally:

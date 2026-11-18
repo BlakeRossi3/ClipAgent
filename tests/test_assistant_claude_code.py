@@ -42,6 +42,9 @@ class Runner:
         for flag in ("--settings", "--mcp-config", "--agents"):
             if flag in argv:
                 files[flag] = json.loads(Path(argv[argv.index(flag) + 1]).read_text(encoding="utf-8"))
+        for flag in ("--system-prompt-file", "--append-system-prompt-file"):
+            if flag in argv:
+                files[flag] = Path(argv[argv.index(flag) + 1]).read_text(encoding="utf-8")
         self.calls.append({"argv": argv, "input": input, "files": files, "cwd": cwd, "timeout": timeout})
         out = self.outputs.pop(0) if self.outputs else _result()
         if callable(out):
@@ -82,19 +85,41 @@ def test_permission_rules_deny_secrets_and_destructive_commands():
 
 
 def test_full_argv_shape():
-    argv = claude_code.build_full_argv("claude", model="opus", system="persona", mcp_config="m.json",
+    argv = claude_code.build_full_argv("claude", model="opus", system_file="p.md", mcp_config="m.json",
                                        settings_path="s.json", agents_path="a.json", add_dirs=["/d", "/u"],
                                        resume="abc", effort="medium", max_turns=40, chrome=False)
     assert argv[:2] == ["claude", "-p"] and "--tools" not in argv and "--system-prompt" not in argv
     joined = " ".join(argv)
-    for part in ("--output-format stream-json --verbose", "--append-system-prompt persona",
+    for part in ("--output-format stream-json --verbose", "--append-system-prompt-file p.md",
                  "--permission-mode dontAsk", "--settings s.json", "--setting-sources user", "--agents a.json",
                  "--add-dir /d --add-dir /u", "--resume abc", "--no-chrome", "--max-turns 40"):
         assert part in joined, part
-    assert "--chrome" in claude_code.build_full_argv("c", model="m", system="s", mcp_config=None, settings_path="s",
+    assert "--chrome" in claude_code.build_full_argv("c", model="m", system_file="s", mcp_config=None, settings_path="s",
                                                      agents_path=None, add_dirs=[], resume=None, effort=None,
                                                      max_turns=2, chrome=True)
 
+
+@pytest.mark.parametrize("full", [False, True])
+def test_long_system_prompt_goes_in_a_file_not_the_command_line(cc, full):
+    """Windows refuses a command line over 32,767 chars (WinError 206): every run of Cecil died in 0.5 s."""
+    persona = "Cecil persona. " * 8000                          # ~120k characters
+    claude_code.run_prompt("hello", system=persona, full=full, count_turn=False)
+    (call,) = cc.calls
+    flag = "--append-system-prompt-file" if full else "--system-prompt-file"
+    assert call["files"][flag].startswith(persona)
+    assert claude_code.cmdline_length(call["argv"]) < 4000
+    assert not any(persona[:200] in a for a in call["argv"])
+    assert not Path(call["argv"][call["argv"].index(flag) + 1]).exists()      # cleaned up after the run
+
+
+def test_oversized_command_line_is_named_not_a_bare_winerror(cc, monkeypatch):
+    monkeypatch.setattr(claude_code, "WINDOWS_CMDLINE_MAX", 10)
+    with pytest.raises(claude_code.ClaudeCodeError, match="Windows limit"):
+        claude_code.run_prompt("hello", system="s", count_turn=False)
+    assert not cc.calls
+    exc = OSError("The filename or extension is too long")
+    exc.winerror = 206
+    assert "WinError 206" in claude_code.blocked_message(exc)
 
 def test_dashboard_turn_full_powers_and_session_resume_per_channel(cc):
     cc.outputs = [_result(session="d1"), _result(session="d1"), _result(session="s1")]
@@ -107,7 +132,7 @@ def test_dashboard_turn_full_powers_and_session_resume_per_channel(cc):
     assert {"memory_search", "open_url", "usage_status"} <= set(allowed) and "delegate" not in allowed
     assert "researcher" in first["files"]["--agents"] and "main" not in first["files"]["--agents"]
     assert first["files"]["--settings"]["permissions"]["defaultMode"] == "dontAsk"
-    system = first["argv"][first["argv"].index("--append-system-prompt") + 1]
+    system = first["files"]["--append-system-prompt-file"]
     assert "signed-in browser" in system and "never extract" in system.lower() and "CLAUDE.md" in system
     assert (claude_code.home_dir() / "skills" / "weekly-hours" / "SKILL.md").is_file()
 

@@ -573,6 +573,10 @@ allow/deny rules; secrets and destructive commands denied), our MCP tools, `--ag
 (SMS STOP/START CECIL - the old STOP/START STERLING still work - and UNDO). Plan usage + deferred queue: `assistant/usage.py` (`as_deferred`, store v2;
 tools `usage_status`, `schedule_prompt`; `usage.should_defer(kind, prompt)` for non-urgent jobs). `open_url` opens his
 browser. Chat images: `home.save_upload` -> paths passed to the turn (`runtime.run_turn(attachments=)`). Details: docs/ASSISTANT.md.
+**Never put large text on the `claude` command line**: Windows refuses a command line over 32,767 chars
+(`WinError 206`, every run then dies in 0.5 s). The prompt goes on stdin; the system prompt goes in a per-run
+file (`claude_code.write_system_prompt` -> `--system-prompt-file` / `--append-system-prompt-file`, also for the
+Agent SDK via `extra_args` in `brain.options`); `run_prompt` refuses an over-limit argv with a named error.
 
 ### Jarvis HUD, hearing, self-check
 `assistant/hud.py`: panel kinds (markup/image/video/youtube/map/data/list), tools `show_map` (Nominatim, kv cache,

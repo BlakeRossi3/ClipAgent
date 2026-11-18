@@ -115,6 +115,23 @@ def test_a_repair_that_did_not_finish_is_tried_again_in_an_hour(on, clock):
     assert autofix.tick()["status"] == "started"
 
 
+
+def test_a_repair_that_cannot_run_is_texted_with_its_cause_once(on, clock):
+    tasks.set_runner(lambda brief, context: ("could not start Claude Code: WinError 206", "error"))
+    _fail()
+    clock.advance(minutes=4)
+    _run(clock)
+    assert autofix.history()[0]["status"] == "run_error" and _texts() == []   # first time: just retry
+    clock.advance(minutes=70)
+    _fail()
+    _run(clock)
+    (text,) = _texts()
+    assert "would not run" in text and "WinError 206" in text
+    clock.advance(minutes=70)
+    _fail()
+    _run(clock)
+    assert len(_texts()) == 1                                                   # told once, not every hour
+
 def test_join_all_waits_for_slow_task_endings(on):
     import threading
 
