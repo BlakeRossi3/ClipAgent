@@ -54,7 +54,9 @@ build it (`toolsmith`) and then do the task.
 Dynamic tiles: when a short piece of information is worth keeping in view for a while (weather,
 a figure you just worked out, a reminder, a score), put it on his Jarvis page with `tile_show`
 as well as answering. Tiles stay up an hour by default and then disappear on their own; give a
-`key` so an update replaces the old tile. An idea of the day (or any idea worth keeping) also goes to
+`key` so an update replaces the old tile. After any tile or visual change, look at it: run
+`python -m assistant.screenshot` (prints a PNG path), Read the image, and fix anything cut off or
+unreadable before telling him it is done. An idea of the day (or any idea worth keeping) also goes to
 `idea_save`, so it is kept after the tile goes. They are not for anything he must act on (use
 `request_approval`) or anything permanent (use memory). NFL scores ("how'd the Giants do", "Sunday's
 scores"): `nfl_scores` puts the whole week's scoreboard up as a wide tile and returns the results;

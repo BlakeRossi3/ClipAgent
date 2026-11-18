@@ -61,6 +61,54 @@
         "summary": "Text-only design guides adapted from pbakaus/impeccable (Apache-2.0, commit d41d9860), which builds on Anthropic's frontend-design skill. 33 markdown guides on layout, typography, colour, motion, polish, critique, accessibility, responsive and native screens, plus a SKILL.md index. All of Impeccable's scripts, CLI, live mode and hooks were stripped out before vetting. No executable files, no network calls, no credential access; it only changes how Cecil designs UI when asked."
       },
       "vet_id": "7dcbfb62e619"
+    },
+    "webapp-testing": {
+      "approved_by": "owner via dashboard",
+      "catalog": true,
+      "commit": "e4bb5d960d87126ff3b3a8af1a104b7db67560ba",
+      "files": {
+        "LICENSE.txt": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "SKILL.md": "8bc27790f6e6dfc2bfa6692326d4518baacf6a31dcc646d963c729adad2f7e34",
+        "examples/console_logging.py": "ea46877289acb82da7e7ce59d0bc37c8977cd57e2a006d0c88d7a1c625bf95da",
+        "examples/element_discovery.py": "d63c89604a22f8845d724e95dda45db49b1bf57c25ce0a83afbb7b8da3d402f0",
+        "examples/static_html_automation.py": "9d533aafb875ee3ab8b8ebf8f5b9003ac8d999da3d09b285cce252e623140064",
+        "scripts/with_server.py": "b0dcf4918935b795f4eda9821579b9902119235ff4447f687a30286e7d0925fd"
+      },
+      "installed_at": "2026-11-18T00:59:19Z",
+      "license": "Complete terms in LICENSE.txt",
+      "path": "skills/webapp-testing",
+      "pip_installed": [
+        "playwright==1.65.2"
+      ],
+      "python_requirements": [
+        "playwright==1.65.2"
+      ],
+      "repo": "anthropics/skills",
+      "restricted": true,
+      "restrictions": [
+        "reference text only: never inlined into an agent prompt automatically",
+        "cannot add tools; must not be used to read secrets or message anyone"
+      ],
+      "review_id": "03ea68ef6da7",
+      "source": "github:anthropics/skills/skills/webapp-testing@e4bb5d960d87126ff3b3a8af1a104b7db67560ba",
+      "static_rating": "CAUTION",
+      "system_requirements": [],
+      "tier": "caution",
+      "tree_sha": "5ffb7dc66b9fd4c25c3e400a4c00da99a349b714",
+      "trusted_source": true,
+      "verdict": {
+        "at": "2026-11-17T16:34:14Z",
+        "by": "assistant:main",
+        "decision": "ask",
+        "rating": "SAFE",
+        "red_flags": [
+          "with_server.py runs shell commands (shell=True), but only the server commands Claude passes it; expected for its purpose",
+          "Examples write to /tmp and /mnt/user-data paths that don't exist on Windows; harmless, just examples",
+          "Installs the playwright package and downloads a Chromium browser (~150 MB)"
+        ],
+        "summary": "Anthropic's official webapp-testing skill. Teaches Claude to write Python Playwright scripts that open local web apps in a headless Chromium, click around, take screenshots and read console logs. One helper script (with_server.py) starts a dev server command you give it, waits for the port, runs your test, then stops the server. Example scripts only touch localhost and write screenshots/logs. No network calls to third parties, no credential access. Needs the playwright Python package (1.65.2) plus its Chromium download."
+      },
+      "vet_id": "03ea68ef6da7"
     }
   }
 }

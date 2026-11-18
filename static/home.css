@@ -880,10 +880,10 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .dtile-alert .dtile-value { color: #ff8a78; }
 /* a tile with rows (a scoreboard) spans the stage; rows flow into columns */
 .dtile-wide { grid-column: 1 / -1; }
-.dtile-rows { list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; }
-.dtile-rows li { display: flex; justify-content: space-between; gap: 8px; font: 500 0.78rem/1.5 var(--mono); color: var(--jv-ink); border-bottom: 1px solid rgba(0, 229, 255, .08); white-space: nowrap; overflow: hidden; }
-.dtile-rows li > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.dtile-note { color: var(--jv-dim); flex: none; }
+.dtile-rows { list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(100%, 1fr)); gap: 2px 14px; }
+.dtile-rows li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font: 500 0.78rem/1.5 var(--mono); color: var(--jv-ink); border-bottom: 1px solid rgba(0, 229, 255, .08); white-space: normal; overflow-wrap: anywhere; }
+.dtile-rows li > span:first-child { min-width: 0; }
+.dtile-note { color: var(--jv-dim); flex: 0 1 auto; max-width: 100%; text-align: right; overflow-wrap: anywhere; }
 .dtile-rows li.is-mark { color: var(--jv); font-weight: 700; }
 .dtile.is-leaving, .dtile.is-done { opacity: 0; transform: scale(.96); }
 @keyframes dtile-in { from { opacity: 0; transform: translateY(6px); } }
