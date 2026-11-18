@@ -250,7 +250,7 @@ def test_budget_exhausted_mid_run_keeps_source_transcribed(pipeline, settings):
 def test_scheduler_and_server_wiring():
     sched = main.build_scheduler()
     assert {j.id for j in sched.get_jobs()} == {"scout", "process", "upload", "send_queued", "expire_decisions",
-                                                "analytics", "cleanup", "daily_summary", "weekly_review"}
+                                                "analytics", "live_counts", "cleanup", "daily_summary", "weekly_review"}
     import server
 
     with TestClient(server.create_app()) as client:

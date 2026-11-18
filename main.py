@@ -1361,6 +1361,7 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("requeue-dry-run", help="make dry-run 'uploads' eligible for a real upload (go-live)")
     p.add_argument("--force", action="store_true", help="run even though DRY_RUN is still true")
     sub.add_parser("cleanup", help="delete old downloaded media and uploaded renders now")
+    sub.add_parser("codemap", help="rebuild docs/CODEMAP.md (where everything lives, who reads what)")
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a pending decision")
         p.add_argument("decision_id", type=int)
@@ -1465,6 +1466,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             out = requeue_dry_run()
             print(f"ready to upload: {out['rendered']}\nto re-render first: {out['picked']}")
+        elif args.cmd == "codemap":
+            import codemap
+
+            print(codemap.write())
         elif args.cmd == "cleanup":
             out = cleanup()
             print(f"freed {out['bytes'] / 1e6:.1f} MB ({out['sources']} sources, {out['renders']} renders)")

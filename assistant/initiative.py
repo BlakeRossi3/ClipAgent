@@ -517,6 +517,10 @@ def tick(now: datetime | None = None) -> dict[str, Any]:
         res = {"status": "waiting", "reason": why}
     else:
         item = pick(now) or _self_review(now)
+        if item is not None:
+            from assistant import autofix
+
+            autofix._fresh_codemap()
         if item is None:
             res = {"status": "empty", "reason": "nothing on the backlog is ready"}
         else:

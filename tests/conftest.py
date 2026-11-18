@@ -66,6 +66,9 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from assistant import selfedit
 
     selfedit.set_app_dir(tmp_path / "no-repo")
+    import codemap
+
+    codemap.set_output(tmp_path / "CODEMAP.md")       # never rewrite the app's docs/CODEMAP.md
     # never his real ~/.claude.json (MCP servers pass-through), never the network for maps/images
     from assistant import claude_code, hud
 

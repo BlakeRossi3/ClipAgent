@@ -842,8 +842,25 @@ def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = N
             "env": {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"}}
 
 
+#: Overrides Claude Code's built-in Explore sub-agent, which inherits the main model (Opus) since CLI 2.1.198:
+#: looking things up in his code does not need Opus, and a cheap explorer that starts from the code map
+#: keeps exploration off the plan's Opus budget and out of the main session's context.
+EXPLORE_AGENT = {
+    "description": "Fast read-only explorer of the ClipAgent code: finds where things live and who reads what. "
+                   "Use it instead of reading many files yourself; say how thorough (quick / medium / thorough).",
+    "prompt": "You explore the ClipAgent code, read-only, cheaply. Start with docs/CODEMAP.md: it lists every module, "
+              "job, page and which modules read each table, db helper and kv key. Then use Grep and Glob to pin "
+              "down the exact places and Read only the lines you need (offset/limit), never whole large files. "
+              "Answer with file:line references and one line per finding - every place that reads or shows the "
+              "data in question, not just the first - and nothing else.",
+    "tools": ["Read", "Glob", "Grep"],
+    "model": "haiku",
+}
+
+
 def native_agents() -> dict[str, Any]:
-    """Our sub-agents (agents/*.md) as Claude Code ``--agents`` JSON: one source of truth."""
+    """Our sub-agents (agents/*.md) as Claude Code ``--agents`` JSON: one source of truth, plus
+    :data:`EXPLORE_AGENT` (a cheap replacement for Claude Code's built-in Explore)."""
     from assistant import registry, tools
 
     s = get_assistant_settings()
@@ -857,6 +874,7 @@ def native_agents() -> dict[str, Any]:
         builtin = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill"]
         out[name] = {"description": spec.description, "prompt": spec.prompt, "tools": builtin + own,
                      "model": s.cc_subagent_model}
+    out.setdefault("Explore", dict(EXPLORE_AGENT))
     return out
 
 
@@ -942,6 +960,10 @@ Images he attaches are files under {uploads_dir()}: open them with Read.
 
 Editing yourself: you may change any file in your own code. Before you do, read CLAUDE.md (the
 engineering contract) and docs/ASSISTANT.md, follow their conventions, and add or update tests.
+To find where something lives, read docs/CODEMAP.md (generated: every module, job, page, and which
+modules read each table, db helper and kv key) before exploring file by file. When you change how one
+place reads or shows some data, change every other reader listed there too: one screen fixed and
+another still wrong is the mistake he notices most.
 After your turn the app runs the full offline test suite: if it passes, your change is committed on
 the local branch '{s.self_edit_branch}' and the app restarts; if it fails, your change is rolled back
 and you will be told why. Do not commit, push, reset or switch branches yourself. He can text UNDO.

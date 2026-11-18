@@ -7,6 +7,9 @@ youtube_token*.json
 token*.json
 *.pem
 
+# Generated (codemap.py rebuilds it from the source; never merged)
+docs/CODEMAP.md
+
 # Runtime data
 data/
 media/

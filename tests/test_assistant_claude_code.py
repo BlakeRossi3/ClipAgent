@@ -131,6 +131,9 @@ def test_dashboard_turn_full_powers_and_session_resume_per_channel(cc):
     allowed = first["files"]["--mcp-config"]["mcpServers"]["clipagent"]["env"]["CLIPAGENT_MCP_ALLOWED"].split(",")
     assert {"memory_search", "open_url", "usage_status"} <= set(allowed) and "delegate" not in allowed
     assert "researcher" in first["files"]["--agents"] and "main" not in first["files"]["--agents"]
+    explore = first["files"]["--agents"]["Explore"]          # cheap explorer replaces the built-in (Opus) one
+    assert explore["model"] == "haiku" and explore["tools"] == ["Read", "Glob", "Grep"]
+    assert "CODEMAP" in explore["prompt"]
     assert first["files"]["--settings"]["permissions"]["defaultMode"] == "dontAsk"
     system = first["files"]["--append-system-prompt-file"]
     assert "signed-in browser" in system and "never extract" in system.lower() and "CLAUDE.md" in system
