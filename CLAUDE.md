@@ -195,7 +195,11 @@ Time: `utcnow()`, `now_iso()`, `to_iso(dt)`, `parse_iso(s)`, `local_tz()`, `loca
 - Schema documented in the module docstring. `caption_style` keys: `font, font_size,
   primary_color, highlight_color, outline_color, outline_px, max_words_per_line,
   position (top|center|lower_third), uppercase, animation (word_pop|karaoke|none),
-  framing (auto|center_crop|blur_fill|fit, optional)` - enum values are validated.
+  framing (auto|center_crop|blur_fill|fit, optional), title_card (card|hook, optional),
+  cut_dead_air (bool, optional, default true)` - enum values are validated.
+- Dead air: `edit.dead_air_segments` jump-cuts 0.6-4 s pauses between words (longer silences are
+  kept: usually the action). Captions are remapped onto the cut timeline; the render is shorter
+  than `clip.end_sec - clip.start_sec`. `pick.skip_filler_opening` drops "um", "so," openers.
 - Caption font: `edit.resolve_font` tries the strategy font, then `edit.FONT_FALLBACKS`
   (Montserrat ExtraBold/Black, Montserrat, Anton, Inter Black, ..., DejaVu Sans); TTF/OTF files
   in `assets/fonts/` are used by ffmpeg and count as installed.

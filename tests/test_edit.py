@@ -563,3 +563,99 @@ def test_windows_fonts_found_by_file_name(monkeypatch, tmp_path, settings):
         assert d == settings.data_dir / "fonts" and (d / "ARIBLK.TTF").read_bytes() == b"font"
     finally:
         edit._installed_families.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# dead air: pauses between words are jump-cut
+# ---------------------------------------------------------------------------
+
+PAUSY = [W(10.0, 10.5, "Four"), W(10.55, 11.0, "astronauts."),      # then a 2 s pause
+         W(13.0, 13.4, "Headed"), W(13.45, 14.0, "out."),             # then a 0.4 s breath (kept)
+         W(14.4, 14.8, "Then"), W(14.85, 15.2, "silence."),           # then 10 s (action: kept)
+         W(25.2, 25.6, "Wow."), W(26.5, 26.9, "Yes.")]                # 0.9 s pause (cut)
+
+
+def test_dead_air_segments_cut_mid_pauses_only():
+    segs = edit.dead_air_segments(PAUSY, 10.0, 5.5)
+    # 2 s pause after "astronauts." (ends 1.0) is cut; the 0.4 s breath is kept
+    assert len(segs) == 2
+    (a0, a1), (b0, b1) = segs
+    assert a0 == 0.0 and b1 == 5.5
+    assert a1 == pytest.approx(1.0 + edit.DEAD_AIR_KEEP_AFTER, abs=1 / edit.FPS)
+    assert b0 == pytest.approx(3.0 - edit.DEAD_AIR_KEEP_BEFORE, abs=1 / edit.FPS)
+    for t in (a1, b0):                    # on the frame grid
+        assert abs(t * edit.FPS - round(t * edit.FPS)) < 0.05   # 3-decimal rounding
+    assert edit.segments_duration(segs) == pytest.approx(5.5 - (b0 - a1), abs=1e-3)
+    # the 10 s silence is the action (kept); the 0.9 s pause before "Yes." is cut
+    whole = edit.dead_air_segments(PAUSY, 10.0, 17.0)
+    assert len(whole) == 3 and whole[1][0] == b0 and whole[1][1] > 15.6
+    assert edit.dead_air_segments([], 0, 5) == [(0.0, 5.0)]
+    assert edit.dead_air_segments(SENTENCE, 10.0, 5.0) == [(0.0, 5.0)]   # tight speech: no cuts
+
+
+def test_remap_words_onto_cut_timeline():
+    segs = [(0.0, 1.2), (2.9, 7.0)]
+    assert edit.remap_time(0.5, segs) == pytest.approx(0.5)
+    assert edit.remap_time(2.0, segs) == pytest.approx(1.2)           # inside the cut -> next kept frame
+    assert edit.remap_time(3.0, segs) == pytest.approx(1.3)
+    assert edit.remap_time(9.0, segs) == pytest.approx(5.3)
+    out = edit.remap_words(PAUSY[:3], 10.0, segs)
+    assert [w["word"] for w in out] == ["Four", "astronauts.", "Headed"]
+    assert out[2]["start"] == pytest.approx(1.3) and out[2]["end"] == pytest.approx(1.7)
+
+
+def test_build_ffmpeg_cmd_with_segments(settings, tmp_path):
+    segs = [(0.0, 1.2), (2.9, 7.0)]
+    cmd = edit.build_ffmpeg_cmd(Path("s.mp4"), tmp_path / "a.ass", tmp_path / "o.mp4", 10, 17, settings,
+                                info=WIDE, segments=segs)
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "select='gte(t," in graph and "setpts=N/30/TB" in graph
+    assert "aselect='gte(t,0.0000)*lt(t,1.2000)+gte(t,2.9000)*lt(t,7.0000)'" in graph
+    assert cmd[cmd.index("-t") + 1] == "5.300"
+    plain = edit.build_ffmpeg_cmd(Path("s.mp4"), tmp_path / "a.ass", tmp_path / "o.mp4", 10, 17, settings,
+                                  info=WIDE, segments=[(0.0, 7.0)])
+    assert "select" not in plain[plain.index("-filter_complex") + 1]
+
+
+def test_render_clip_cuts_dead_air(settings, make_source, make_clip, fakeff, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+    sid = make_source(status="picked")
+    tp = _write_transcript(settings, sid, PAUSY)
+    db.update_source(sid, video_path=str(video), transcript_path=str(tp))
+    cid = make_clip(source_id=sid, start_sec=10.0, end_sec=17.0, hook_text="Go")
+    segs = edit.dead_air_segments(PAUSY, 10.0, 7.0)
+    expect = edit.segments_duration(segs)
+    fakeff.out_info = MediaInfo(1080, 1920, expect, True)
+    edit.render_clip(cid)
+    cmd = fakeff.cmds[0]
+    assert cmd[cmd.index("-t") + 1] == f"{expect:.3f}" and "aselect" in cmd[cmd.index("-filter_complex") + 1]
+    ass = (settings.renders_dir / f"{cid}.ass").read_text()
+    assert "HEADED" in " ".join(visible_text(d[3]) for d in dialogues(ass, "Caption"))
+    ev = db.list_events(module="edit", limit=1)[0]
+    assert ev.data["jump_cuts"] == 1 and ev.data["dead_air_cut_sec"] > 1.0 and "pauses cut" in ev.message
+    # the owner can switch it off in the strategy
+    st = {"caption_style": {"cut_dead_air": False}, "clip_length_sec": {"max": 60}}
+    fakeff.out_info = MediaInfo(1080, 1920, 7.0, True)
+    edit.render_clip(cid, st)
+    assert "aselect" not in fakeff.cmds[1][fakeff.cmds[1].index("-filter_complex") + 1]
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe not installed")
+def test_render_clip_real_ffmpeg_with_jump_cut(settings, make_source, make_clip, tmp_path):
+    src = tmp_path / "video.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc2=size=640x360:rate=25:duration=6", "-f", "lavfi",
+                    "-i", "sine=frequency=440:sample_rate=44100:duration=6", "-c:a", "aac",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-shortest", str(src)],
+                   check=True, timeout=60)
+    sid = make_source(status="picked")
+    tp = _write_transcript(settings, sid, [W(0.5, 0.9, "One."), W(3.0, 3.4, "Two."), W(3.5, 4.0, "Three.")])
+    db.update_source(sid, video_path=str(src), transcript_path=str(tp))
+    cid = make_clip(source_id=sid, start_sec=0.4, end_sec=4.2, hook_text="Cut", credit_text="Video: NASA")
+    out = edit.render_clip(cid)
+    info = edit.probe_media(out)
+    expect = edit.segments_duration(edit.dead_air_segments(
+        [W(0.5, 0.9, "One."), W(3.0, 3.4, "Two."), W(3.5, 4.0, "Three.")], 0.4, 3.8))
+    assert expect < 3.0
+    assert abs(info.duration - expect) < edit.DURATION_TOLERANCE_SEC and info.has_audio
