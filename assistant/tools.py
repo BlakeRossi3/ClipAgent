@@ -97,6 +97,8 @@ PLANNED_TOOLS: dict[str, str] = {
     "tile_show": "assistant.tiles",
     "tile_remove": "assistant.tiles",
     "tile_list": "assistant.tiles",
+    "screen_read": "assistant.screen",
+    "screen_clear": "assistant.screen",
     "idea_save": "assistant.ideas",
     "ideas_list": "assistant.ideas",
     "autofix_log": "assistant.autofix",
@@ -173,7 +175,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities",
                      "assistant.schedule", "assistant.handoff", "assistant.initiative",
                      "assistant.tiles", "assistant.nfl", "assistant.page_reader", "assistant.tasks", "assistant.ideas",
-                     "assistant.autofix")
+                     "assistant.autofix", "assistant.screen")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs
@@ -545,10 +547,10 @@ def outbound_sms_today() -> int:
 
 def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply_to: int | None = None,
                   cost_usd: float = 0.0, urgent: bool = False) -> dict[str, Any]:
-    """The single outbound path: the owner's own number only, daily cap, quiet hours, DRY_RUN.
+    """The single outbound path: the owner's own number only, quiet hours, DRY_RUN. No daily cap.
 
-    ``kind="reply"`` (a direct answer to an inbound message) is exempt from the daily cap.
-    ``urgent=True`` (plain code only, e.g. the heartbeat) texts now even in quiet hours; still capped.
+    ``kind="reply"`` (a direct answer to an inbound message) is sent at once, even in quiet hours.
+    ``urgent=True`` (plain code only, e.g. the heartbeat) texts now even in quiet hours.
     Goes through ``notify.notify`` (quiet hours queue it; DRY_RUN records without sending).
     """
     from assistant import persona
@@ -688,7 +690,7 @@ def _builtin() -> list[Tool]:
                          "owner's own default browser on his laptop, signed in as him.",
              _obj({"url": {"type": "string"}}, ["url"]), _open_url, side_effects=True),
         Tool("message_owner", "Send the owner a separate proactive text message (not for replying: your reply is "
-                              "delivered automatically). Daily cap and quiet hours apply.",
+                              "delivered automatically). Quiet hours apply.",
              _obj({"text": {"type": "string"}, "kind": {"type": "string"}}, ["text"]), _message_owner,
              side_effects=True),
     ]

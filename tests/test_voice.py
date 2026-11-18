@@ -840,3 +840,21 @@ def test_whisper_stt_warms_the_gpu_once_and_falls_back_to_cpu(monkeypatch):
     broken = WhisperSTT("tiny.en", device="auto")
     assert broken.transcribe(_np.zeros(800, dtype=_np.float32)) == "hello"
     assert broken.device == "cpu" and calls[-1] == ("cpu", 800)
+
+
+def test_page_reports_its_screen_and_closes_panels(talk):
+    import json
+
+    from assistant import hud, screen
+
+    c, stt, web = talk
+    csrf = _csrf_of(c)
+    rep = {"page": "/dashboard/", "sections": [{"key": "reels", "title": "Reels", "shown": True}],
+           "panels": [{"id": "p1", "kind": "video", "title": "CLIP 5"}]}
+    r = c.post("/voice/api/screen", data={"csrf": csrf, "report": json.dumps(rep)})
+    assert r.status_code == 200 and screen.latest()["panels"][0]["title"] == "CLIP 5"
+    assert c.post("/voice/api/screen", data={"csrf": csrf, "report": "{not json"}).status_code == 400
+    p = hud.publish_panel(hud.make_panel("video", "Clip 4", {"clip_id": 4}, hold="sticky", turn="t0"))
+    assert c.post(f"/voice/api/panel/{p['id']}/dismiss", data={"csrf": csrf}).status_code == 200
+    assert screen.panels() == []
+    assert c.post("/voice/api/panel/nope/dismiss", data={"csrf": csrf}).status_code == 404

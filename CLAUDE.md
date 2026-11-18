@@ -481,7 +481,7 @@ Phase-1 conventions above apply (UTC ISO in DB, `db.utcnow()`, no import side ef
 ### assistant/settings.py
 `AssistantSettings` (frozen; `.replace(**kw)`): `enabled=False, name="Cecil", owner_honorific="sir",
 owner_name, model="claude-fable-5-2", subagent_model="claude-opus-5-5", effort="medium",
-subagent_effort="low", daily_budget_usd=3.0, max_turn_usd=0.5, max_sms_per_day=8, max_tool_rounds=8,
+subagent_effort="low", daily_budget_usd=3.0, max_turn_usd=0.5, max_tool_rounds=8,
 max_tokens=2048, subagent_max_tokens=3072, web_search=False, vault_dir, fake (= FAKE_ASSISTANT,
 default FAKE_LLM), timezone, dry_run`. `get_assistant_settings()` (cached; re-read whenever
 `config.reset_settings()` runs), `load_assistant_settings(environ=None)`, `set_assistant_settings(s|None)`,
@@ -527,7 +527,7 @@ Errors: `VaultError` > `VaultPathError`, `NoteNotFound`, `NoteConflict`.
 `system_blocks(channel, *, agent="main"|AgentSpec, profile_context="", settings, agents, skills) -> list[str]` (stable, cacheable),
 `lint(text, channel, *, settings) -> list[str]` (codes: empty, too_long, emoji, exclamation, markdown, url_in_voice,
 honorific_overuse, as_an_ai, gush), `polish(text, channel, *, settings) -> str` (idempotent), `escape_untrusted(text)`,
-`load_examples() -> list[Example(title, channel, situation, reply, bad, violates)]`, `CHANNEL_LIMITS` (sms 320, voice 600, dashboard 4000).
+`load_examples() -> list[Example(title, channel, situation, reply, bad, violates)]`, `CHANNEL_LIMITS` (sms 1500, voice 600, dashboard 4000).
 
 ### assistant/registry.py
 `load_skills(dir=None, *, strict=True) -> dict[str, SkillSpec(name, description, body, path, resources)]`,
@@ -730,6 +730,21 @@ Voice end-of-turn waits are longer (holdFor 600/900/2200 ms, browser STT silence
 - **Ideas of the day** (`assistant/ideas.py`): `save` -> vault `Agent/Ideas of the Day.md` + kv `assistant:ideas`;
   also from any tile whose key/title says "idea" (`tiles.show`), the surprise's `IDEA:` line, and a one-time backfill
   from stored tiles. Tools `idea_save`, `ideas_list`; listed on the Scheduled page.
-- `ASSISTANT_MAX_TURNS_PER_DAY` now defaults to 0 = no daily run cap (the plan's usage windows decide).
+- **No caps on texts or runs** (Blake: "there should be no cap at all"): no daily Claude run cap
+  (`ASSISTANT_MAX_TURNS_PER_DAY` removed), no daily text cap (`ASSISTANT_MAX_SMS_PER_DAY` removed, and
+  `notify.MAX_NOTIFICATIONS_PER_DAY` removed), SMS replies up to 1,500 chars (`persona.CHANNEL_LIMITS["sms"]`,
+  one Twilio message). Do not add any back. The plan's usage windows, quiet hours and urgent-call de-dup remain.
 - The Jarvis rail/trail are reconciled in place (`reconcile` in static/jarvis.js, keyed by `data-k`): never rebuild
   them on a timer (it made the page jump while he scrolled).
+
+### Screen awareness (assistant/screen.py)
+Cecil must never guess what is on the Jarvis page. The page reports what it shows (`static/jarvis.js` screen reporter:
+every `[data-widget]` section with area / shown / collapsed / in view / text, every HUD panel with `data-panel-id`,
+tiles, open overlays; on change with digits ignored, at most every 3 s, and every 60 s) to `POST /voice/api/screen`
+(own rate bucket `SCREEN_LIMITS`) -> kv `screen:latest`. Tools `screen_read` (bus panels + live tiles + the page
+report, `page_open` = fresh within 2 min) and `screen_clear` (panels | tiles | all | one by id/title); panels have
+an x (`POST /voice/api/panel/{id}/dismiss`); bus event `panel_remove {ids}`. `screen.summary_line()` is in every
+spoken turn's context (`status.turn_context`). New page sections need a `data-widget` attribute to be visible to him.
+Event relay: `assistant/mcp_server.py` (the tool process of text/dashboard turns) calls `events.set_relay(True)`, so
+`events.publish` there goes to a kv outbox that the server drains (`events.drain_outbox`, from the SSE stream loop and
+`events.snapshot`, at most 1/s) - panels shown from a text now reach the page.

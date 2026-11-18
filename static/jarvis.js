@@ -1175,11 +1175,19 @@
   function panelBox(p, big) {
     var box = el('article', 'hud-panel hud-kind-' + (/^[a-z]+$/.test(p.kind || '') ? p.kind : 'markup') + (big ? ' is-big' : ''));
     box.setAttribute('data-accent', /^(amber|violet|green|red)$/.test(p.accent) ? p.accent : 'default');
+    box.setAttribute('data-panel-id', String(p.id || ''));
     var head = el('div', 'hud-head'); head.appendChild(el('h3', 'hud-title', p.title || 'DISPLAY'));
     if (!big) {
       var x = el('button', 'hud-expand', '\u2922'); x.type = 'button'; x.title = 'Expand'; x.setAttribute('aria-label', 'Expand ' + (p.title || 'panel'));
       x.addEventListener('click', function () { openBlade(p); });
       head.appendChild(x);
+      /* close it for good: off this page and every other one (assistant/screen.py dismiss) */
+      var c = el('button', 'hud-close', '\u00d7'); c.type = 'button'; c.title = 'Close'; c.setAttribute('aria-label', 'Close ' + (p.title || 'panel'));
+      c.addEventListener('click', function () {
+        dropPanels([p.id]);
+        post('/voice/api/panel/' + encodeURIComponent(p.id) + '/dismiss', {}).catch(function () {});
+      });
+      head.appendChild(c);
     }
     box.appendChild(head);
     box.appendChild(panelBody(p, big));
@@ -1200,6 +1208,10 @@
     x.addEventListener('click', closeBlade);
     bladeEl.appendChild(x); bladeEl.appendChild(panelBox(p, true));
     bladeEl.hidden = false; root.classList.add('has-blade');
+  }
+  function dropPanels(ids) {
+    act.panels = act.panels.filter(function (p) { return ids.indexOf(p.id) < 0; });
+    renderPanels();
   }
   function closeBlade() { if (!bladeEl) return; bladeId = null; bladeEl.hidden = true; bladeEl.textContent = ''; root.classList.remove('has-blade'); }
   function renderRail() { renderSteps(); renderTasks(); renderPanels(); renderTrail(); }
@@ -1278,6 +1290,7 @@
       act.panels.push(e.panel); renderPanels();
       if (e.panel.size === 'blade') openBlade(e.panel);
     },
+    panel_remove: function (e) { if (e.ids && e.ids.length) dropPanels(e.ids); },
     settings: function (e) {
       if (!e.voice) return;
       voiceCfg = Object.assign({ smart_turn_ready: voiceCfg.smart_turn_ready && e.voice.smart_turn !== 'off' }, e.voice);
@@ -1517,6 +1530,59 @@
     if (!open) (menu ? menu.querySelector('summary') : histBtn).focus({ preventScroll: true });
   }
   if (drawer) drawer.inert = true;
+
+  /* ---- what this page is showing, told to the server (assistant/screen.py) ---------------------
+     Cecil could not see the page, so he guessed about it. Every section, panel and tile, what is
+     collapsed or hidden and what is in view; sent when it changes (clocks and counters ignored), at
+     most every 3 s, and every 60 s while the page is visible so it stays fresh. Text only, no input values. */
+  var screenSig = '', screenAt = 0, screenTimer = null;
+  function txt(n, max) { return n ? String(n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim().slice(0, max) : ''; }
+  function shownEl(n) { return !!n && !n.hidden && !!(n.offsetParent || (n.getClientRects && n.getClientRects().length)); }
+  function screenReport() {
+    var vh = window.innerHeight || 800;
+    var sections = Array.prototype.map.call(document.querySelectorAll('[data-widget]'), function (s) {
+      var h = s.querySelector('h2, h3'), shown = shownEl(s), r = s.getBoundingClientRect();
+      var area = s.closest('.cc-left') ? 'left rail' : s.closest('.jv-rail') ? 'right rail'
+        : s.closest('.cc-deck') ? 'under the ring' : 'cards below';
+      return { key: s.getAttribute('data-widget'), title: txt(h, 80), area: area, shown: shown,
+        collapsed: s.classList.contains('is-collapsed') || !!(s.closest('.is-collapsed')),
+        in_view: shown && r.bottom > 0 && r.top < vh, text: txt(s, 240) };
+    });
+    var panels = Array.prototype.map.call(panelsEl ? panelsEl.querySelectorAll('.hud-panel') : [], function (b) {
+      var m = /hud-kind-([a-z]+)/.exec(b.className || '');
+      return { id: b.getAttribute('data-panel-id') || '', kind: m ? m[1] : '', title: txt(b.querySelector('.hud-title'), 80),
+        text: txt(b, 240) };
+    });
+    var tileBox = q('[data-live="dyn_tiles"]');
+    var tiles = Array.prototype.map.call(tileBox ? tileBox.children : [], function (t) {
+      var h = t.querySelector('h3, h4, b, strong');
+      return { title: txt(h, 80), text: txt(t, 200) };
+    }).filter(function (t) { return t.title || t.text; });
+    return { page: location.pathname, sections: sections, panels: panels, tiles: tiles,
+      overlays: { expanded_panel: !!(bladeEl && !bladeEl.hidden),
+        history: document.documentElement.classList.contains('jv-drawer-open'),
+        diagnostics: !!(q('[data-jv-diag]') && !q('[data-jv-diag]').hidden) },
+      scrolled: window.scrollY > 40 ? 'scrolled down' : 'top' };
+  }
+  function sendScreen(force) {
+    screenTimer = null;
+    if (document.hidden || !csrf) return;
+    var rep = screenReport(), json = JSON.stringify(rep), sig = json.replace(/\d+/g, '#');
+    var now = Date.now();
+    if (!force && sig === screenSig) return;
+    if (now - screenAt < 3000) { screenTimer = setTimeout(function () { sendScreen(force); }, 3000 - (now - screenAt)); return; }
+    screenSig = sig; screenAt = now;
+    post('/voice/api/screen', { report: json }).catch(function () { screenSig = ''; });
+  }
+  function screenChanged() { if (!screenTimer) screenTimer = setTimeout(function () { sendScreen(false); }, 1500); }
+  if (window.MutationObserver) {
+    new MutationObserver(screenChanged).observe(document.body, { childList: true, subtree: true,
+      attributes: true, attributeFilter: ['hidden', 'class'] });
+  }
+  window.addEventListener('scroll', screenChanged, { passive: true });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) sendScreen(true); });
+  setInterval(function () { sendScreen(true); }, 60000);
+  setTimeout(function () { sendScreen(true); }, 2500);
   histBtn.addEventListener('click', function () { if (menu) menu.open = false; setDrawer(!drawerOpen()); });
   document.addEventListener('click', function (e) {     // close the "..." menu on an outside click
     if (menu && menu.open && !menu.contains(e.target)) menu.open = false;

@@ -16,10 +16,8 @@ Core behaviour:
 
 * :func:`plan_day` materialises the day's ``as_checkins`` rows (idempotent per day + kind).
 * :func:`send_due` sends what is due through ``tools.send_to_owner``: never in quiet hours or while
-  snoozed/stopped; stale items are skipped, not sent late; one open question at a time; when the
-  daily SMS cap is tight, questions awaiting data win over briefs, briefs over nudges (slots are
-  held back for higher-priority items planned later the same day). Answers to his texts are
-  replies and never compete for the cap. Unanswered questions are re-asked at most once, then expire.
+  snoozed/stopped; stale items are skipped, not sent late; one open question at a time; no daily
+  text cap. Unanswered questions are re-asked at most once, then expire.
 * :func:`handle_reply` answers an inbound text in plain code when it plausibly answers the open
   check-in (hours -> ledger, meal feedback -> meals, wellbeing -> journal, onboarding answers ->
   ledger / vault) or is a control word (``SNOOZE [2h]``, ``QUIET`` (rest of today),
@@ -490,7 +488,7 @@ def _deliver(chk: store.Checkin, text: str, *, reask: bool = False) -> str:
     base = chk.kind.split(":", 1)[0]
     try:
         res = tools.send_to_owner(text, kind=f"checkin_{base}", agent="checkins")
-    except tools.ToolError as exc:  # the assistant's own daily cap
+    except tools.ToolError as exc:  # e.g. an empty message
         db.log_event(MODULE, f"check-in #{chk.id} not sent: {exc}", level="info")
         return "skipped"
     if res["status"] in ("skipped", "failed"):  # global notification cap / Twilio failure

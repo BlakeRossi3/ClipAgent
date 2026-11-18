@@ -159,6 +159,7 @@ TALK_MAX_SEC = 60.0
 TALK_MIN_SEC = 0.3
 TALK_LIMITS = ((60, 30), (3600, 400))   # (window seconds, max clips) per session; VAD segments are short
 ASK_LIMITS = ((60, 30), (3600, 400))
+SCREEN_LIMITS = ((60, 30), (3600, 1200))   # the page's screen reports (only on change, at most every 3 s)
 RATE = 16000
 
 
@@ -519,6 +520,41 @@ async def api_task_cancel(request: Request, task_id: str) -> Response:
     return _d()._json({"ok": row is not None, "status": (row or {}).get("status")}, status_code=200 if row else 404)
 
 
+@router.post("/api/screen", include_in_schema=False)
+async def api_screen(request: Request) -> Response:
+    """The Jarvis page says what it is showing (assistant/screen.py), so Cecil can see it too."""
+    import json as _json
+
+    import home
+    from assistant import screen
+
+    if _local_ok(request):
+        err, form = None, await request.form()
+    else:   # its own bucket: reports must never use up his talking allowance
+        err, form = await home._post_guard(request, bucket="screen", limits=SCREEN_LIMITS)
+    if err is not None:
+        return err
+    raw = str(form.get("report") or "")[:60_000]
+    try:
+        report = _json.loads(raw) if raw else {}
+    except ValueError:
+        return _d()._json({"ok": False, "error": "bad report"}, status_code=400)
+    screen.record(report)
+    return _d()._json({"ok": True})
+
+
+@router.post("/api/panel/{panel_id}/dismiss", include_in_schema=False)
+async def api_panel_dismiss(request: Request, panel_id: str) -> Response:
+    """The x on a panel: he takes it off the page himself."""
+    from assistant import screen
+
+    err, _form = await _ask_guard(request)
+    if err is not None:
+        return err
+    ok = screen.dismiss(panel_id[:40])
+    return _d()._json({"ok": ok}, status_code=200 if ok else 404)
+
+
 @router.post("/api/voices", include_in_schema=False)
 async def api_voices(request: Request) -> Response:
     """The page reports the browser's voices (names only), so "switch to Ryan" can find one."""
@@ -657,6 +693,7 @@ async def api_stream(request: Request) -> Response:
             yield f"retry: 2000\nevent: hello\ndata: {json.dumps({'seq': events.BUS.seq})}\n\n"
             last_ping = time.monotonic()
             while True:
+                events.drain_outbox()          # panels etc. published by a text/dashboard turn's tool process
                 batch = events.BUS.since(after)
                 for evt in batch:
                     after = evt["id"]

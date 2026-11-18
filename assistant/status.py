@@ -231,5 +231,11 @@ def turn_context() -> str:
         n = len(db.list_decisions("pending", limit=20))
         return [f"Approvals waiting for him: {n}"] if n else []
 
-    lines += _parts([running, approvals, due_checkins])
+    def on_screen() -> list[str]:
+        from assistant import screen
+
+        line = screen.summary_line()
+        return [line] if line else []
+
+    lines += _parts([running, approvals, due_checkins, on_screen])
     return "\n".join(lines)

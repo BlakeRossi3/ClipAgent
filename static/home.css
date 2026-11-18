@@ -501,9 +501,10 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 /* ---- HUD panel kinds, blades, ui_* restyling, diagnostics (assistant/hud.py, static/jarvis.js) ---- */
 .hud-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
 .hud-head .hud-title { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hud-expand { flex: none; width: 26px; height: 26px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent);
+.hud-expand, .hud-close { flex: none; width: 26px; height: 26px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent);
   background: transparent; color: var(--acc); cursor: pointer; font-size: 0.85rem; line-height: 1; }
-.hud-expand:hover, .hud-expand:focus-visible { background: color-mix(in srgb, var(--acc) 16%, transparent); outline: none; }
+.hud-close { font-size: 1.05rem; }
+.hud-expand:hover, .hud-expand:focus-visible, .hud-close:hover, .hud-close:focus-visible { background: color-mix(in srgb, var(--acc) 16%, transparent); outline: none; }
 .hud-mapwrap { position: relative; }
 .hud-map { position: relative; height: 190px; overflow: hidden; border-radius: 6px; background: #0a1418;
   border: 1px solid color-mix(in srgb, var(--acc) 30%, transparent); }
