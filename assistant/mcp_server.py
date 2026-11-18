@@ -143,6 +143,9 @@ def main() -> int:
     out = sys.stdout.buffer
     sys.stdout = sys.stderr  # anything printed by imported code must not corrupt the protocol
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    from assistant import events
+
+    events.set_relay(True)   # panels/screen changes made here reach the server's page through the kv outbox
     serve(sys.stdin.buffer, out)
     return 0
 

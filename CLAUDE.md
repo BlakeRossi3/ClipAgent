@@ -736,3 +736,15 @@ Voice end-of-turn waits are longer (holdFor 600/900/2200 ms, browser STT silence
   one Twilio message). Do not add any back. The plan's usage windows, quiet hours and urgent-call de-dup remain.
 - The Jarvis rail/trail are reconciled in place (`reconcile` in static/jarvis.js, keyed by `data-k`): never rebuild
   them on a timer (it made the page jump while he scrolled).
+
+### Screen awareness (assistant/screen.py)
+Cecil must never guess what is on the Jarvis page. The page reports what it shows (`static/jarvis.js` screen reporter:
+every `[data-widget]` section with area / shown / collapsed / in view / text, every HUD panel with `data-panel-id`,
+tiles, open overlays; on change with digits ignored, at most every 3 s, and every 60 s) to `POST /voice/api/screen`
+(own rate bucket `SCREEN_LIMITS`) -> kv `screen:latest`. Tools `screen_read` (bus panels + live tiles + the page
+report, `page_open` = fresh within 2 min) and `screen_clear` (panels | tiles | all | one by id/title); panels have
+an x (`POST /voice/api/panel/{id}/dismiss`); bus event `panel_remove {ids}`. `screen.summary_line()` is in every
+spoken turn's context (`status.turn_context`). New page sections need a `data-widget` attribute to be visible to him.
+Event relay: `assistant/mcp_server.py` (the tool process of text/dashboard turns) calls `events.set_relay(True)`, so
+`events.publish` there goes to a kv outbox that the server drains (`events.drain_outbox`, from the SSE stream loop and
+`events.snapshot`, at most 1/s) - panels shown from a text now reach the page.

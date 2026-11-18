@@ -19,22 +19,31 @@ Event types (every event has ``id`` (monotonic), ``type``, ``ts``)::
     error       {turn, message}
     task        {task: {id, task, status, started, finished, summary, steps, origin}}
     panel       {panel: {id, title, html, accent, hold, turn}}
+    panel_remove {ids: [panel id, ...]}   (assistant/screen.py: taken off the page)
     settings    {voice: {...}}                                    voice/engine changed: reload the speaker
     ignored     {text, reason}                                    an utterance was treated as noise
 
 The bus also folds the events into a small :func:`snapshot` (current turn with its steps, recent
 turns, tasks, panels) so a page that opens mid-turn, or reconnects, shows the same rail.
-Nothing here touches the database: it is memory only and lives as long as the server process.
+The bus is memory only and lives as long as the server process. One exception, the **relay**: tools
+that run in another process (``assistant/mcp_server.py``, the helper Claude Code starts for text and
+dashboard turns) cannot reach this memory, so there :func:`set_relay` makes :func:`publish` write the
+event to a kv outbox instead; the server process drains it (:func:`drain_outbox`, at most once a second,
+from the page's event stream and from :func:`snapshot`) and publishes each event for real. Without it,
+panels put up from a text never reached the page.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
 from typing import Any
 
 import db
+
+log = logging.getLogger(__name__)
 
 KEEP_EVENTS = 600
 KEEP_TURNS = 6
@@ -148,6 +157,11 @@ class Bus:
             p = dict(e.get("panel") or {})
             if p.get("id"):
                 self._panels.append(p)
+        elif t == "panel_remove":   # assistant.screen.clear / dismiss: these panels leave every open page
+            gone = set(e.get("ids") or [])
+            kept = [p for p in self._panels if p.get("id") not in gone]
+            self._panels.clear()
+            self._panels.extend(kept)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -160,12 +174,65 @@ class Bus:
 
 BUS = Bus()
 
+KV_OUTBOX_SEQ = "events:outbox:seq"
+KV_OUTBOX_DONE = "events:outbox:done"
+KV_OUTBOX_ITEM = "events:outbox:{n}"
+DRAIN_EVERY_SEC = 1.0
+_relay = False
+_last_drain = 0.0
+_drain_lock = threading.Lock()
+
+
+def set_relay(on: bool) -> None:
+    """This process is not the server (assistant/mcp_server.py): publish through the kv outbox."""
+    global _relay
+    _relay = bool(on)
+
 
 def publish(type_: str, **data: Any) -> dict[str, Any]:
+    if _relay:
+        n = db.kv_incr(KV_OUTBOX_SEQ)
+        evt = {"type": type_, **data}
+        db.kv_set(KV_OUTBOX_ITEM.format(n=n), evt)
+        return {"id": 0, **evt}
     return BUS.publish(type_, **data)
 
 
+def drain_outbox(*, force: bool = False) -> int:
+    """Server process: publish events relayed from other processes (oldest first). Returns how many."""
+    global _last_drain
+    if _relay:
+        return 0
+    now = time.monotonic()
+    if not force and now - _last_drain < DRAIN_EVERY_SEC:
+        return 0
+    if not _drain_lock.acquire(blocking=False):
+        return 0
+    try:
+        _last_drain = now
+        top = int(db.kv_get(KV_OUTBOX_SEQ, 0) or 0)
+        done = int(db.kv_get(KV_OUTBOX_DONE, 0) or 0)
+        n_out = 0
+        for n in range(done + 1, top + 1):
+            key = KV_OUTBOX_ITEM.format(n=n)
+            evt = db.kv_get(key)
+            db.kv_delete(key)
+            if isinstance(evt, dict) and evt.get("type"):
+                data = {k: v for k, v in evt.items() if k != "type"}
+                BUS.publish(str(evt["type"]), **data)
+                n_out += 1
+        if top > done:
+            db.kv_set(KV_OUTBOX_DONE, top)
+        return n_out
+    except Exception as exc:   # the page's stream must keep flowing
+        log.warning("event relay failed: %s", exc)
+        return 0
+    finally:
+        _drain_lock.release()
+
+
 def snapshot() -> dict[str, Any]:
+    drain_outbox()
     return BUS.snapshot()
 
 
