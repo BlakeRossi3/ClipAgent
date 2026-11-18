@@ -321,14 +321,20 @@ def _refresh_lifetime(youtube: Any, ids: list[str]) -> int:
 
 
 def refresh_live_counts() -> int:
-    """Refresh every live video's Data API counters (1 quota unit per 50 videos). Returns videos refreshed."""
+    """Refresh every live video's Data API counters (1 quota unit per 50 videos). Returns videos refreshed.
+
+    Also refreshes the channel's subscriber count once an hour (1 unit): it is live in the Data API,
+    so the Studio and home tiles need not wait for the 07:25 daily pull."""
     ids = db.live_video_ids()
     if not ids:
         return 0
     svcs = _services("refresh_live_counts")
     if svcs is None:
         return 0
-    return _refresh_lifetime(svcs[0], ids)
+    n = _refresh_lifetime(svcs[0], ids)
+    if db.kv_set_if_absent(f"analytics:channel_stats:{db.now_iso()[:13]}", db.now_iso()):
+        refresh_channel_stats()
+    return n
 
 
 def lifetime_stats(video_id: str) -> dict[str, Any] | None:

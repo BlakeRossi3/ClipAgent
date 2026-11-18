@@ -139,8 +139,10 @@ def test_home_has_strip_panels_charts_and_new_stuff(client):
     for hook in ("data-jarvis", "data-jv-core", "data-jv-ptt", "data-jv-status", "data-jv-steps", "data-jv-tasks",
                  "data-jv-panels", "data-jv-you", "data-jv-them", "data-jv-history", "data-chat-log", "data-jv-diag"):
         assert hook in html, hook
-    for label in ("Claude plan", "Assistant spend", "Voice latency", "Money this week", "Shorts views"):
+    for label in ("Claude plan", "Money this week", "Shorts views"):
         assert label in html
+    for gone in ("Assistant spend", "Voice latency"):                            # he asked for these gone
+        assert gone not in html
     assert "Add the cecil home" in html and "Fix the clock" in html                # friendly titles
     assert "Thirty-two, sir." in html and "How many hours this week?" in html
 
@@ -193,8 +195,20 @@ def test_charts_and_geometry():
     b = home_live.bars([0, 2, 4])
     assert b[2]["h"] > b[1]["h"] > b[0]["h"] >= 1
     c = home_live.charts()
-    assert set(c) == {"claude", "spend", "latency", "money", "views"}
+    assert set(c) == {"claude", "money", "views"}
     assert [m["key"] for m in c["claude"]["meters"]] == ["five_hour", "seven_day"]
+
+
+def test_shorts_views_tile_counts_live_views_younger_than_analytics(make_upload, clock):
+    """Analytics lags ~2 days: a brand-new channel has 0 in stats but 2,700 live Data API views."""
+    import home
+
+    make_upload(video_id="vNew")
+    db.set_upload_lifetime("vNew", views=2700, likes=40, comments=3)
+    c = home_live.charts()
+    assert c["views"]["week"] == 2700 and c["views"]["spark"] is not None
+    assert db.daily_views_live(db.local_today() - timedelta(days=13), db.local_today())[-1] == 2700
+    assert home.studio_data(db.local_today())["views_7d"] == 2700
 
 
 def test_plan_tile_shows_five_hour_and_weekly_only(client, clock):

@@ -87,30 +87,7 @@
     {% endfor %}
     {% if cl.limited %}<p class="cc-sub cc-plan-limit">Plan limit · back {{ cl.limited_text }}</p>{% elif cl.queued %}<p class="cc-sub">{{ cl.queued }} queued for after the reset</p>{% endif %}
   </figure>
-  {# 2. assistant spend, 7 days #}
-  {% set sp = k.spend %}
-  <figure class="cc-chart">
-    <figcaption class="hud-label">Assistant spend</figcaption>
-    <p class="cc-big">{{ sp.today | usd }}<small> today</small></p>
-    <svg class="cc-svg" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Assistant spend, last 7 days: {{ sp.week | usd }}">
-      {% for b in sp.bars %}<rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="1.5" class="{{ 'is-now' if loop.last else '' }}"/>{% endfor %}
-    </svg>
-    <p class="cc-sub">{{ sp.week | usd }} this week · cap {{ sp.budget | usd }}/day{% if sp.fake %} · practice{% endif %}</p>
-  </figure>
-  {# 3. voice latency #}
-  {% set la = k.latency %}
-  <figure class="cc-chart">
-    <figcaption class="hud-label">Voice latency</figcaption>
-    <p class="cc-big">{% if la.last is not none %}{{ "%.1f" | format(la.last / 1000) }}<small> s to first word</small>{% else %}—<small> no voice turns yet</small>{% endif %}</p>
-    {% if la.spark %}
-    <svg class="cc-svg cc-line" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Speech-to-first-word latency, last {{ la.n }} turns">
-      <path class="cc-area" d="{{ la.spark.area }}"/><path d="{{ la.spark.line }}"/>
-      <circle cx="{{ la.spark.last[0] }}" cy="{{ la.spark.last[1] }}" r="2.2"/>
-    </svg>
-    {% else %}<div class="cc-svg cc-flat" aria-hidden="true"></div>{% endif %}
-    <p class="cc-sub">{% if la.median is not none %}Median {{ "%.1f" | format(la.median / 1000) }} s over {{ la.n }} turn{{ "s" if la.n != 1 else "" }}{% else %}Measured on the voice screen{% endif %}</p>
-  </figure>
-  {# 4. money this week #}
+  {# 2. money this week #}
   {% set mo = k.money %}
   <figure class="cc-chart">
     <figcaption class="hud-label">Money this week</figcaption>
@@ -120,7 +97,7 @@
     </svg>
     <p class="cc-sub">8 weeks of pay</p>
   </figure>
-  {# 5. Shorts views #}
+  {# 3. Shorts views #}
   {% set vw = k.views %}
   <figure class="cc-chart">
     <figcaption class="hud-label">Shorts views</figcaption>

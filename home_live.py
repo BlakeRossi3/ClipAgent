@@ -317,23 +317,6 @@ def bars(values: Sequence[float], w: float = 120, h: float = 34, gap: float = 3)
     return out
 
 
-def _voice_timings() -> list[dict[str, Any]]:
-    from voice import web
-
-    return list(web.TIMINGS)
-
-
-def _spend_by_day(today: date, days: int = 7) -> list[tuple[date, float]]:
-    from assistant import store
-
-    out = []
-    for i in range(days - 1, -1, -1):
-        d = today - timedelta(days=i)
-        a, b = db.local_day_bounds(d)
-        out.append((d, round(store.assistant_spend_between(a, b), 4)))
-    return out
-
-
 # The plan tile: only the two windows the owner cares about ("I just want to see the five hour usage
 # and the weekly usage"). No daily run count.
 PLAN_METERS = (("five_hour", "5-hour"), ("seven_day", "Weekly"))
@@ -374,40 +357,23 @@ def plan_meters() -> dict[str, Any]:
 
 
 def charts(today: date | None = None) -> dict[str, Any]:
-    """The five HUD charts: Claude plan (5-hour + weekly), assistant spend, voice latency, money this week,
-    Shorts views."""
+    """The HUD charts: Claude plan (5-hour + weekly), money this week, Shorts views (he asked for the
+    assistant spend and voice latency charts to go: the plan, not the API, pays for nearly everything)."""
     h = _home()
     today = today or db.local_today()
-    s = h._asettings()
     # 1. Claude plan: the 5-hour and weekly windows only (he asked for the daily run count gone)
     claude_d = _safe(plan_meters, {"meters": [], "limited": False, "limited_text": "", "queued": 0}, "claude usage")
-    # 2. assistant spend, 7 days
-    spend = _safe(lambda: _spend_by_day(today), [], "assistant spend")
-    spend_today = spend[-1][1] if spend else 0.0
-    # 3. voice latency: speech end -> first spoken word (ms), newest last
-    lat = [t.get("speech_to_first_word_ms") for t in _safe(_voice_timings, [], "voice timings")]
-    lat = [float(v) for v in lat if isinstance(v, (int, float))][-20:]
-    # 4. money this week (8 weeks of pay)
+    # 2. money this week (8 weeks of pay)
     money = _safe(lambda: h.money_data(today), None, "money")
     pay = [w["pay"] for w in money["series"]] if money else []
-    # 5. Shorts views, 14 days
-    def views() -> list[float]:
-        d = _d()
-        start = today - timedelta(days=13)
-        with d._conn() as c:
-            daily = d.stats_by_day(c, start, today)
-        return [float(daily.get((start + timedelta(days=i)).isoformat(), {}).get("views") or 0) for i in range(14)]
-    v14 = _safe(views, [], "views")
+    # 3. Shorts views, 14 days - live: Analytics lags ~2 days, the Data API counts fill the gap
+    v14 = [float(v) for v in _safe(lambda: db.daily_views_live(today - timedelta(days=13), today), [], "views")]
+    week = _safe(lambda: db.recent_views(today - timedelta(days=6)), 0, "views this week")
     return {
         "claude": claude_d,
-        "spend": {"today": spend_today, "budget": s.daily_budget_usd, "week": round(sum(v for _, v in spend), 4),
-                  "bars": bars([v for _, v in spend]), "days": [d.strftime("%a")[0] for d, _ in spend],
-                  "fake": s.fake},
-        "latency": {"last": lat[-1] if lat else None, "median": sorted(lat)[len(lat) // 2] if lat else None,
-                    "n": len(lat), "spark": spark(lat)},
         "money": {"week": money["week_pay"] if money else None, "hours": money["week_hours"] if money else None,
                   "has_job": bool(money and money["has_job"]), "bars": bars(pay)},
-        "views": {"week": sum(v14[-7:]) if v14 else 0, "spark": spark(v14) if any(v14) else None},
+        "views": {"week": week, "spark": spark(v14) if any(v14) else None},
     }
 
 

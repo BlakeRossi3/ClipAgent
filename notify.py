@@ -652,7 +652,8 @@ def compose_daily_summary() -> str:
         parts.append(line + ".")
 
     spent, cap = budget.spent_today(today), budget.daily_cap_usd()
-    parts.append(f"AI spend today was {_money_words(spent)} of your {_money_words(cap)} cap.")
+    if spent > 0 or config.get_settings().llm_backend != "plan":   # on the Claude plan it is always zero
+        parts.append(f"AI spend today was {_money_words(spent)} of your {_money_words(cap)} cap.")
 
     pending = db.list_decisions("pending")
     if pending:
@@ -666,9 +667,15 @@ def compose_daily_summary() -> str:
     claims = sum(1 for r in db.clip_performance() if r["copyright_claim"])
     if claims:
         problems.append(_plural(claims, "copyright claim"))
-    errors = db.list_events(level="error", since=start, limit=500)
-    if errors and not failed:
-        problems.append(_plural(len(errors), "error"))
+    # one line per cause self-repair could not fix - never "16 errors" (assistant/autofix.triage)
+    need = [p for p in _triage() if p["state"] == "needs_you"]
+    if need:
+        problems.append(f"{_plural(len(need), 'problem')} I could not fix myself, the first: "
+                        f"{need[0]['message'][:90]}, because {need[0]['why'][:120].rstrip('.')}")
+    elif not failed and not _triage(available_only=True):
+        errors = db.list_events(level="error", since=start, limit=500)
+        if errors:
+            problems.append(_plural(len(errors), "error"))
     if budget.is_paused() and spent < cap:  # paused by hand, not just "cap reached"
         problems.append("AI spending is paused")
     elif spent >= cap:
@@ -680,6 +687,19 @@ def compose_daily_summary() -> str:
         parts.append("No problems today.")
     parts.append("Have a good night.")
     return " ".join(parts)
+
+
+def _triage(*, available_only: bool = False) -> Any:
+    """``assistant.autofix.triage()`` (distinct problems with their repair state), [] without the assistant.
+    ``available_only``: True when self-repair is there to triage at all (raw error counts are then never said)."""
+    try:
+        from assistant import autofix
+
+        rows = autofix.triage()
+    except Exception as exc:
+        log.warning("problem triage unavailable: %s", exc)
+        return False if available_only else []
+    return True if available_only else rows
 
 
 def daily_summary() -> str:

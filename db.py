@@ -1328,6 +1328,23 @@ def unreported_views(*, conn: sqlite3.Connection | None = None) -> dict[str, int
     return {r["vid"]: int(r["gap"]) for r in rows if r["gap"]}
 
 
+def daily_views_live(start_day: date, end_day: date, *, conn: sqlite3.Connection | None = None) -> list[int]:
+    """Views per local day ``start_day..end_day`` (inclusive) for charts, with the live part added.
+
+    Analytics days as reported, plus the not-yet-reported live views (:func:`unreported_views`) on
+    ``end_day`` when it is today - where those views actually happened (within the ~2-day lag).
+    Every views chart uses this; a bare ``stats`` sum shows 0 for a channel younger than the lag.
+    """
+    days = (end_day - start_day).days + 1
+    per: dict[str, int] = {}
+    for s in stats_between(start_day, end_day, conn=conn):
+        per[s.day] = per.get(s.day, 0) + int(s.views or 0)
+    out = [per.get((start_day + timedelta(days=i)).isoformat(), 0) for i in range(days)]
+    if out and end_day == local_today():
+        out[-1] += sum(unreported_views(conn=conn).values())
+    return out
+
+
 def recent_views(since_day: date | str, *, conn: sqlite3.Connection | None = None) -> int:
     """Views from ``since_day`` up to now: Analytics days plus the not-yet-reported live views.
 

@@ -394,6 +394,20 @@ def test_live_counts_fill_the_analytics_lag(client, clock, make_upload):
     assert "4.3K" in client.get(f"/dashboard/clips/{clip_id}").text
 
 
+
+def test_analytics_only_kpis_say_waiting_not_zero(client, clock, make_upload):
+    """Watch time / avg view % / net subs come only from Analytics (~2 days late): '—', never a false 0."""
+    make_upload(video_id="vidFRESH0001")
+    db.set_upload_lifetime("vidFRESH0001", views=2700, likes=40, comments=1)
+    db.upsert_channel_stat(db.local_today(), subscribers=17, total_views=2700, video_count=4)
+    with dashboard._conn() as c:
+        k = {x["key"]: x for x in dashboard.overview_data(c, "7d")["kpis"]}
+    assert k["views"]["value"] == 2700
+    for key in ("watch_minutes", "avg_view_pct", "subs_net", "like_rate"):
+        assert k[key]["value"] is None and "2 days late" in k[key]["hint"], key
+    assert k["subscribers"]["value"] == 17
+    assert client.get("/dashboard/studio").status_code == 200
+
 # --------------------------------------------------------------------------- helpers
 
 

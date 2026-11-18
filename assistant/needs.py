@@ -3,7 +3,9 @@
 Items (in this order):
 * each pending approval (``db`` decisions)
 * each due, unanswered check-in (meal preferences, hours, ...)
-* pipeline failures (error events) since he last looked, as ONE item - looking clears it
+* each distinct failure Cecil cannot fix himself (``autofix.triage`` state ``needs_you``), one item per
+  cause with the reason - never a raw count. What self-repair is handling stays off this list (he asked:
+  "don't say 16 pipeline failures ... just fix it, or tell me the problem")
 * agent runs that failed since he last looked, as ONE item - looking clears it
 
 "Looked" = he opened the failure log / the agent page from the item, said "dismiss" to Cecil
@@ -47,6 +49,13 @@ def failures() -> list[db.Event]:
     return [e for e in db.list_events(limit=500, level="error", since=since) if e.ts > since]
 
 
+def problems() -> list[dict[str, Any]]:
+    """Distinct failures since he last looked, each with what self-repair is doing (``autofix.triage``)."""
+    from assistant import autofix
+
+    return autofix.triage(since=_since("failures"))
+
+
 def run_errors() -> list[Any]:
     from assistant import store
 
@@ -61,11 +70,13 @@ def data() -> dict[str, Any]:
     pending = db.list_decisions("pending", limit=10)
     now = db.now_iso()
     checkins = [c for c in store.list_checkins("pending", limit=200) if c.sent_at or c.scheduled_for <= now][:5]
-    fails = failures()
+    probs = problems()
+    need = [p for p in probs if p["state"] == "needs_you"]
+    fixing = [p for p in probs if p["state"] == "fixing"]
     runs = run_errors()
-    return {"decisions": pending, "checkins": checkins, "failures_24h": len(fails),
-            "last_error": fails[0] if fails else None, "run_errors": runs[:3],
-            "count": len(pending) + len(checkins) + (1 if fails else 0) + (1 if runs else 0)}
+    return {"decisions": pending, "checkins": checkins, "problems": need, "fixing": fixing,
+            "failures_24h": len(need), "last_error": None, "run_errors": runs[:3],
+            "count": len(pending) + len(checkins) + len(need) + (1 if runs else 0)}
 
 
 def items(d: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -78,12 +89,12 @@ def items(d: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     for c in d["checkins"]:
         out.append({"kind": "checkin", "id": c.id, "text": f"Question #{c.id}: {c.question}",
                     "how": "ask him; record his answer with checkin_answer(checkin_id, answer)"})
-    if d["failures_24h"]:
-        last = d["last_error"]
-        out.append({"kind": "failures", "count": d["failures_24h"],
-                    "text": f"{d['failures_24h']} pipeline failure(s) since he last looked"
-                            + (f"; latest: {last.module}: {last.message}" if last else ""),
-                    "how": "explain the cause and the fix; needs_dismiss(kind=failures) once he has heard it"})
+    for p in d.get("problems", []):
+        times = f" ({p['count']} times)" if p["count"] > 1 else ""
+        out.append({"kind": "failures", "count": p["count"], "sig": p["sig"],
+                    "text": f"{p['module']}: {p['message'][:140]}{times}. {p['why']}",
+                    "how": "say the problem and why you could not fix it in one sentence; needs_dismiss(kind=failures) "
+                           "once he has heard it"})
     if d["run_errors"]:
         r = d["run_errors"][0]
         out.append({"kind": "run_errors", "count": len(d["run_errors"]),

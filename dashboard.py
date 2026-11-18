@@ -927,6 +927,18 @@ def _bucket_hours_to_local_days(rows: Sequence[sqlite3.Row], key: str = "h") -> 
     return out
 
 
+def analytics_wait_text(conn: sqlite3.Connection) -> str:
+    """When the first Analytics figures should appear (first real upload + ~2 days), in words."""
+    row = conn.execute("SELECT MIN(uploaded_at) AS t FROM uploads WHERE dry_run = 0 AND status IN "
+                       "('uploaded','removed')").fetchone()
+    first = db.local_date_of(row["t"]) if row and row["t"] else None
+    if first is None:
+        return "nothing is published yet."
+    due = first + timedelta(days=3)
+    return (f"first figures expected around {due.strftime('%a %d %b')}."
+            if due > db.local_today() else "they should be in at the next daily collection (07:25).")
+
+
 def analytics_as_of(conn: sqlite3.Connection) -> date | None:
     row = conn.execute("SELECT MAX(day) AS d FROM stats").fetchone()
     return date.fromisoformat(row["d"]) if row and row["d"] else None
@@ -1168,6 +1180,18 @@ def pipeline_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                     "last_error_message": last_msg, "errors_24h": errs,
                     "warnings_24h": int(r.get("warnings_24h") or 0), "status": status, "status_text": status_text})
     return out
+
+
+def problem_triage() -> list[dict[str, Any]]:
+    """Distinct failures of the last day with what self-repair is doing (assistant/autofix.triage).
+    Empty when the assistant layer is not importable (the pipeline dashboard still works)."""
+    try:
+        from assistant import autofix
+
+        return autofix.triage()
+    except Exception as exc:
+        log.warning("problem triage unavailable: %s", exc)
+        return []
 
 
 def failures_24h(conn: sqlite3.Connection) -> int:
@@ -1738,24 +1762,37 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
         cur["cost_per_1k"] = (cur["spend"] / cur["views"] * 1000) if cur["views"] else None
     cur["live_views_included"] = live_extra
 
-    def k(key, label, fmt, *, good_up=True, delta_kind="rel", hint=""):
-        v = cur[key]
+    # Watch time, avg view %, like rate and net subscribers exist ONLY in YouTube Analytics (~2 days late).
+    # With no Analytics day in this window they are unknown, not zero: show "—" and say when to expect them.
+    analytics_wait = as_of is None or as_of < w.start
+    wait_hint = (f"YouTube Analytics reports about 2 days late; {analytics_wait_text(conn)}"
+                 if analytics_wait else "")
+
+    def k(key, label, fmt, *, good_up=True, delta_kind="rel", hint="", lagged=False):
+        v = None if lagged and analytics_wait else cur[key]
         p = prev.get(key) if prev else None
         return {"key": key, "label": label, "value": v, "previous": p, "fmt": fmt, "good_up": good_up,
-                "delta": _delta(v, p, kind=delta_kind) if prev else None, "hint": hint}
+                "delta": _delta(v, p, kind=delta_kind) if prev and v is not None else None,
+                "hint": (wait_hint if lagged and analytics_wait else hint)}
 
+    live_subs = db.list_channel_stats(limit=1, conn=conn)
     kpis = [
         k("views", "Views", "compact",
           hint=f"includes {live_extra:,} live views YouTube Analytics has not reported yet" if live_extra else ""),
-        k("watch_minutes", "Watch time", "hours"),
-        k("subs_net", "Subscribers (net)", "signed"),
+        k("watch_minutes", "Watch time", "hours", lagged=True),
+        k("subs_net", "Subscribers (net)", "signed", lagged=True),
         k("published", "Shorts published", "int"),
-        k("avg_view_pct", "Avg view %", "pct", delta_kind="pts", hint="views-weighted average percentage viewed"),
-        k("like_rate", "Like rate", "pct", delta_kind="pts", hint="likes per 100 views"),
+        k("avg_view_pct", "Avg view %", "pct", delta_kind="pts", hint="views-weighted average percentage viewed",
+          lagged=True),
+        k("like_rate", "Like rate", "pct", delta_kind="pts", hint="likes per 100 views", lagged=True),
         k("spend", "LLM spend", "usd", good_up=False),
         k("cost_per_1k", "Cost / 1K views", "usd", good_up=False),
         k("cost_per_sub", "Cost / subscriber", "usd", good_up=False, hint="LLM spend ÷ net subscribers"),
     ]
+    if live_subs and live_subs[0].subscribers is not None:
+        kpis.insert(2, {"key": "subscribers", "label": "Subscribers", "value": live_subs[0].subscribers,
+                        "previous": None, "fmt": "int", "good_up": True, "delta": None,
+                        "hint": f"channel total, live from YouTube (checked {live_subs[0].day})"})
     if cur["revenue"] is not None:
         cur["profit"] = cur["revenue"] - cur["spend"]
         if prev is not None and prev["revenue"] is not None:
@@ -1824,6 +1861,8 @@ def overview_data(conn: sqlite3.Connection, period: str | None) -> dict[str, Any
     return {
         "window": w, "as_of": as_of, "kpis": kpis, "current": cur, "previous": prev, "charts": charts,
         "today": today_status(), "pending": pending, "health": health, "failures_24h": failures_24h(conn),
+        "problems": (probs := problem_triage()),
+        "problems_open": [x for x in probs if x["state"] != "fixed"],
         "experiment": exp, "strategy": strat, "strategy_error": strat_err, "top_clips": top, "counts": counts,
         "recent_events": db.list_events(limit=8, conn=conn),
         "ready_to_upload": counts["clips"].get("rendered", 0) + counts["clips"].get("scheduled", 0),

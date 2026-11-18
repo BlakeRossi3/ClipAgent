@@ -864,13 +864,13 @@ def studio_data(today: date) -> dict[str, Any]:
     snap = tools.studio_snapshot(7)
     start = today - timedelta(days=13)
     with d._conn() as c:
-        daily = d.stats_by_day(c, start, today)
         ups = d.daily_uploads(c, today - timedelta(days=6), today)
         latest = db.list_channel_stats(limit=1, conn=c)
-    views = [daily.get((start + timedelta(days=i)).isoformat(), {}).get("views") for i in range(14)]
+        views = db.daily_views_live(start, today, conn=c)
+        week = db.recent_views(today - timedelta(days=6), conn=c)
     return {
         "posted_7d": int(sum(v.get("n", 0) for v in ups.values())),
-        "views_7d": snap.get("period_views") or 0,
+        "views_7d": max(week, snap.get("period_views") or 0),
         "subscribers": latest[0].subscribers if latest else None,
         "uploads_today": snap.get("uploads_today", 0), "upload_cap": snap.get("upload_cap"),
         "spark": d.sparkline([v or 0 for v in views]) if any(views) else None,
@@ -1167,8 +1167,10 @@ def greeting(now_local: datetime, a: Mapping[str, Any], needs: Mapping[str, Any]
     elif n_chk:
         line = f"I still need an answer from you: {needs['checkins'][0].question}"
     elif needs["failures_24h"]:
-        line = (f"The studio stumbled {_say_n(needs['failures_24h'])} time{'s' if needs['failures_24h'] != 1 else ''} "
-                "in the last day; it carries on, but you may want to look.")
+        p0 = needs["problems"][0]
+        more = len(needs["problems"]) - 1
+        line = (f"I could not fix one thing myself: {p0['message'][:80]} ({p0['why'][:110]})"
+                + (f", and {_say_n(more)} more below." if more else "."))
     elif needs["run_errors"]:
         r = needs["run_errors"][0]
         line = f"{r.agent.capitalize()} hit a snag on its last task; I have kept the details below."
@@ -1217,7 +1219,7 @@ def home_data() -> dict[str, Any]:
     today = db.local_today()
     a = assistant_state()
     needs = _safe(needs_data, {"decisions": [], "checkins": [], "failures_24h": 0, "last_error": None,
-                               "run_errors": [], "count": 0}, "needs")
+                               "problems": [], "fixing": [], "run_errors": [], "count": 0}, "needs")
     money = _safe(lambda: money_data(today), None, "money")
     studio = _safe(lambda: studio_data(today), {"has_data": False, "posted_7d": 0, "views_7d": 0, "subscribers": None,
                                                 "spark": None, "top": None, "pending": 0, "uploads_today": 0,

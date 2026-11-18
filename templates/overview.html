@@ -37,12 +37,19 @@
 </section>
 {% endif %}
 
-{% if d.pending or d.failures_24h or d.today.paused or d.today.cap_reached %}
+{% set show_fail = d.problems_open or (d.failures_24h and not d.problems) %}
+{% if d.pending or show_fail or d.today.paused or d.today.cap_reached %}
 <section class="attention" aria-labelledby="attention-h">
   <h2 id="attention-h">Needs your attention</h2>
   {% for dec in d.pending %}{{ m.decision_card(dec, csrf, next="/dashboard/") }}{% endfor %}
-  {% if d.failures_24h %}
-  <p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span>{{ d.failures_24h }} pipeline failure{{ "s" if d.failures_24h != 1 else "" }} in the last 24 hours. <a href="/dashboard/events?level=error">See the errors</a></p>
+  {% if show_fail %}
+  {% set need = (d.problems or []) | selectattr("state", "equalto", "needs_you") | list %}
+  {% set fixing = (d.problems or []) | selectattr("state", "equalto", "fixing") | list %}
+  {% for p in need %}
+  <p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span><strong>{{ p.module }}:</strong> {{ p.message | truncate(120) }}{% if p.count > 1 %} ({{ p.count }} times){% endif %} — {{ p.why }}</p>
+  {% endfor %}
+  {% if fixing %}<p class="alert alert-warning"><span class="pill-icon" aria-hidden="true">!</span>{{ fixing | length }} other problem{{ "s" if fixing | length != 1 else "" }} Cecil is fixing on his own. <a href="/dashboard/events?level=error">See the errors</a></p>
+  {% elif not need and not d.problems %}<p class="alert alert-critical"><span class="pill-icon" aria-hidden="true">✕</span>{{ d.failures_24h }} failure{{ "s" if d.failures_24h != 1 else "" }} in the last 24 hours. <a href="/dashboard/events?level=error">See the errors</a></p>{% endif %}
   {% endif %}
   {% if d.today.paused %}<p class="alert alert-warning"><span class="pill-icon" aria-hidden="true">!</span>LLM spending is paused{% if d.today.pause_reason %}: {{ d.today.pause_reason }}{% endif %}. Text RESUME to restart.</p>
   {% elif d.today.cap_reached %}<p class="alert alert-warning"><span class="pill-icon" aria-hidden="true">!</span>Today's LLM budget is used up; judgment steps resume tomorrow.</p>{% endif %}

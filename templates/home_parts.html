@@ -45,13 +45,15 @@
       </form>
     </li>
     {% endfor %}
-    {% if n.failures_24h %}
+    {# one row per distinct cause self-repair could not fix (assistant/autofix.triage); never a raw count #}
+    {% for p in (n.problems or [])[:4] %}
     <li class="need need-fail">
-      <p class="need-kind">Studio · since you last looked</p>
-      <p class="need-text">{{ n.failures_24h }} failure{{ "s" if n.failures_24h != 1 else "" }}{% if n.last_error %} — latest: {{ n.last_error.message | truncate(110) }}{% endif %}</p>
-      <a class="need-link" href="/dashboard/needs/seen/failures">See the log →</a>
+      <p class="need-kind">{{ p.module }} · {{ p.last | ago }}{% if p.count > 1 %} · {{ p.count }} times{% endif %}</p>
+      <p class="need-text">{{ p.message | truncate(110) }}</p>
+      <p class="need-text muted">{{ p.why | truncate(200) }}</p>
+      {% if loop.last %}<a class="need-link" href="/dashboard/needs/seen/failures">See the log →</a>{% endif %}
     </li>
-    {% endif %}
+    {% endfor %}
     {% for r in n.run_errors[:1] %}
     <li class="need need-fail">
       <p class="need-kind">{{ agent_name(r.agent) }} · {{ r.ts | ago }}</p>

@@ -37,7 +37,8 @@ def test_badge_and_cecil_count_the_same_four(clock):
 def test_looking_at_failures_clears_them_until_new_ones(clock):
     for _ in range(13):
         db.log_event("fetch", "download failed", level="error")
-    assert needs.data()["failures_24h"] == 13
+    d = needs.data()                                   # 13 copies of one failure = ONE problem, said once
+    assert d["failures_24h"] == 1 and d["problems"][0]["count"] == 13 and len(needs.items()) == 1
     clock.advance(seconds=5)
     _call("needs_dismiss", kind="failures")
     assert needs.data()["count"] == 0 and needs.briefing() == ""

@@ -700,7 +700,7 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 
 /* the charts deck under the ring */
 .cc-deck { width: 100%; max-width: none; text-align: left; }
-.cc-charts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.cc-charts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .cc-chart { margin: 0; padding: 12px 14px 11px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .cc-chart figcaption { font-size: 0.6rem; color: var(--jv-dim); }
 .cc-big { margin: 0; font-size: 1.35rem; font-weight: 650; letter-spacing: -0.01em; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

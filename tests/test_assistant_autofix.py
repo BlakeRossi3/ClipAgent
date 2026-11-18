@@ -132,6 +132,38 @@ def test_a_repair_that_cannot_run_is_texted_with_its_cause_once(on, clock):
     _run(clock)
     assert len(_texts()) == 1                                                   # told once, not every hour
 
+
+def test_triage_one_row_per_cause_and_only_unfixable_ones_need_him(on, clock):
+    """He asked: never "16 pipeline failures"; fix what you can, tell me the problem you cannot."""
+    from assistant import needs
+
+    for i in range(16):
+        _fail(f"transcription failed for source {i}")
+    _fail("upload rejected: token lacks scopes", module="upload")
+    rows = autofix.triage()
+    assert len(rows) == 2 and {r["state"] for r in rows} == {"fixing"}
+    assert next(r for r in rows if r["module"] == "transcribe")["count"] == 16
+    assert needs.data()["count"] == 0 and needs.briefing() == ""          # self-repair has them: quiet
+
+    on["reply"]["text"] = "STATUS: needs_you\nWHAT: The YouTube token lacks scopes.\nFIX: Re-run youtube_auth.py."
+    up = next(r for r in rows if r["module"] == "upload")
+    autofix.start_repair({**up, "samples": []})
+    tasks.join_all(30)
+    its = needs.items()
+    assert [i["kind"] for i in its] == ["failures"] and "Re-run youtube_auth.py" in its[0]["text"]
+    assert "16" not in needs.briefing() and "lacks scopes" in needs.briefing()
+
+
+def test_triage_fixed_stays_quiet_until_it_comes_back(on, clock):
+    _fail()
+    clock.advance(minutes=4)
+    _run(clock)                                       # default reply: STATUS fixed
+    assert [r["state"] for r in autofix.triage()] == ["fixed"]
+    clock.advance(minutes=10)
+    _fail()
+    (row,) = autofix.triage()
+    assert row["state"] == "needs_you" and "came back" in row["why"]
+
 def test_join_all_waits_for_slow_task_endings(on):
     import threading
 

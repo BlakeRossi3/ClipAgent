@@ -266,6 +266,18 @@ def test_refresh_live_counts_without_analytics(clock, live, videos, services):
     assert analytics.lifetime_stats("vA")["views"] == 1397
 
 
+
+def test_live_counts_refresh_subscribers_once_an_hour(clock, live, videos, services):
+    """Subscribers are live in the Data API: the Studio must not wait for the 07:25 pull to show them."""
+    services["data"].items = {"vA": {"statistics": {"viewCount": "5"}}}
+    analytics.refresh_live_counts()
+    analytics.refresh_live_counts()                       # same hour: no second channels.list
+    assert [c for c, _ in services["data"].calls].count("channels.list") == 1
+    assert db.list_channel_stats(limit=1)[0].subscribers == 120
+    clock.advance(hours=1)
+    analytics.refresh_live_counts()
+    assert [c for c, _ in services["data"].calls].count("channels.list") == 2
+
 def test_new_shorts_count_live_views_before_analytics_has_them(clock, live, make_upload, services):
     """Regression (2026-11-18): Shorts uploaded today read 0 views because only Analytics was summed."""
     from assistant import tools

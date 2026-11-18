@@ -112,6 +112,71 @@ def problems(now: Any = None) -> list[dict[str, Any]]:
     return sorted(groups.values(), key=lambda g: g["first"])
 
 
+#: triage states. Only ``needs_you`` reaches him (badge, home, briefing); the rest is Cecil's own work.
+TRIAGE_STATES = ("needs_you", "fixing", "fixed")
+
+
+def triage(since: str | None = None, now: Any = None) -> list[dict[str, Any]]:
+    """Every distinct failure of the last day as ONE row per cause, with what self-repair is doing.
+
+    Rows: {sig, module, message, count, first, last, state, why} where ``state`` is
+    * ``fixing``  - self-repair has it (running, queued after the grace period, or retrying);
+    * ``fixed``   - a repair fixed it (or found it transient) and it has not come back since;
+    * ``needs_you`` - self-repair cannot: it said so (``why`` = its WHAT + FIX), it came back after a
+      "fix", the repair itself would not run twice, or self-repair is switched off.
+    ``since`` (UTC ISO) keeps only causes that happened again after it (what he has not seen).
+    Sixteen copies of one failure are one row with ``count`` 16 - never sixteen lines.
+    """
+    s = _settings()
+    on = bool(s.enabled and s.autofix)
+    last_log: dict[str, dict[str, Any]] = {}
+    for item in reversed(history(LOG_KEEP)):          # oldest first, so the newest entry wins
+        if item.get("sig"):
+            last_log[item["sig"]] = item
+    out = []
+    for p in problems(now):
+        if since and p["last"] <= since:
+            continue
+        st = _state(p["sig"]) or {}
+        status = str(st.get("status") or "")
+        log_item = last_log.get(p["sig"], {})
+        what = " ".join(str(log_item.get("what") or "").split())
+        fix = " ".join(str(log_item.get("fix") or "").split())
+        done_at = str(log_item.get("at") or st.get("at") or "")
+        if status in ("fixed", "transient"):
+            if p["last"] <= done_at:
+                state, why = "fixed", what or "fixed by self-repair"
+            else:
+                state, why = "needs_you", (f"came back after self-repair said it was fixed ({what})" if what
+                                           else "came back after self-repair said it was fixed")
+        elif status in ("needs_you", "not_fixed"):
+            state, why = "needs_you", ". ".join(x.rstrip(".") for x in (what, fix) if x) or "self-repair could not fix it"
+        elif int(st.get("run_failures") or 0) >= TELL_AFTER_RUN_FAILURES:
+            state = "needs_you"
+            why = f"self-repair itself would not run: {st.get('error') or status.replace('run_', '')}"
+        elif not on:
+            state, why = "needs_you", "self-repair is switched off"
+        else:
+            state, why = "fixing", ("Cecil is repairing it" if status == "running" else "queued for self-repair")
+        out.append({**{k: p[k] for k in ("sig", "module", "message", "count", "first", "last")},
+                    "state": state, "why": why[:300]})
+    order = {st: i for i, st in enumerate(TRIAGE_STATES)}
+    out.sort(key=lambda r: r["last"], reverse=True)            # newest first within each state
+    return sorted(out, key=lambda r: order[r["state"]])
+
+
+def triage_line(rows: list[dict[str, Any]]) -> str:
+    """One plain sentence for a whole triage ("2 problems need you; 3 more Cecil is fixing")."""
+    need = [r for r in rows if r["state"] == "needs_you"]
+    fixing = [r for r in rows if r["state"] == "fixing"]
+    parts = []
+    if need:
+        parts.append(f"{len(need)} problem{'s' if len(need) != 1 else ''} need{'s' if len(need) == 1 else ''} you")
+    if fixing:
+        parts.append(f"{len(fixing)} {'more ' if need else ''}Cecil is fixing on his own")
+    return "; ".join(parts)
+
+
 def _state(sig: str) -> dict[str, Any] | None:
     v = db.kv_get(KV_SIG.format(sig=sig))
     return v if isinstance(v, dict) else None
@@ -258,7 +323,7 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
             until = db.to_iso(db.utcnow() + timedelta(hours=RETRY_HOURS))
             broke = status not in QUIET_RUN_STATUSES
             state = db.kv_update(KV_SIG.format(sig=sig), lambda st: {
-                **(st if isinstance(st, dict) else {}), "status": f"run_{status}", "until": until,
+                **(st if isinstance(st, dict) else {}), "status": f"run_{status}", "until": until, "error": cause,
                 "run_failures": int((st if isinstance(st, dict) else {}).get("run_failures") or 0) + int(broke)}, {})
         db.log_event(MODULE, "repair did not finish; will try again", level="warning",
                      data={"autofix": True, "task_id": row.get("id"), "status": status, "error": cause})
@@ -313,9 +378,11 @@ def register_tools(register: Callable[..., None]) -> None:
     from assistant.tools import Tool, _obj
 
     register(Tool("autofix_log", "Failures you found and repaired by yourself (or could not): newest first, with what "
-                  "broke, what you did and whether it worked. Also the problems waiting for a repair.",
+                  "broke, what you did and whether it worked; plus every distinct problem of the last day, "
+                  "each marked fixing | fixed | needs_you (with why).",
                   _obj({"limit": {"type": "integer"}}, []),
                   lambda c, a: {"repairs": history(int(a.get("limit") or 10)),
-                                "open_problems": [{k: p[k] for k in ("module", "message", "count", "first", "last")}
-                                                  for p in problems()][:10]},
+                                "problems": triage()[:15],
+                                "how_to_tell_him": "one line per problem in state needs_you, with its why; never "
+                                                   "list counts of raw failures or the ones you are fixing"},
                   owner=__name__), replace=True)
