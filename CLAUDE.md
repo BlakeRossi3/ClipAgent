@@ -442,7 +442,7 @@ CLI: `python main.py init | manual <url> [--source-type T] [--no-upload] | scout
 | cleanup | approve <id> | reject <id>`.
 Jobs (local time, off the hour): scout 06:10; process hourly at :20; upload hourly at :40;
 send_queued every 5 min; expire_decisions hourly at :50; analytics 07:25 (collect_stats +
-refresh_channel_stats + check_claims, each isolated); live_counts hourly at :15
+refresh_channel_stats + check_claims, each isolated); live_counts every 10 min
 (`analytics.refresh_live_counts`, Data API view counters); cleanup 03:35; daily_summary 20:55;
 weekly_review Sunday 18:05. `schedule` runs the scheduler and uvicorn together and exits 0 on SIGTERM.
 
