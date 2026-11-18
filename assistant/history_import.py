@@ -897,15 +897,14 @@ class DistilResult:
 def _turn_room() -> str:
     """'' if another archivist run is fine now, else why not."""
     from assistant.settings import get_assistant_settings
-    from assistant.toolkit_settings import get_toolkit_settings
 
     s = get_assistant_settings()
-    reserve = get_toolkit_settings().history_reserve_turns
     if s.backend == "claude_code":
+        # no daily run cap any more: leave room for his own conversations by waiting while usage is tight
         try:
-            from assistant import claude_code
+            from assistant import usage
 
-            if s.max_turns_per_day and claude_code.turns_today() >= max(0, s.max_turns_per_day - reserve):
+            if usage.constrained()[0]:
                 return "reserve"
         except Exception:  # pragma: no cover - backend module broken
             return "disabled"

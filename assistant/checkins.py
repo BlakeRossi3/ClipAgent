@@ -545,20 +545,9 @@ def send_due(now: datetime | None = None) -> dict[str, int]:
         out["waiting"] += len(candidates)
         return out
 
-    day_end = db.local_day_bounds()[1]
-    later = [c for c in store.list_checkins("pending", limit=5000)
-             if not c.sent_at and now_iso < c.scheduled_for < day_end]
-    remaining = s.max_sms_per_day - tools.outbound_sms_today()
+    # no daily message cap (Blake: "there should be no cap at all"); quiet hours and one open question at a time still apply
     for prio, _, chk, reask in sorted(candidates, key=lambda t: (t[0], t[1], t[2].id)):
         spec = spec_for(chk.kind)
-        reserved = sum(1 for c in later if spec_for(c.kind).priority < prio)
-        if remaining - reserved <= 0:
-            if not reask:
-                store.set_checkin_status(chk.id, "skipped")
-            db.log_event(MODULE, f"check-in #{chk.id} ({chk.kind}) skipped: daily message cap",
-                         data={"remaining": remaining, "reserved": reserved})
-            out["skipped"] += 1
-            continue
         if not reask and spec.type != "brief" and any(q.id != chk.id for q in open_questions):
             out["waiting"] += 1      # one open question at a time; it is retried until stale
             continue
@@ -575,7 +564,6 @@ def send_due(now: datetime | None = None) -> dict[str, int]:
                 store.set_checkin_status(chk.id, "skipped")
             out["skipped"] += 1
             continue
-        remaining -= 1
         out["reasked" if reask else "sent"] += 1
         if spec.type != "brief" and not reask:
             open_questions.append(chk)

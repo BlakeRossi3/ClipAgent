@@ -365,7 +365,7 @@ def usage_status() -> dict[str, Any]:
     return {"windows": windows, "known": bool(windows), "runs_today": claude_code.turns_today(),
             "polled_at": poll.get("at"), "poll_ok": bool(poll.get("ok") and poll.get("available")),
             "poll_error": poll.get("error"),
-            "runs_cap": s.max_turns_per_day, "limited": until is not None,
+            "runs_cap": 0, "limited": until is not None,
             "limited_until": db.to_iso(until) if until else None,
             "limited_text": claude_code.friendly_time(until) if until else "",
             "queued": len(store.list_deferred("queued"))}
@@ -382,10 +382,6 @@ def constrained(threshold: float = DEFER_THRESHOLD) -> tuple[bool, datetime | No
         w = _window(k)
         if w and not w.get("stale") and ((w.get("utilization") or 0.0) >= threshold or w.get("status") == "rejected"):
             return True, db.parse_iso(w["resets_at"]) if w.get("resets_at") else None
-    s = get_assistant_settings()
-    if s.backend == "claude_code" and s.max_turns_per_day and claude_code.turns_today() >= s.max_turns_per_day:
-        tomorrow = datetime.combine(db.local_today() + timedelta(days=1), datetime.min.time(), db.local_tz())
-        return True, tomorrow.astimezone(UTC)
     return False, None
 
 

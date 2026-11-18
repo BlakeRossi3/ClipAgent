@@ -19,7 +19,7 @@ def test_defaults(tmp_path):
                                            "CLIPAGENT_DATA_DIR": str(tmp_path / "d")})
     assert s.name == "Cecil" and s.owner_honorific == "sir"
     assert s.model == "claude-fable-5-2" and s.subagent_model == "claude-opus-5-5"
-    assert s.daily_budget_usd == 3.0 and s.max_turn_usd == 0.5 and s.max_sms_per_day == 8
+    assert s.daily_budget_usd == 3.0 and s.max_turn_usd == 0.5 and not hasattr(s, "max_sms_per_day")
     assert s.enabled is False and s.fake is False and s.web_search is False
     assert s.vault_dir == tmp_path / "d" / "vault"
 

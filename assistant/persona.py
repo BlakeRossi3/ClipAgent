@@ -22,11 +22,12 @@ from pathlib import Path
 from assistant import registry
 from assistant.settings import AssistantSettings, get_assistant_settings
 
-CHANNEL_LIMITS = {"sms": 320, "voice": 600, "dashboard": 4000, "call": 600, "system": 4000}
+CHANNEL_LIMITS = {"sms": 1500, "voice": 600, "dashboard": 4000, "call": 600, "system": 4000}
 EXAMPLES_PATH = registry.SKILLS_DIR / "persona" / "examples.md"
 
 CHANNEL_RULES = {
-    "sms": "Channel: SMS. Plain text only, at most 320 characters, one or two sentences. No markdown, lists or links.",
+    "sms": "Channel: SMS. Plain text only, as short as the answer allows (it is a text), but say everything he needs. "
+           "No markdown, lists or links.",
     "voice": "Channel: spoken aloud. Two sentences at most in conversation, median under twelve words; only data "
              "he asked for licenses more. Say numbers, dates and times as words a person would say. No URLs, "
              "symbols, lists or markdown. Act, then report; never restate an order.",

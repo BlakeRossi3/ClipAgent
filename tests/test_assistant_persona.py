@@ -41,8 +41,8 @@ def test_polish_specifics():
     assert persona.polish("As an AI, I cannot eat. Try the soup.", "sms") == "Try the soup."
     v = persona.polish("See https://example.com/x for details.", "voice")
     assert "http" not in v and "dashboard" in v
-    long = " ".join(["This is a sentence."] * 40)
-    assert len(persona.polish(long, "sms")) <= 320
+    long = " ".join(["This is a sentence."] * 100)   # past what one text can carry
+    assert len(persona.polish(long, "sms")) <= 1500
     md = persona.polish("**Done**\n- 3 uploads\n- [report](https://x.y)", "sms")
     assert "*" not in md and "](" not in md and persona.lint(md, "sms") == []
     assert persona.polish("Table:\n| a | b |\n|---|---|", "dashboard").startswith("Table:")

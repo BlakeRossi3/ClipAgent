@@ -214,8 +214,8 @@ Besides the Shorts pipeline there is a personal assistant (code in `assistant/`,
   weekdays (only once it knows your tastes), "How many hours did you work this week, sir?" Friday
   18:40, a light wellbeing question Tuesday/Thursday 19:15, evening wrap 21:05, weekly review
   Sunday 18:20, and one get-to-know-you question a day at 12:10 (pay rate first) until it has
-  what it needs. Nothing in quiet hours; at most `ASSISTANT_MAX_SMS_PER_DAY` texts (questions win
-  over briefs, briefs over nudges); unanswered questions are asked again once, then dropped.
+  what it needs. Nothing in quiet hours; no daily text cap; one
+  question open at a time; unanswered questions are asked again once, then dropped.
 * **Money**: answer the hours question in plain words ("about 38 and a half", "8 a day, 4 days",
   "same as last week") and it logs them and replies with your pay before tax and the month so far.
   Shorts revenue minus AI costs is tracked too.

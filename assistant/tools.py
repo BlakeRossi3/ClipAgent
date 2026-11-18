@@ -557,10 +557,6 @@ def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply
     body = persona.ration_honorific(persona.polish(text, "sms"))
     if not body:
         raise ToolError("empty message")
-    if kind != "reply" and outbound_sms_today() >= s.max_sms_per_day:
-        db.log_event("assistant", "daily SMS cap reached; message not sent", level="warning",
-                     data={"cap": s.max_sms_per_day, "text": body[:120]})
-        raise ToolError(f"daily message cap ({s.max_sms_per_day}) reached; tell him next time he writes")
     import notify
 
     nkind = kind if kind.startswith("assistant") else f"assistant_{kind}"
