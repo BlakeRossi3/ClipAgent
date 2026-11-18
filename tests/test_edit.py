@@ -21,6 +21,7 @@ STYLE = {
     "outline_color": "#000000", "outline_px": 5, "max_words_per_line": 3, "position": "lower_third",
     "uppercase": True, "animation": "word_pop",
 }
+HOOK_STYLE = {**STYLE, "title_card": "hook"}
 
 
 def W(start: float, end: float, word: str) -> dict:
@@ -81,7 +82,7 @@ def test_group_words_respects_budget_pauses_and_sentence_ends():
 # ---------------------------------------------------------------------------
 
 def test_build_ass_structure_hook_and_credit():
-    ass = edit.build_ass(SENTENCE, 10.0, STYLE, hook_text="Wait for the roar", credit_text="Video: NASA (public domain)",
+    ass = edit.build_ass(SENTENCE, 10.0, HOOK_STYLE, hook_text="Wait for the roar", credit_text="Video: NASA (public domain)",
                          duration=5.0)
     assert "PlayResX: 1080" in ass and "PlayResY: 1920" in ass
     assert "Style: Caption,Inter Black,78,&H00FFFFFF" in ass
@@ -131,7 +132,7 @@ def test_build_ass_karaoke_uses_kf_tags():
 
 
 def test_build_ass_no_words_and_hostile_text():
-    ass = edit.build_ass([], 0.0, {}, hook_text="{\\fs200}Big} claim\\N", credit_text="Video: A, B {x}",
+    ass = edit.build_ass([], 0.0, {"title_card": "hook"}, hook_text="{\\fs200}Big} claim\\N", credit_text="Video: A, B {x}",
                          duration=1.5)
     assert dialogues(ass, "Caption") == []
     hook = dialogues(ass, "Hook")[0]
@@ -146,7 +147,7 @@ def test_build_ass_no_words_and_hostile_text():
 
 def test_build_ass_long_hook_wraps_and_style_defaults():
     hook = "This is a very long hook sentence that keeps going and going well past any sane length for a short"
-    ass = edit.build_ass([], 0.0, {"font_size": "bogus", "position": "nowhere"}, hook_text=hook, duration=10)
+    ass = edit.build_ass([], 0.0, {"font_size": "bogus", "position": "nowhere", "title_card": "hook"}, hook_text=hook, duration=10)
     text = dialogues(ass, "Hook")[0][3]
     lines = visible_text(text).split("\\N")
     assert 2 <= len(lines) <= 4

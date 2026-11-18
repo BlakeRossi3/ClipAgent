@@ -607,6 +607,7 @@ def build_ass(words: list[dict], clip_start: float, caption_style: dict, *, hook
         ("CaptionK", font, fs, highlight, primary, outline, shadow, -1, 1, opx, 3, CAPTION_ALIGN[pos]),
         ("Hook", font, hook_fs, "&H00FFFFFF", "&H00FFFFFF", "&H28000000", "&H64000000", -1, 3, 16, 0, 8),
         ("Credit", font, credit_fs, "&H20FFFFFF", "&H20FFFFFF", "&H50000000", "&HA0000000", -1, 1, 2, 1, 8),
+        ("Card", font, 60, "&H00FFFFFF", "&H00FFFFFF", "&H00000000", "&H00000000", -1, 1, 0, 0, 7),
     ]
     lines = [
         "[Script Info]",
@@ -640,9 +641,12 @@ def build_ass(words: list[dict], clip_start: float, caption_style: dict, *, hook
             credit = credit[:59].rstrip() + "…"
         dialogue(3, 0.0, duration, "Credit", f"{{\\pos({OUT_W // 2},{CREDIT_Y})}}{credit}")
 
-    # --- hook --------------------------------------------------------------------
+    # --- opening: title card (default) or the legacy hook ----------------------------
     hook = ass_escape(hook_text).strip()
-    if hook and hook_sec > 0:
+    if st["title_card"] == "card":
+        lines += build_title_card(title_text.strip() or hook_text, card_tag, font, duration=duration,
+                                  measure=measure, accent=st["highlight_color"])
+    elif hook and hook_sec > 0:
         width = max(8, int(HOOK_BOX_W / (hook_fs * 0.60)))
         text = "\\N".join(_wrap(hook, width, 4))
         hook_end = min(duration, hook_sec)
@@ -883,6 +887,39 @@ def windows_fonts_dir(font: str, settings: Settings) -> Path | None:
     return out
 
 
+def font_file_for(font: str) -> Path | None:
+    """The TTF/OTF file of an installed or bundled family (Windows folders + ``assets/fonts``), if known."""
+    dirs: list[Path] = [ASSETS_FONTS_DIR]
+    if _is_windows():
+        dirs += list(WINDOWS_FONT_DIRS)
+    return _families_from_files(dirs).get((font or "").lower())
+
+
+def font_measurer(font: str) -> Measure | None:
+    """A :data:`Measure` backed by Pillow and the real font file (``None`` if either is unavailable)."""
+    path = font_file_for(font)
+    if path is None:
+        return None
+    try:
+        from PIL import ImageFont   # optional; the title card falls back to approx_measure
+    except ImportError:
+        return None
+    cache: dict[int, Any] = {}
+
+    def measure(text: str, css_px: float) -> float:
+        size = max(1, int(round(css_px)))
+        if size not in cache:
+            cache[size] = ImageFont.truetype(str(path), size)
+        return float(cache[size].getlength(text)) * css_px / size
+
+    try:
+        measure("A", 10)
+    except Exception:  # unreadable font file: never break a render over it
+        log.warning("cannot measure font %s; title card uses approximate widths", path)
+        return None
+    return measure
+
+
 def _local_words_between(transcript: dict, start: float, end: float) -> list[dict]:
     eps = 1e-3
     out: list[dict] = []
@@ -1036,8 +1073,12 @@ def render_clip(clip_id: int, strategy: Any | None = None, *, framing: str | Non
     tmp = settings.renders_dir / f"{clip_id}.tmp.mp4"
     ass_path = settings.renders_dir / f"{clip_id}.ass"
     credit = credit_for(clip, source)
+    tag = (clip.card_tag or "").strip()
+    if not tag and source.topic and len(source.topic.strip()) <= 24:
+        tag = source.topic.strip()      # older clips have no kicker: the source's topic reads fine there
     ass_text = build_ass(words, start, style, hook_text=clip.hook_text or "", credit_text=credit,
-                         duration=duration)
+                         duration=duration, title_text=clip.title or "", card_tag=tag,
+                         measure=font_measurer(style["font"]) if style["title_card"] == "card" else None)
     ass_path.write_text(ass_text, encoding="utf-8")
 
     fonts_dir = windows_fonts_dir(style["font"], settings) if _is_windows() else (
