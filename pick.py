@@ -611,7 +611,8 @@ CARD_TAG_MAX_CHARS = 24
 
 def clean_card_tag(v: Any) -> str:
     """The title-card kicker: plain words only, at most :data:`CARD_TAG_MAX_CHARS` (cut on a word)."""
-    s = re.sub(r"[^\w '&-]+", " ", strip_links(str(v or ""), hashtags=True))
+    s = re.sub(r"#\w+", " ", strip_links(str(v or ""), hashtags=True))
+    s = re.sub(r"[^\w '&-]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip(" -'")
     if len(s) > CARD_TAG_MAX_CHARS:
         s = s[:CARD_TAG_MAX_CHARS + 1].rsplit(" ", 1)[0].strip(" -'") if " " in s[:CARD_TAG_MAX_CHARS + 1] \

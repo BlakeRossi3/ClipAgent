@@ -379,7 +379,7 @@ def test_v2_database_upgrades_to_v3_and_failed_migration_rolls_back(tmp_path, mo
     assert "x" not in {r[1] for r in conn.execute("PRAGMA table_info(clips)")}
     conn.close()
     monkeypatch.undo()
-    assert db.init_db(path) == 3
+    assert db.init_db(path) == db.SCHEMA_VERSION
     c = db.connect(path)
     try:
         clip = db.get_clip(1, conn=c)
