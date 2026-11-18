@@ -256,7 +256,7 @@
 {% if h.dyn %}
 <ul class="dtiles" aria-label="Tiles from {{ h.a.name }}">
   {% for t in h.dyn %}
-  <li class="dtile dtile-{{ t.kind }}{% if t.rows %} dtile-wide{% endif %}" data-dtile data-expires="{{ t.expires_ms }}">
+  <li class="dtile dtile-{{ t.kind }}{% if t.rows or t.get("wide") %} dtile-wide{% endif %}" data-dtile data-expires="{{ t.expires_ms }}">
     <p class="dtile-title">{{ t.title }}</p>
     {% if t.value %}<p class="dtile-value">{{ t.value }}</p>{% endif %}
     {% if t.body %}<p class="dtile-body">{{ t.body }}</p>{% endif %}

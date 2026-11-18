@@ -129,6 +129,11 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   the Jarvis stage (weather, a figure, a reminder) that disappear by themselves after `minutes` (default 60);
   a `key` replaces the previous tile, at most 6 are up, the owner can close one with its x. Optional `rows`
   (up to 20 `{text, note, mark}`, store v9) make a wide tile spanning the stage, e.g. a scoreboard.
+* **Tile check** (`assistant/tilecheck.py`, tool `tile_check`, CLI `python -m assistant.tilecheck`): opens the
+  dashboard in his installed Chrome/Edge via Playwright (headless, throwaway profile; waits for `load`, never
+  `networkidle`, which the polling page never reaches), measures every `.dtile` and reports text cut off, under
+  10.5px, too narrow/cramped, off screen or hidden below the scrolling rail, plus a screenshot path. Tiles whose
+  body is over `tiles.WIDE_BODY` characters render wide.
 * **NFL scores** (`assistant/nfl.py`, tool `nfl_scores`, CLI `python -m assistant.nfl [show|print]`): ESPN's
   public scoreboard JSON -> a wide tile (key `nfl-scores`, 16 h) with every game of the week, his team first
   and marked (kv `nfl:team`, default NYG), and stats (team star, shootout, rout, nail-biters, top passer).

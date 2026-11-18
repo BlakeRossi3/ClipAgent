@@ -41,6 +41,7 @@ KEY_MAX = 40
 ROWS_MAX = 20
 ROW_MAX = 64
 ROW_NOTE_MAX = 140
+WIDE_BODY = 120   # a body longer than this gets a wide tile (a narrow one turns it into a thin column)
 KINDS = store.TILE_KINDS
 
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -168,7 +169,8 @@ def view() -> list[dict[str, Any]]:
     now = db.utcnow()
     return [{"id": t.id, "kind": t.kind, "title": t.title, "body": t.body, "value": t.value,
              "expires_at": t.expires_at, "expires_ms": int(db.parse_iso(t.expires_at).timestamp() * 1000),
-             "left": _left(t.expires_at, now), "rows": t.rows or []} for t in live()]
+             "left": _left(t.expires_at, now), "rows": t.rows or [],
+             "wide": bool(t.rows) or len(t.body or "") > WIDE_BODY} for t in live()]
 
 
 def _summary(t: store.Tile) -> dict[str, Any]:
@@ -183,7 +185,8 @@ def _summary(t: store.Tile) -> dict[str, Any]:
 
 SHOW_DESCRIPTION = (
     "Put a small tile on his Jarvis page for a glanceable fact (weather, a score, a figure, a reminder). It "
-    "disappears after `minutes` (default 60). Keep it tiny; `key` (e.g. 'weather') makes a later tile replace it.")
+    "disappears after `minutes` (default 60). Keep it tiny; `key` (e.g. 'weather') makes a later tile replace it. "
+    "Then run tile_check and fix anything cut off or cramped before saying it's done.")
 
 
 def _tool_show(ctx: Any, a: dict[str, Any]) -> Any:

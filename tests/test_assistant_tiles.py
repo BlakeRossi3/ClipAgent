@@ -149,6 +149,15 @@ def test_rows_make_a_wide_escaped_scoreboard_tile(env):
     assert html.count("dtile-wide") == 1 and "&lt;i&gt;NYG 21&lt;/i&gt;" in html and 'class="is-mark"' in html
 
 
+def test_a_long_body_gets_a_wide_tile_so_it_is_not_a_tall_narrow_column(env):
+    tiles.show("Short one", "58°F")
+    tiles.show("Long one", "word " * 40)
+    by_title = {t["title"]: t for t in tiles.view()}
+    assert by_title["Long one"]["wide"] and not by_title["Short one"]["wide"]
+    html = _client().get("/dashboard/api/home").json()["html"]["dyn_tiles"]
+    assert html.count("dtile-wide") == 1
+
+
 def test_cli_show_list_clear(env, capsys):
     assert tiles.main(["show", "Hello", "world", "--minutes", "5", "--key", "hi"]) == 0
     assert tiles.main(["list"]) == 0
