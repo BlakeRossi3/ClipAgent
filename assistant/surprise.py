@@ -1,10 +1,12 @@
 """The morning surprise: every day (``ASSISTANT_MORNING_SURPRISE``, default 07:40 local) Cecil makes the
-owner something cool. Literally anything cool.
+owner something cool built around his interests (:data:`THEMES`: sports, food, the gym, coding, technology,
+AI, video). No stories, news or 'on this day' pieces - he asked for that (2026-11-17).
 
-* :func:`run_morning` (scheduler job ``assistant_morning_surprise``) picks today's kind from
-  :data:`KINDS`, avoiding the last few (history in kv :data:`KV_HISTORY`), and queues it as a scheduled
-  row of kind ``surprise`` that runs at once through the background-task path (``assistant/schedule.py``)
-  on the cheaper sub-agent model with low effort. When plan usage is tight (``usage.constrained``) it
+* :func:`run_morning` (scheduler job ``assistant_morning_surprise``) picks today's format from
+  :data:`KINDS` and interest from :data:`THEMES`, avoiding recent ones (history in kv :data:`KV_HISTORY`),
+  and queues it as a scheduled row of kind ``surprise`` that runs at once through the background-task path
+  (``assistant/schedule.py``) on the sub-agent model with medium effort. The brief makes the worker read
+  his profile notes first so the pick is specific to him. When plan usage is tight (``usage.constrained``) it
   waits for the window to reset instead. Once per local day.
 * :func:`on_finished` files the result: a vault note ``Agent/Surprises/<day>.md`` (the worker may write a
   richer one itself), the optional self-contained toy ``<data>/surprises/<day>.html`` (served sandboxed at
@@ -37,22 +39,37 @@ FOLDER = "Agent/Surprises"
 HTML_DIR = "surprises"
 MAX_HTML_BYTES = 400_000
 
-#: (key, what to make). Varied on purpose; :func:`pick_kind` avoids the last few.
+#: (key, what to make). Things to play with or use, never prose to read: he said no stories, no news,
+#: no 'on this day' (2026-11-17). :func:`pick_kind` avoids the last few.
 KINDS: list[tuple[str, str]] = [
-    ("toy", "a small interactive HTML toy or visualisation (a generative pattern, a physics doodle, a tiny "
-            "simulation) as ONE self-contained HTML file"),
+    ("toy", "an interactive HTML toy or simulation he can poke at, as ONE self-contained HTML file"),
     ("game", "a tiny game he can play in the browser in under two minutes, as ONE self-contained HTML file"),
-    ("story", "a very short story (under 400 words) with a twist, written for him"),
-    ("deep_dive", "a fun-fact deep dive: one surprising fact and the rabbit hole behind it, in a few short "
-                  "paragraphs"),
-    ("art", "a piece of ASCII or SVG art with a one-line caption"),
-    ("playlist", "a playlist idea: a theme and 8-10 tracks with one line each on why they fit"),
-    ("map", "a map of something interesting (show it with show_map) and the story of the place"),
-    ("puzzle", "a clever puzzle or riddle, with the answer hidden at the end"),
-    ("explainer", "a one-screen visual explainer of how something everyday actually works"),
-    ("history", "'on this day': something remarkable that happened on today's date, told well"),
+    ("tool", "a genuinely useful interactive calculator or planner he would actually reuse, as ONE "
+             "self-contained HTML file"),
+    ("quiz", "a sharp ten-question interactive quiz that reveals answers as he goes, as ONE self-contained "
+             "HTML file"),
+    ("explainer", "a one-screen interactive visual explainer of how something works under the hood, as ONE "
+                  "self-contained HTML file"),
+    ("chart", "a striking data visual built from real, current numbers you looked up (cite where they came from), "
+              "on his screen with show_data and as ONE self-contained HTML file"),
+    ("challenge", "a bite-size challenge he can do today (a coding kata, a workout finisher, a cook-off) with a "
+                  "self-check, as ONE self-contained HTML file"),
 ]
 KIND_KEYS = tuple(k for k, _ in KINDS)
+
+#: (key, what it means for him). His stated interests (Profile/Preferences.md, 2026-11-17).
+THEMES: list[tuple[str, str]] = [
+    ("sports", "sports - he's a big NFL fan (New York Giants), follows Ohio State football and the New York Islanders"),
+    ("food", "food - he likes good food and modern cafés (e.g. focaccia with egg)"),
+    ("gym", "the gym - resistance training and hypertrophy science (Chris Beardsley's effective-reps model; he "
+            "wants real evidence, not bro-science)"),
+    ("coding", "coding - he works in C# and .NET and likes Svelte; skip the basics"),
+    ("technology", "technology - hardware, gadgets that do something clever, how things work (no gadget stories)"),
+    ("ai", "AI - agents, Claude, MCP, LLMs; he builds with them himself"),
+    ("video", "video - YouTube, Shorts, editing and what makes a clip work (he runs a Shorts channel)"),
+]
+THEME_KEYS = tuple(k for k, _ in THEMES)
+AVOID_THEMES = 3
 
 
 def configured_time() -> str:
@@ -79,24 +96,39 @@ def pick_kind(day: date, past: list[dict[str, Any]] | None = None) -> str:
     return random.Random(day.toordinal()).choice(pool)
 
 
+def pick_theme(day: date, past: list[dict[str, Any]] | None = None) -> str:
+    """One of his interests not used in the last :data:`AVOID_THEMES` surprises; stable for a given day."""
+    past = history() if past is None else past
+    recent = {h.get("theme") for h in past[-AVOID_THEMES:]}
+    pool = [k for k in THEME_KEYS if k not in recent] or list(THEME_KEYS)
+    return random.Random(day.toordinal() * 31 + 7).choice(pool)
+
+
 def html_path(day: date | str) -> Path:
     import config
 
     return config.get_settings().data_dir / HTML_DIR / f"{day}.html"
 
 
-def brief(day: date, kind: str) -> str:
+def brief(day: date, kind: str, theme: str | None = None) -> str:
     from assistant.settings import get_assistant_settings
 
     s = get_assistant_settings()
     what = dict(KINDS)[kind]
-    recent = [f"{h.get('kind')}: {h.get('title')}" for h in history()[-8:]]
+    theme = theme if theme in THEME_KEYS else THEME_KEYS[0]
+    about = dict(THEMES)[theme]
+    recent = [f"{h.get('kind')}/{h.get('theme') or '?'}: {h.get('title')}" for h in history()[-8:]]
     html = html_path(day)
-    return (f"Make {s.owner_name} something cool - literally anything cool. It's {day:%A %d %B}. Today's idea: {what}. "
-            "Make it genuinely delightful and a little surprising; your own taste, not a template. Keep it small and "
-            "finish within a few minutes.\n"
+    return (f"Make {s.owner_name} something cool built around what he's into. It's {day:%A %d %B}.\n"
+            f"Today's interest: {about}.\nToday's format: {what}.\n"
+            "First read the vault notes Profile/Preferences.md and Profile/About.md (memory_read) and pick something "
+            "specific to him inside that interest - his teams, his training, his stack, the tools he uses, what is "
+            "happening this week (look it up if it needs current facts). Generic picks feel like no effort; he "
+            "should open it and think 'that's for me'.\n"
+            "Hard rules: no stories, no news recaps, no history or 'on this day' pieces, no gadget anecdotes. Make "
+            "something he can play with or use. Polish it: real content, good visuals, works first time.\n"
             + ("Recent surprises (do not repeat these): " + "; ".join(recent) + "\n" if recent else "")
-            + f"- If it is HTML (a toy, game or visualisation): write ONE self-contained file to {html} (inline CSS "
+            + f"- Write ONE self-contained HTML file to {html} (inline CSS "
             "and JavaScript, no external requests, no network, works offline). It opens from the Scheduled page.\n"
             f"- Save it (or a description and the content) to the vault note {FOLDER}/{day}.md with memory_write.\n"
             "- Put a small preview on his Jarvis screen with display or show_data/show_map (hold: sticky).\n"
@@ -120,9 +152,10 @@ def run_morning() -> str:
     if not db.kv_set_if_absent(KV_STARTED.format(day=day.isoformat()), db.now_iso()):
         return "skipped"
     kind = pick_kind(day)
-    text = brief(day, kind)
+    theme = pick_theme(day)
+    text = brief(day, kind, theme)
     tight, _until = usage.constrained()
-    meta = {"day": day.isoformat(), "surprise_kind": kind}
+    meta = {"day": day.isoformat(), "surprise_kind": kind, "surprise_theme": theme}
     if tight:   # cheap, but optional: wait for the window to reset rather than eat what is left
         from assistant import handoff
 
@@ -174,7 +207,7 @@ def on_finished(d: store.Deferred, row: dict[str, Any], full: str, status: str) 
         log.warning("surprise note not saved: %s", exc)
     html = html_path(day)
     has_html = html.is_file() and 0 < html.stat().st_size <= MAX_HTML_BYTES
-    item = {"day": day, "kind": kind, "title": title, "path": rel, "summary": (row.get("summary") or "")[:300],
+    item = {"day": day, "kind": kind, "theme": str(meta.get("surprise_theme") or ""), "title": title, "path": rel, "summary": (row.get("summary") or "")[:300],
             "html_url": f"/dashboard/surprises/{day}.html" if has_html else None, "made_at": db.now_iso()}
     db.kv_set(KV_HISTORY, (history() + [item])[-HISTORY_KEEP:])
     db.kv_set(KV_LATEST, item)

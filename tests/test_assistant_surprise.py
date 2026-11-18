@@ -62,13 +62,38 @@ def test_pick_kind_avoids_recent_ones():
     assert surprise.pick_kind(day, past) == surprise.pick_kind(day, past)          # stable for the day
 
 
+def test_no_stories_or_news_formats():
+    # he said no stories (the robot-vacuum one), no news, no 'on this day'
+    for gone in ("story", "history", "deep_dive", "playlist"):
+        assert gone not in surprise.KIND_KEYS
+    for k, what in surprise.KINDS:
+        assert "story" not in what.lower()
+
+
+def test_theme_comes_from_his_interests_and_rotates():
+    assert {"sports", "food", "gym", "coding", "technology", "ai"} <= set(surprise.THEME_KEYS)
+    day = date(2026, 11, 13)
+    past = [{"theme": t} for t in surprise.THEME_KEYS[:3]]
+    for i in range(20):
+        assert surprise.pick_theme(day + timedelta(days=i), past) not in surprise.THEME_KEYS[:3]
+    assert surprise.pick_theme(day, past) == surprise.pick_theme(day, past)
+
+
+def test_brief_is_about_him_not_a_template(on, clock):
+    text = surprise.brief(db.local_today(), "game", "gym")
+    assert "Profile/Preferences.md" in text and "Profile/About.md" in text        # look at what he likes first
+    assert "no stories" in text.lower()
+    assert dict(surprise.THEMES)["gym"] in text
+
+
 def test_morning_run_makes_files_and_announces_once(on, clock):
     assert surprise.run_morning() == "started"
     assert surprise.run_morning() == "skipped"                                     # once a day
     _wait()
     brief, ctx = on[0]
-    assert "literally anything cool" in brief and ctx.get("effort") == "low" and ctx.get("model")
+    assert "what he's into" in brief and ctx.get("effort") == "medium" and ctx.get("model")
     item = surprise.latest()
+    assert item["theme"] in surprise.THEME_KEYS and item["kind"] in surprise.KIND_KEYS
     assert item["title"] == "A Pocket Orrery" and item["html_url"] == "/dashboard/surprises/2026-11-13.html"
     note = vault.read_note("Agent/Surprises/2026-11-13.md")
     assert "tiny solar system" in note.body
