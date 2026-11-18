@@ -67,6 +67,46 @@ def test_waits_for_the_grace_period_then_repairs_and_tells_him(on, clock):
     assert autofix.tick()["status"] == "nothing"             # the same problem is not taken on again soon
 
 
+def _stalls():
+    return [e for e in db.list_events(level="error", module="heartbeat") if "has not run" in e.message]
+
+
+def test_a_heartbeat_that_stops_running_is_flagged_once_and_repaired(on, clock):
+    from assistant import heartbeat
+
+    heartbeat._save_state(last_tick=db.now_iso())
+    clock.advance(minutes=59)                                # 30-minute heartbeat: under 2 missed beats
+    autofix.tick()
+    assert _stalls() == []
+    clock.advance(minutes=40)
+    autofix.tick()
+    autofix.tick()
+    assert len(_stalls()) == 1                               # one stall, one error event
+    assert _stalls()[0].data["last_tick"]
+    clock.advance(minutes=4)
+    out = _run(clock)
+    assert out["status"] == "started" and "heartbeat has not run" in on["briefs"][0]
+    heartbeat._save_state(last_tick=db.now_iso())            # it beats again ...
+    clock.advance(minutes=100)
+    autofix.tick()
+    assert len(_stalls()) == 2                               # ... and a later stall is flagged anew
+
+
+def test_heartbeat_stall_waits_after_a_restart_and_when_off(on, clock, monkeypatch):
+    from assistant import heartbeat
+
+    heartbeat._save_state(last_tick=db.now_iso())
+    clock.advance(hours=5)                                   # the app was off for hours
+    db.log_event("main", "scheduler started")
+    autofix.tick()
+    assert _stalls() == []                                   # downtime is not a stall
+    monkeypatch.setenv("HEARTBEAT_MINUTES", "0")
+    asettings.reset_assistant_settings()
+    clock.advance(hours=5)
+    autofix.tick()
+    assert _stalls() == []                                   # switched off on purpose
+
+
 def test_needs_you_and_transient(on, clock):
     on["reply"]["text"] = ("STATUS: needs_you\nWHAT: The call to you failed: Twilio says the number is unverified.\n"
                            "FIX: Verify your number in the Twilio console.")

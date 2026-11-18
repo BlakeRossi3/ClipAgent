@@ -11,7 +11,8 @@ there is something to fix):
 * :func:`tick` (job ``assistant_autofix``, every 5 minutes) reads the last day's ``error`` events (every
   stage logs one when it fails: transcription, fetch, render, upload, a call or text to him, a job, a
   staff run...) and groups them by :func:`signature` (module + message with numbers and quoted bits
-  taken out), so ten clips failing the same way are one problem.
+  taken out), so ten clips failing the same way are one problem. A heartbeat that silently stops
+  (no error of its own) is turned into one by :func:`watch_heartbeat`.
 * A problem is taken on once its first failure is ``ASSISTANT_AUTOFIX_GRACE_MIN`` (3) minutes old - the
   normal retries get their chance first - and not again for :data:`COOLDOWN_HOURS` (sooner,
   :data:`RETRY_HOURS`, when the repair run itself did not finish). One repair at a time, at most
@@ -195,6 +196,45 @@ def _running() -> bool:
     return any((t.get("meta") or {}).get("kind") == "autofix" for t in tasks.running_tasks())
 
 
+KV_HB_STALL = "autofix:heartbeat_stall"
+HB_STALL_BEATS = 3          # this many missed beats (and at least HB_STALL_MIN_MINUTES) is a stall
+HB_STALL_MIN_MINUTES = 30
+
+
+def watch_heartbeat(now: Any = None) -> bool:
+    """A heartbeat that silently stops logs no error, so nothing would repair it: flag it as one.
+
+    Stalled = no tick (every tick, even "unchanged" or "deferred", stamps ``last_tick``) for
+    :data:`HB_STALL_BEATS` intervals since the later of its last tick and the scheduler's last start
+    (downtime is not a stall). Logged once per stall as a ``heartbeat`` error, which :func:`problems`
+    then picks up like any other failure. Returns True when a stall was logged now.
+    """
+    s = _settings()
+    if not s.enabled or s.heartbeat_minutes <= 0:
+        return False
+    from assistant import heartbeat
+
+    last = str(heartbeat._state().get("last_tick") or "")
+    if not last:
+        return False
+    now = now or db.utcnow()
+    ref = db.parse_iso(last)
+    started = db.list_events(module="main", since=last, limit=50)
+    for e in started:
+        if e.message == "scheduler started":
+            ref = max(ref, db.parse_iso(e.ts))
+    limit = timedelta(minutes=max(HB_STALL_MIN_MINUTES, HB_STALL_BEATS * s.heartbeat_minutes))
+    if now - ref < limit or db.kv_get(KV_HB_STALL, "") == last:
+        return False
+    db.kv_set(KV_HB_STALL, last)
+    mins = int((now - db.parse_iso(last)).total_seconds() // 60)
+    db.log_event(heartbeat.AGENT, f"heartbeat has not run for {mins} minutes (every {s.heartbeat_minutes} expected)",
+                 level="error", data={"last_tick": last, "last_status": heartbeat._state().get("last_status"),
+                                      "hint": "check the assistant_heartbeat job in the scheduler, a hung model "
+                                              "call (max_instances=1) and the heartbeat events"})
+    return True
+
+
 def tick(now: Any = None) -> dict[str, Any]:
     """Scheduler job: start a repair for the oldest new problem. Returns {status, ...}."""
     s = _settings()
@@ -205,6 +245,10 @@ def tick(now: Any = None) -> dict[str, Any]:
     if runtime.is_stopped():
         return {"status": "stopped"}
     now = now or db.utcnow()
+    try:
+        watch_heartbeat(now)
+    except Exception as exc:  # the watchdog must never stop repairs
+        log.warning("heartbeat watchdog failed: %r", exc)
     grace = timedelta(minutes=s.autofix_grace_min)
     due = [p for p in problems(now) if db.parse_iso(p["first"]) <= now - grace and not _cooling(p["sig"], now)]
     if not due:
