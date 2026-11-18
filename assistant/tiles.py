@@ -40,7 +40,7 @@ VALUE_MAX = 24
 KEY_MAX = 40
 ROWS_MAX = 20
 ROW_MAX = 64
-ROW_NOTE_MAX = 28
+ROW_NOTE_MAX = 140
 KINDS = store.TILE_KINDS
 
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
