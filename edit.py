@@ -95,7 +95,17 @@ DEFAULT_CAPTION_STYLE: dict[str, Any] = {
     # "card" = the HyperFrames-style opening title card the owner chose on 2026-11-17 (yellow kicker
     # label, wiping accent bar, headline words rising in, lifting away at ~3 s); "hook" = the old boxed hook.
     "title_card": "card",
+    # Jump-cut pauses between words (owner, 2026-11-18: Shorts felt slow; "cut dead air").
+    "cut_dead_air": True,
 }
+
+# Dead-air cutting: a pause between words of DEAD_AIR_MIN_GAP..DEAD_AIR_MAX_GAP seconds is cut down
+# to KEEP_AFTER + KEEP_BEFORE. Longer silences are kept: in this footage they are usually the action
+# itself (a launch roar, a landing, applause) rather than someone hesitating.
+DEAD_AIR_MIN_GAP = 0.6
+DEAD_AIR_MAX_GAP = 4.0
+DEAD_AIR_KEEP_AFTER = 0.18
+DEAD_AIR_KEEP_BEFORE = 0.12
 
 # Title card layout, ported from the HyperFrames trial (data/experiments/hyperframes/trial/index.html).
 # Sizes are CSS pixels (what the trial used); ASS font sizes are CSS size x CARD_EM_RATIO because
@@ -377,6 +387,7 @@ def merged_caption_style(caption_style: dict[str, Any] | None) -> dict[str, Any]
         style["animation"] = "word_pop"
     if style.get("title_card") not in ("card", "hook"):
         style["title_card"] = "card"
+    style["cut_dead_air"] = style.get("cut_dead_air") is not False
     return style
 
 
@@ -689,6 +700,80 @@ def build_ass(words: list[dict], clip_start: float, caption_style: dict, *, hook
 
 
 # ---------------------------------------------------------------------------
+# dead air
+# ---------------------------------------------------------------------------
+
+Segments = list[tuple[float, float]]
+
+
+def dead_air_segments(words: Sequence[dict[str, Any]], clip_start: float, duration: float) -> Segments:
+    """Keep-ranges (clip-relative seconds, on the 1/FPS frame grid) with pauses between words cut (pure).
+
+    Only gaps of DEAD_AIR_MIN_GAP..DEAD_AIR_MAX_GAP between consecutive words are shortened; the
+    clip's own edges are left alone (pick already starts/ends it on words). One range = no cuts.
+    """
+    spans: list[tuple[float, float]] = []
+    for w in words or []:
+        try:
+            s, e = float(w["start"]) - clip_start, float(w["end"]) - clip_start
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(s) and math.isfinite(e) and e > 0 and s < duration:
+            spans.append((max(0.0, s), min(duration, max(s, e))))
+    spans.sort()
+    cuts: list[tuple[float, float]] = []
+    reach = None
+    for s, e in spans:
+        if reach is not None and DEAD_AIR_MIN_GAP <= s - reach <= DEAD_AIR_MAX_GAP:
+            c0 = math.ceil((reach + DEAD_AIR_KEEP_AFTER) * FPS - 1e-6) / FPS
+            c1 = math.floor((s - DEAD_AIR_KEEP_BEFORE) * FPS + 1e-6) / FPS
+            if c1 - c0 >= 2 / FPS:
+                cuts.append((c0, c1))
+        reach = e if reach is None else max(reach, e)
+    keep: Segments = []
+    pos = 0.0
+    for c0, c1 in cuts:
+        keep.append((round(pos, 3), round(c0, 3)))
+        pos = c1
+    keep.append((round(pos, 3), round(duration, 3)))
+    return keep
+
+
+def segments_duration(segments: Segments) -> float:
+    return round(sum(e - s for s, e in segments), 3)
+
+
+def remap_time(t: float, segments: Segments) -> float:
+    """Clip-relative time -> time in the cut output (a time inside a cut maps to the next kept frame)."""
+    acc = 0.0
+    for s, e in segments:
+        if t < s:
+            return acc
+        if t <= e:
+            return acc + (t - s)
+        acc += e - s
+    return acc
+
+
+def remap_words(words: Sequence[dict[str, Any]], clip_start: float, segments: Segments) -> list[dict]:
+    """Words with times moved onto the cut output's timeline (output-relative, so clip_start becomes 0)."""
+    out = []
+    for w in words or []:
+        try:
+            s, e = float(w["start"]) - clip_start, float(w["end"]) - clip_start
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append({**w, "start": round(remap_time(s, segments), 3), "end": round(remap_time(e, segments), 3)})
+    return out
+
+
+def _select_expr(segments: Segments, half_frame: float) -> str:
+    """``gte(t,a)*lt(t,b)+...`` for select/aselect (the caller single-quotes it, protecting the commas)."""
+    terms = [f"gte(t,{s - half_frame:.4f})*lt(t,{e - half_frame:.4f})" for s, e in segments]
+    return "+".join(terms)
+
+
+# ---------------------------------------------------------------------------
 # ffmpeg command
 # ---------------------------------------------------------------------------
 
@@ -735,29 +820,37 @@ def framing_filters(framing: str, info: MediaInfo, crop_x: int | None = None) ->
 
 def build_ffmpeg_cmd(src: Path, ass_path: Path, out: Path, start: float, end: float,
                      settings: Settings, *, info: MediaInfo | None = None, framing: str = "auto",
-                     crop_x: int | None = None, fonts_dir: Path | None = None) -> list[str]:
+                     crop_x: int | None = None, fonts_dir: Path | None = None,
+                     segments: Segments | None = None) -> list[str]:
     """ffmpeg argv for one render (pure).
 
     ``-ss`` before ``-i`` (fast keyframe seek; ffmpeg then decodes and discards up
     to the exact start, so the cut is frame-accurate and A/V stay in sync) and
     ``-t`` on the output. ``info`` is the probed source (default: 1920x1080 with
-    audio); without audio a silent ``anullsrc`` track is muxed in.
+    audio); without audio a silent ``anullsrc`` track is muxed in. ``segments``
+    (clip-relative keep-ranges from :func:`dead_air_segments`) jump-cut the pauses
+    out of both video and audio; the output is then their total length.
     """
     info = info or MediaInfo(1920, 1080, None, True)
     dur = round(max(0.0, end - start), 3)
     if dur <= 0:
         raise ValueError("end must be after start")
+    cut = bool(segments) and len(segments) > 1
+    if cut:
+        dur = segments_duration(segments)
     mode = resolve_framing(framing, info)
     ass_opt = f"filename={_escape_filter_value(_filter_path(ass_path))}"
     if fonts_dir is not None:
         ass_opt += f":fontsdir={_escape_filter_value(_filter_path(fonts_dir))}"
-    graph = (f"[0:v:0]fps={FPS},format=yuv420p[v0];"
+    vsel = f"select='{_select_expr(segments, 0.5 / FPS)}',setpts=N/{FPS}/TB," if cut else ""
+    asel = f"aselect='{_select_expr(segments, 0.0)}',asetpts=N/SR/TB," if cut else ""
+    graph = (f"[0:v:0]fps={FPS},{vsel}format=yuv420p[v0];"
              + framing_filters(mode, info, crop_x)
              + f";[vf]ass={ass_opt},format=yuv420p[vout]")
     cmd = [settings.ffmpeg_bin, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
            "-ss", f"{max(0.0, start):.3f}", "-i", str(src)]
     if info.has_audio:
-        graph += f";[0:a:0]aresample={AUDIO_RATE}:async=1:first_pts=0[aout]"
+        graph += f";[0:a:0]{asel}aresample={AUDIO_RATE}:async=1:first_pts=0[aout]"
     else:
         cmd += ["-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={AUDIO_RATE}"]
     cmd += ["-filter_complex", graph, "-map", "[vout]", "-map", "[aout]" if info.has_audio else "1:a:0",
@@ -1076,19 +1169,27 @@ def render_clip(clip_id: int, strategy: Any | None = None, *, framing: str | Non
     tag = (clip.card_tag or "").strip()
     if not tag and source.topic and len(source.topic.strip()) <= 24:
         tag = source.topic.strip()      # older clips have no kicker: the source's topic reads fine there
-    ass_text = build_ass(words, start, style, hook_text=clip.hook_text or "", credit_text=credit,
-                         duration=duration, title_text=clip.title or "", card_tag=tag,
+    # jump-cut the pauses: captions move onto the cut timeline, the output gets shorter
+    segments = dead_air_segments(words, start, duration) if style["cut_dead_air"] and words else []
+    out_duration, cap_words, cap_start = duration, words, start
+    if len(segments) > 1:
+        out_duration = segments_duration(segments)
+        cap_words, cap_start = remap_words(words, start, segments), 0.0
+    else:
+        segments = []
+    ass_text = build_ass(cap_words, cap_start, style, hook_text=clip.hook_text or "", credit_text=credit,
+                         duration=out_duration, title_text=clip.title or "", card_tag=tag,
                          measure=font_measurer(style["font"]) if style["title_card"] == "card" else None)
     ass_path.write_text(ass_text, encoding="utf-8")
 
     fonts_dir = windows_fonts_dir(style["font"], settings) if _is_windows() else (
         ASSETS_FONTS_DIR if ASSETS_FONTS_DIR.is_dir() else None)
     cmd = build_ffmpeg_cmd(src, ass_path, tmp, start, end, settings, info=info, framing=mode,
-                           crop_x=crop_x, fonts_dir=fonts_dir)
+                           crop_x=crop_x, fonts_dir=fonts_dir, segments=segments or None)
     t0 = time.monotonic()
     try:
         run_ffmpeg(cmd, timeout=max(600.0, duration * 30))
-        verify_output(tmp, duration, settings)
+        verify_output(tmp, out_duration, settings)
         os.replace(tmp, out)
     except RenderError as e:
         tmp.unlink(missing_ok=True)
@@ -1098,7 +1199,10 @@ def render_clip(clip_id: int, strategy: Any | None = None, *, framing: str | Non
     with db.transaction() as conn:
         db.update_clip(clip_id, render_path=str(out.resolve()), conn=conn)
         db.set_clip_status(clip_id, "rendered", conn=conn)
-    db.log_event("edit", f"rendered clip {clip_id} ({duration:.1f}s, {mode})",
-                 data={"clip_id": clip_id, "render_path": str(out), "duration": duration, "framing": mode,
+    trimmed = round(duration - out_duration, 2)
+    db.log_event("edit", f"rendered clip {clip_id} ({out_duration:.1f}s, {mode}"
+                 + (f", {trimmed:.1f}s of pauses cut" if trimmed > 0 else "") + ")",
+                 data={"clip_id": clip_id, "render_path": str(out), "duration": out_duration, "framing": mode,
+                       "dead_air_cut_sec": trimmed, "jump_cuts": max(0, len(segments) - 1),
                        "font": style["font"], "words": len(words), "render_sec": round(elapsed, 1)})
     return out

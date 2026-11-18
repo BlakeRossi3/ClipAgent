@@ -702,3 +702,40 @@ def test_api_outage_leaves_source_transcribed(fake_llm, clock, source_with_trans
         fake_llm.by_purpose["pick.finalize"] = {"clips": []}
         pick.pick_clips(sid)
         assert fake_llm.purposes().count("pick.score_window") == n
+
+
+def _pw(texts, gap=0.1, dur=0.3):
+    out, t = [], 0.0
+    for x in texts:
+        out.append(pick._Word(t, t + dur, x))
+        t += dur + gap
+    return out
+
+
+def test_skip_filler_opening_drops_um_and_paused_so():
+    ws = _pw(["Um,", "so,", "we", "found", "water."])
+    assert pick.skip_filler_opening(ws, 0) == 2
+    # discourse words only go when the speaker pauses on them
+    ws = _pw(["So", "what", "happened?"])
+    assert pick.skip_filler_opening(ws, 0) == 0
+    ws = _pw(["Okay.", "Uh", "the", "rover", "landed."])
+    assert pick.skip_filler_opening(ws, 0) == 2
+    # never skips past the last word, and caps the skip
+    assert pick.skip_filler_opening(_pw(["um", "uh"]), 0) == 1
+    many = _pw(["um"] * 6 + ["hi."])
+    assert pick.skip_filler_opening(many, 0) == pick.MAX_FILLER_SKIP
+
+
+def test_snap_skips_filler_opening():
+    tr = build_transcript(["Um, so, the rover found water on Mars today. " + " ".join(f"w{i}" for i in range(150)) + "."])
+    words = words_of(tr)
+    acc, rej = _pp([sonnet_clip(words[0].start, words[100].end)], tr)
+    assert not rej
+    assert acc[0].start_sec >= words[1].end - 1e-6 and acc[0].start_sec <= words[2].start
+
+
+def test_prompts_ask_for_cold_open_and_pace():
+    s = strategy_mod.load_strategy()
+    fin = pick.finalize_system_prompt(s)
+    assert "Cold open" in fin and "dead air" in fin
+    assert "slow lead-ins" in pick.score_system_prompt(s)
