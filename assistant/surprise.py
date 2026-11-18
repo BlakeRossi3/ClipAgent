@@ -11,8 +11,10 @@ AI, video). No stories, news or 'on this day' pieces - he asked for that (2026-1
 * :func:`on_finished` files the result: a vault note ``Agent/Surprises/<day>.md`` (the worker may write a
   richer one itself), the optional self-contained toy ``<data>/surprises/<day>.html`` (served sandboxed at
   ``/dashboard/surprises/<day>.html``), and :data:`KV_LATEST` for the Scheduled page.
+* :func:`home_card` puts today's surprise on the Jarvis page itself (``home.py``/``templates/home.html``),
+  the toy playing inline in a sandboxed iframe: he asked to open the page and see it there (2026-11-18).
 * :func:`announcement` returns one casual line, exactly once, the next time he opens the Jarvis page
-  (``voice/web.py`` adds it to the boot briefing) and puts a sticky panel on the screen.
+  (``voice/web.py`` adds it to the boot briefing); for yesterday's unseen one it also puts up a panel.
 """
 
 from __future__ import annotations
@@ -84,8 +86,11 @@ def history() -> list[dict[str, Any]]:
 
 
 def latest() -> dict[str, Any] | None:
+    """The last surprise made, summary cleaned of the worker's TITLE/IDEA markers (older rows kept them)."""
     v = db.kv_get(KV_LATEST)
-    return v if isinstance(v, dict) else None
+    if not isinstance(v, dict):
+        return None
+    return {**v, "summary": clean_summary(v.get("summary") or "", 300)}
 
 
 def pick_kind(day: date, past: list[dict[str, Any]] | None = None) -> str:
@@ -207,15 +212,44 @@ def on_finished(d: store.Deferred, row: dict[str, Any], full: str, status: str) 
         log.warning("surprise note not saved: %s", exc)
     html = html_path(day)
     has_html = html.is_file() and 0 < html.stat().st_size <= MAX_HTML_BYTES
-    item = {"day": day, "kind": kind, "theme": str(meta.get("surprise_theme") or ""), "title": title, "path": rel, "summary": (row.get("summary") or "")[:300],
+    item = {"day": day, "kind": kind, "theme": str(meta.get("surprise_theme") or ""), "title": title, "path": rel, "summary": clean_summary(body, 300) or clean_summary(row.get("summary") or "", 300),
             "html_url": f"/dashboard/surprises/{day}.html" if has_html else None, "made_at": db.now_iso()}
     db.kv_append(KV_HISTORY, item, keep=HISTORY_KEEP)
     db.kv_set(KV_LATEST, item)
     db.log_event("assistant", f"morning surprise ready: {title}", data={"kind": kind, "html": has_html})
 
 
+_MARKER_LINE = re.compile(r"^\s*(TITLE|IDEA):.*$", re.M | re.I)
+_MARKER_INLINE = re.compile(r"\b(TITLE|IDEA):\s.*?(?=(\b(?:TITLE|IDEA):)|$)", re.I | re.S)
+
+
+def clean_summary(text: str, limit: int = 240) -> str:
+    """The worker's prose without its 'TITLE:'/'IDEA:' marker lines (they arrive on separate lines in the
+    full reply, or run together in a flattened summary)."""
+    s = _MARKER_LINE.sub("", text or "")
+    if re.search(r"\b(TITLE|IDEA):", s, re.I):   # flattened: the markers run into one line
+        s = _MARKER_INLINE.sub("", s)
+    s = " ".join(s.split())
+    return s if len(s) <= limit else s[: limit - 1].rstrip() + "…"
+
+
+def home_card() -> dict[str, Any] | None:
+    """Today's surprise for the Jarvis page (home.py): title, a clean line about it and the sandboxed toy's
+    URL (played inline in an iframe). None when nothing was made today."""
+    item = latest()
+    if not item or str(item.get("day")) != db.local_today().isoformat():
+        return None
+    url = item.get("html_url")
+    if url and safe_html(str(item.get("day"))) is None:
+        url = None
+    return {"title": str(item.get("title") or "Something cool"), "summary": clean_summary(item.get("summary") or ""),
+            "kind": str(item.get("kind") or "").replace("_", " "), "theme": str(item.get("theme") or ""),
+            "html_url": url, "note_path": str(item.get("path") or "")}
+
+
 def announcement() -> str:
-    """One casual line, once, for today's (or yesterday's unseen) surprise; '' otherwise."""
+    """One casual line, once, for today's (or yesterday's unseen) surprise; '' otherwise. Today's also sits
+    on the Jarvis page itself (:func:`home_card`), so no panel is needed for it."""
     item = latest()
     if not item:
         return ""
@@ -227,16 +261,19 @@ def announcement() -> str:
         return ""
     if not db.kv_set_if_absent(KV_ANNOUNCED.format(day=made.isoformat()), db.now_iso()):
         return ""
-    try:
+    if made == db.local_today():
+        return f"Also, I made you something this morning: {item.get('title')}. It's right here on the page."
+    try:   # yesterday's, never seen: a panel with a link, since the page card only shows today's
         from assistant import hud
 
         hud.publish_panel(hud.data_panel({"title": "MORNING SURPRISE", "hold": "sticky", "accent": "violet",
-                                          "items": [{"label": item.get("title"), "sub": item.get("summary") or "",
+                                          "items": [{"label": item.get("title"),
+                                                     "sub": clean_summary(item.get("summary") or ""),
                                                      "tag": str(item.get("kind") or "").replace("_", " ")}],
-                                          "note": "Open it from the Scheduled page."}))
+                                          "note": "Yesterday's. Open it from the Scheduled page."}))
     except Exception as exc:
         log.debug("surprise panel not shown: %s", exc)
-    return f"Also, I made you something this morning: {item.get('title')}. It's on the Scheduled page."
+    return f"Also, I made you something yesterday: {item.get('title')}. It's on the Scheduled page."
 
 
 def safe_html(day: str) -> bytes | None:

@@ -86,6 +86,17 @@
   {# --- Activity rail: what the assistant is doing right now, live over /voice/api/stream (static/jarvis.js) --- #}
   <aside class="jv-rail" data-jv-rail aria-label="What {{ a.name }} is doing">
     <section class="rail-sec rail-panels" data-jv-panels aria-live="polite" hidden></section>
+    {# today's morning surprise (assistant/surprise.py home_card): outside the live-refreshed tiles so the toy
+       keeps its state; it plays inline, sandboxed (no same-origin, no network: toolkit_web.surprise_html) #}
+    {% if h.surprise %}{% set s = h.surprise %}
+    <section class="rail-sec surprise-card" data-widget="surprise" aria-label="This morning's surprise">
+      <h2 class="rail-h">This morning {% if s.html_url %}<a class="rail-link" href="{{ s.html_url }}" target="_blank" rel="noopener">Open big</a>{% endif %}</h2>
+      <p class="surprise-title">{{ s.title }}</p>
+      {% if s.summary %}<p class="surprise-sub">{{ s.summary }}</p>{% endif %}
+      {% if s.html_url %}<iframe class="surprise-frame" src="{{ s.html_url }}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="{{ s.title }}"></iframe>
+      {% elif s.note_path %}<p><a class="rail-link" href="/dashboard/memory?note={{ s.note_path | urlencode }}">Read it</a></p>{% endif %}
+    </section>
+    {% endif %}
     {# dynamic tiles (assistant/tiles.py): short-lived, each leaves by itself (static/home.js) #}
     <div class="jv-tiles" data-live="dyn_tiles">{{ p.dyn_tiles(h) }}</div>
     <section class="rail-sec" data-widget="now">

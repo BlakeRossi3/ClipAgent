@@ -585,8 +585,9 @@ def surprise_html(request: Request, name: str) -> Response:
         return _dash()._not_found(request, "That surprise")
     return Response(data, media_type="text/html; charset=utf-8", headers={
         "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
-                                   "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:",
-        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+                                   "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; "
+                                   "frame-ancestors 'self'",   # it plays inline on the Jarvis page, nowhere else
+        "X-Frame-Options": "SAMEORIGIN", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 @router.get("/api/update")

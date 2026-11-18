@@ -1231,6 +1231,7 @@ def home_data() -> dict[str, Any]:
     feed = _safe(feed_data, [], "feed")
     history = _safe(chat_history, [], "chat")
     dyn = _safe(dyn_tiles_data, [], "dynamic tiles")
+    surprise = _safe(lambda: __import__("assistant.surprise", fromlist=["x"]).home_card(), None, "morning surprise")
     money_ok = money or {"has_job": False, "missing": ["pay_rate"], "series": [], "max_pay": 0, "jobs": [],
                          "week_pay": 0, "week_hours": 0, "last_week_pay": 0, "received_month": 0, "job_month": 0,
                          "reels_revenue": None, "reels_costs": 0, "reels_profit": None, "goal": None,
@@ -1239,7 +1240,7 @@ def home_data() -> dict[str, Any]:
     hello = greeting(db.local_now(), a, needs, money_ok, studio, tday, fresh)
     steps = setup_steps(a, money_ok, memory, studio)
     return {"a": a, "needs": needs, "money": money_ok, "studio": studio, "today": tday, "goals": goals,
-            "roster": roster, "memory": memory, "feed": feed, "history": history, "hello": hello, "dyn": dyn,
+            "roster": roster, "memory": memory, "feed": feed, "history": history, "hello": hello, "dyn": dyn, "surprise": surprise,
             "steps": steps, "steps_left": sum(1 for x in steps if not x["done"]), "fresh": fresh,
             "today_date": today, "refresh": REFRESH_SECONDS,
             "avatar": {"idle": sprite_svg("main", size=96, cls="avatar-idle"),
@@ -1358,11 +1359,12 @@ def home_page(request: Request) -> Response:
 
 def home_csp(resp: Response) -> Response:
     """The Jarvis page's CSP: remote images only through the guarded proxy (/voice/api/img), and frames only
-    from youtube-nocookie.com (the ``show_media`` YouTube panel). Every other page keeps the default."""
+    from youtube-nocookie.com (the ``show_media`` YouTube panel) and this app (the morning surprise toy, itself
+    served sandboxed with no network). Every other page keeps the default."""
     csp = resp.headers.get("Content-Security-Policy", "")
     csp = csp.replace("img-src 'self' data: https: http:", "img-src 'self' data: blob:")
     if "frame-src" not in csp:
-        csp += "; frame-src https://www.youtube-nocookie.com"
+        csp += "; frame-src https://www.youtube-nocookie.com 'self'"
     resp.headers["Content-Security-Policy"] = csp
     return resp
 

@@ -114,6 +114,38 @@ def test_morning_run_makes_files_and_announces_once(on, clock):
     assert "A Pocket Orrery" in page and "Open it" in page
 
 
+def test_todays_surprise_plays_right_on_the_main_page(on, clock):
+    """He asked (2026-11-18): open the Jarvis page and see it there, not on the Scheduled page; and the
+    7:45 panel showed the raw 'TITLE: ... IDEA: ...' lines instead of a readable summary."""
+    tasks.set_runner(lambda brief, ctx: (_make_toy() or
+                                         "TITLE: Focaccia Quiz\nIDEA: Protein ranking - log your breakfasts.\n"
+                                         "Ten questions on café food. Answers reveal as you go.", "ok"))
+    surprise.run_morning()
+    _wait()
+    card = surprise.home_card()
+    assert card["title"] == "Focaccia Quiz" and card["html_url"].endswith(f"{db.local_today()}.html")
+    assert "TITLE:" not in card["summary"] and "IDEA:" not in card["summary"]
+    assert "Ten questions" in card["summary"]
+    c = TestClient(server.create_app())
+    r = c.get("/dashboard/")
+    assert "Focaccia Quiz" in r.text and f'src="{card["html_url"]}"' in r.text and 'sandbox="allow-scripts"' in r.text
+    assert "'self'" in r.headers["content-security-policy"].split("frame-src")[1].split(";")[0]
+    toy = c.get(card["html_url"])
+    assert "frame-ancestors 'self'" in toy.headers["content-security-policy"]
+    assert toy.headers.get("x-frame-options", "SAMEORIGIN") == "SAMEORIGIN"
+    line = surprise.announcement()
+    assert "Focaccia Quiz" in line and "Scheduled page" not in line
+    clock.advance(days=1)                                                          # yesterday's leaves the page
+    assert surprise.home_card() is None and "surprise-frame" not in c.get("/dashboard/").text
+
+
+def _make_toy():
+    p = surprise.html_path(db.local_today().isoformat())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("<!doctype html><title>quiz</title><p>hi</p>", encoding="utf-8")
+    return ""
+
+
 def test_tight_usage_waits_for_the_reset(on, clock):
     resets = int((db.utcnow() + timedelta(hours=1)).timestamp())
     usage.record_window({"status": "allowed_warning", "utilization": 0.85, "resetsAt": resets,
