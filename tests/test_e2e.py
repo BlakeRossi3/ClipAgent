@@ -169,7 +169,7 @@ def test_manual_one_url_to_one_short(pipeline, settings):
 
     [up] = db.list_uploads(clip_id=clip.id)
     assert up.dry_run and up.status == "uploaded" and up.youtube_video_id == f"dryrun-{clip.id}"
-    assert up.quota_units == 0 and up.publish_at is not None
+    assert up.quota_units == 0 and up.publish_at is None and up.privacy == "public"   # manual = post now, public
 
     usage = {u.purpose for u in db.list_llm_usage()}
     assert usage == {"pick.score_window", "pick.finalize"}

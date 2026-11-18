@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CLIENT_SECRETS = REPO_ROOT / "client_secret.json"   # tests point this at a temp path
 
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n", ""}
@@ -252,7 +253,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         max_daily_llm_budget_usd=float(s("MAX_DAILY_LLM_BUDGET_USD", "5.00")),
         max_uploads_per_day=int(s("MAX_UPLOADS_PER_DAY", "6")),
         dry_run=_bool(env.get("DRY_RUN"), True),
-        youtube_client_secrets=_path(env.get("YOUTUBE_CLIENT_SECRETS"), REPO_ROOT / "client_secret.json", REPO_ROOT),
+        youtube_client_secrets=_path(env.get("YOUTUBE_CLIENT_SECRETS"), DEFAULT_CLIENT_SECRETS, REPO_ROOT),
         youtube_token_path=_path(env.get("YOUTUBE_TOKEN_PATH"), data_dir / "youtube_token.json", REPO_ROOT),
         youtube_default_privacy=s("YOUTUBE_DEFAULT_PRIVACY", "private"),
         youtube_category_id=s("YOUTUBE_CATEGORY_ID", "28"),

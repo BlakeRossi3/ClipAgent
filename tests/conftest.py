@@ -59,7 +59,8 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TIMEZONE", "America/New_York")
     monkeypatch.setenv("SETUP_COMPLETE", "true")  # the web setup wizard's redirect is tested in test_setup_web
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))  # never the owner's real vault
-    # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
+    # never his real Google sign-in file (it sits in the app folder once YouTube is connected)
+    monkeypatch.setattr(config, "DEFAULT_CLIENT_SECRETS", tmp_path / "no-client_secret.json")    # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
     monkeypatch.setenv("ASSISTANT_CLAUDE_BIN", str(tmp_path / "no-claude" / "claude"))
     # never git-commit / reset / branch the real checkout: self-editing works on a folder that is not a repo
     from assistant import selfedit
