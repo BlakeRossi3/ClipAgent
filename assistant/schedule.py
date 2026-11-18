@@ -246,7 +246,7 @@ def start_row(d: store.Deferred) -> str:
     meta = d.meta if isinstance(d.meta, dict) else {}
     cheap = d.kind == "surprise"
     tid = tasks.start(d.title or d.prompt[:120], heard="", origin="any", brief=brief_for(d),
-                      model=s.cc_subagent_model if cheap else None, effort="low" if cheap else None,
+                      model=s.cc_subagent_model if cheap else None, effort="medium" if cheap else None,
                       announce=d.kind != "surprise",
                       meta={"scheduled_id": d.id, "kind": d.kind},
                       on_finish=lambda row, full, status, did=d.id: finished(did, row, full, status))
