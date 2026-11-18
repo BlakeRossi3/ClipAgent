@@ -259,6 +259,36 @@ def test_lifetime_counters_cached(clock, live, videos, services):
     assert youtube_auth.quota_used() == 1   # one videos.list for 2 ids
 
 
+def test_refresh_live_counts_without_analytics(clock, live, videos, services):
+    services["data"].items = {"vA": {"statistics": {"viewCount": "1397"}}, "vB": {"statistics": {"viewCount": "6"}}}
+    assert analytics.refresh_live_counts() == 2
+    assert services["an"].calls == []       # Data API only
+    assert analytics.lifetime_stats("vA")["views"] == 1397
+
+
+def test_new_shorts_count_live_views_before_analytics_has_them(clock, live, make_upload, services):
+    """Regression (2026-11-18): Shorts uploaded today read 0 views because only Analytics was summed."""
+    from assistant import tools
+
+    make_upload(video_id="vNew", publish_at="2026-11-13T09:00:00Z")
+    make_upload(video_id="vOld", publish_at="2026-11-05T09:00:00Z")
+    db.upsert_stat("vOld", date(2026, 11, 10), views=100)
+    services["data"].items = {"vNew": {"statistics": {"viewCount": "1100"}},
+                              "vOld": {"statistics": {"viewCount": "130"}}}
+    analytics.refresh_live_counts()
+    assert db.unreported_views() == {"vNew": 1100, "vOld": 30}
+    assert db.recent_views(date(2026, 11, 6)) == 100 + 1130
+    snap = tools.studio_snapshot(7)
+    assert snap["period_views"] == 1230 and snap["period_views_analytics"] == 100
+    assert snap["top_clips"][0]["views"] == 1100
+
+
+def test_live_date_is_earliest_of_upload_and_publish(clock, make_upload):
+    make_upload(video_id="vEarly", publish_at="2026-11-20T09:00:00Z")   # went public before its slot
+    up = db.get_upload_by_video("vEarly")
+    assert analytics._live_dates()["vEarly"] == db.local_date_of(up.uploaded_at)
+
+
 def test_refresh_channel_stats(clock, live, services):
     analytics.refresh_channel_stats()
     [row] = db.list_channel_stats()
