@@ -38,3 +38,22 @@ def test_access_log_redacts_dashboard_token():
     server.RedactTokenFilter().filter(rec)
     msg = rec.getMessage()
     assert "s3cret" not in msg and "token=[redacted]&x=1" in msg
+
+
+def test_a_crashing_page_is_logged_as_an_error_event_with_its_cause():
+    """He got a bare 'Internal Server Error' on a page and nobody (not even self-repair) could see why."""
+    from fastapi.testclient import TestClient
+
+    import db
+    import server
+
+    app = server.create_app()
+
+    def boom():
+        raise KeyError("last_tick")
+
+    app.add_api_route("/dashboard/boom", boom)
+    r = TestClient(app, raise_server_exceptions=False).get("/dashboard/boom")
+    assert r.status_code == 500 and "KeyError" in r.text and "last_tick" in r.text
+    (e,) = db.list_events(level="error", module="server")
+    assert e.message == "page failed: GET /dashboard/boom: KeyError" and "boom" in " ".join(e.data["where"])
