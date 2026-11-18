@@ -953,6 +953,15 @@ def requeue_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> boo
         return cur.rowcount > 0
 
 
+def reopen_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> bool:
+    """A failed (or cancelled) row goes back to the queue (a retry he asked for). False when it is queued,
+    running or done, or gone."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_deferred SET status = 'queued', started_at = NULL, finished_at = NULL "
+                        "WHERE id = ? AND status IN ('failed', 'cancelled')", (did,))
+        return cur.rowcount > 0
+
+
 def cancel_deferred(did: int, *, conn: sqlite3.Connection | None = None) -> bool:
     """Queued -> cancelled (first writer wins). False when it already ran, runs or is gone."""
     with transaction(conn) as c:

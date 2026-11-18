@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 RECURS = ("daily", "weekdays", "weekly")
 TASK_KINDS = ("task", "handoff_resume", "surprise")   # run through the background-task path
-MAX_RUNNING = 2                                        # scheduled background tasks at once
+MAX_RUNNING = 4                                        # scheduled background tasks at once
 STALE_AFTER = timedelta(minutes=20)                    # beyond the task timeout: a lost run (app restarted)
 UPCOMING_DAYS = 7
 KIND_LABELS = {"task": "Task", "handoff_resume": "Resume after usage reset", "surprise": "Morning surprise",
@@ -263,6 +263,12 @@ def finished(did: int, row: dict[str, Any], full: str, status: str) -> None:
     result = (row.get("summary") or full or "")[:500]
     if status == "budget":
         result = "Stopped by the plan limit; handed over to the next usage window. " + result
+    elif not ok and status not in ("cancelled", "denied") and d.kind != "surprise":
+        from assistant import usage
+
+        if usage.retry_later(d, status, row.get("last_error") or result):
+            return                        # back in the queue with its real error; it runs again by itself
+        d = store.get_deferred(did) or d
     store.set_deferred_status(did, "done" if ok else "failed", result=result[:500])
     if ok and d.channel == "sms":
         try:

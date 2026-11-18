@@ -748,3 +748,24 @@ spoken turn's context (`status.turn_context`). New page sections need a `data-wi
 Event relay: `assistant/mcp_server.py` (the tool process of text/dashboard turns) calls `events.set_relay(True)`, so
 `events.publish` there goes to a kv outbox that the server drains (`events.drain_outbox`, from the SSE stream loop and
 `events.snapshot`, at most 1/s) - panels shown from a text now reach the page.
+
+### Failures and retries: one model (assistant/tasks.py + assistant/usage.py)
+Blake: "too many things are failing and then not retrying". The rules now:
+- **Every failure carries its real cause.** `runtime.error_text(exc)`; `TurnResult.error` / `.error_kind` / `.track_id`;
+  rail rows keep `last_error` (`tasks.track_done(error=)`, `_schedule_retry` appends the run's own words for vague
+  errors); deferred rows keep `meta.attempts / last_error / last_status`. Never show "unknown" or a canned apology.
+- **Deferred rows retry by themselves** (`usage.retry_later`): backoff 5/15/30/60 min (`retry.next_try`), a plan limit
+  waits for the reset (`after_reset`); background passes give up after `MAX_ATTEMPTS` (6), `owner_request` never.
+  Scheduled task kinds that error are requeued the same way (`schedule.finished`). One rail row per deferred item
+  (`meta.track_id`, reused by `run_task(track_id=)`; `tasks.track(task_id=)` = another attempt).
+- **Parallel, not one at a time:** `usage.run_due` runs up to `usage.MAX_PARALLEL` (4) prompt rows at once, each in
+  its own thread (`usage._spawn`; tests run inline via `usage.set_spawner`, done by `assistant_env`);
+  `tasks.retry_due` starts up to `tasks.MAX_PARALLEL` (4) retries at once and never waits for unrelated tasks;
+  `schedule.MAX_RUNNING` = 4. Jobs: `assistant_deferred` every 2 min, `assistant_task_retry` every minute.
+- **Usage back = work resumes at once:** `usage._check_freed` (from every usage reading and poll) notices limited ->
+  free and calls `usage.kick()` (run_due + retry_due in a thread); budget-stopped retries are due as soon as the
+  plan is free.
+- **Retry routes to the owner of the work:** `tasks.retry_now` - background worker rows restart now; tracked rows go
+  back through their own path (`meta.deferred_id` -> `usage.retry_deferred`; a failed text/dashboard request becomes
+  an `owner_request` deferred row on the same channel). `tasks.retry_due` never touches tracked rows.
+- The rail counts DOWN to `next_try` for retrying rows ("Retrying in 4m 10s · <last_error>"), never up from start.
