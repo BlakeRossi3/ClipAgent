@@ -96,6 +96,10 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     llm.reset()
     config.get_settings().ensure_dirs()
     yield
+    # a background task still finishing would write to the real DB/vault once the env is restored below
+    from assistant import tasks
+    stuck = tasks.join_all(30)
+    assert not stuck, f"background task threads outlived the test: {stuck}"
     selfedit.set_app_dir(None)
     claude_code.set_claude_json(None)
     hud.reset()

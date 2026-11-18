@@ -640,6 +640,12 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   Store v9 adds `as_tiles.rows` (JSON `{text, note, mark}` list, `tiles.show(rows=)`) = a wide scoreboard tile.
 - `assistant/nfl.py`: tool `nfl_scores` (ESPN scoreboard -> wide tile `nfl-scores`, his team = kv `nfl:team`, default NYG,
   first and marked, plus week stats); jobs `assistant_nfl_monday` Mon 08:05 + `assistant_nfl_mnf` Mon 23:40; tests `nfl.set_http`.
+- `assistant/nhl.py`: Islanders (kv `nhl:team`, default NYI). NHL public API (api-web.nhle.com): season schedule cached in kv
+  `nhl:schedule` (12 h, retry 30 min, keeps old cache); job `assistant_nhl_live` (1 min, idle between games) = preview tile
+  90 min before puck drop, then boxscore+landing every tick -> wide tile `nhl-islanders` (score, clock, SOG, hits/blocks,
+  PP/PIM, last goal, top players, goalies, three stars), rewritten only on change; final stays 4 h (kv `nhl:done:<id>`); a tile
+  he closes mutes that game (kv `nhl:muted:<id>`). Games in the Scheduled page (`nhl.schedule_items`, kind `game`). Tool
+  `nhl_games` (show | schedule | refresh). Tests `nhl.set_http`.
 - `assistant/page_reader.py` + Chrome extension `extension/page-reader/` (MV3 v2, `<all_urls>`): auto-captures the active
   tab (tab/window switch, load, 30 s alarm, only when changed; Options: auto on/off, "Never read" hosts, "Let Cecil click").
   `POST /pagereader/capture|next|result` (Origin must be `chrome-extension://`, plus `dashboard._guard`), `GET /pagereader/status`

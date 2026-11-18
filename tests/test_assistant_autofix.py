@@ -36,7 +36,7 @@ def _fail(msg="transcription failed for source 12", module="transcribe", **data)
 def _run(clock):
     out = autofix.tick()
     if out.get("task_id"):
-        assert tasks.wait(out["task_id"], 5)
+        assert tasks.wait(out["task_id"], 30)    # a slow finish must never outlive the test (see conftest)
     return out
 
 
@@ -113,6 +113,17 @@ def test_a_repair_that_did_not_finish_is_tried_again_in_an_hour(on, clock):
     assert autofix.tick()["status"] == "nothing"
     clock.advance(minutes=40)
     assert autofix.tick()["status"] == "started"
+
+
+def test_join_all_waits_for_slow_task_endings(on):
+    import threading
+
+    gate = threading.Event()
+    tasks.set_runner(lambda brief, context: (gate.wait(5) and "done", "ok"))
+    tid = tasks.start("Slow one", announce=False)
+    assert tasks.join_all(0.05) == [tid]          # still running: reported, not abandoned silently
+    gate.set()
+    assert tasks.join_all(10) == []
 
 
 def test_parse_is_forgiving():

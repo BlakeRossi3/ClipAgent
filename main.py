@@ -722,6 +722,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "cron", {"day_of_week": "mon", "hour": 8, "minute": 5}, "NFL scores tile after Sunday's games"),
         JobSpec("assistant_nfl_mnf", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),
                 "cron", {"day_of_week": "mon", "hour": 23, "minute": 40}, "NFL scores tile after Monday night"),
+        JobSpec("assistant_nhl_live", lambda: __import__("assistant.nhl", fromlist=["x"]).tick(),
+                "interval", {"minutes": 1}, "live Islanders game tile (idle between games)"),
     ] + _surprise_spec() + _initiative_specs() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
                   "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
                   "heartbeat: check Agent/Heartbeat.md against the live status")]

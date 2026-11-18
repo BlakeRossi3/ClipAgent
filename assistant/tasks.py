@@ -42,6 +42,7 @@ from __future__ import annotations
 import inspect
 import logging
 import threading
+import time
 import uuid
 from datetime import timedelta
 from typing import Any, Callable
@@ -310,6 +311,17 @@ def wait(task_id: str, timeout: float = 10.0) -> bool:
         th.join(timeout)
         return not th.is_alive()
     return True
+
+
+def join_all(timeout: float = 30.0) -> list[str]:
+    """Wait for every background-task thread to end; the ids still running after ``timeout`` seconds.
+
+    The test harness calls this before restoring the environment, so a task's slow ending (its
+    finish bookkeeping, a usage handoff) can never land in the owner's real database or vault."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    for th in list(_threads.values()):
+        th.join(max(0.0, deadline - time.monotonic()))
+    return [tid for tid, th in list(_threads.items()) if th.is_alive()]
 
 
 def _call_runner(fn: Runner, brief: str, context: dict[str, Any],

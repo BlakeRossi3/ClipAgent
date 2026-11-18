@@ -40,7 +40,7 @@ STALE_AFTER = timedelta(minutes=20)                    # beyond the task timeout
 UPCOMING_DAYS = 7
 KIND_LABELS = {"task": "Task", "handoff_resume": "Resume after usage reset", "surprise": "Morning surprise",
                "checkin": "Question for you", "job": "Routine", "prompt": "Task", "owner_request": "Your request",
-               "improve": "Self-improvement review"}
+               "improve": "Self-improvement review", "game": "Islanders game"}
 #: Plain words for the scheduler's jobs (main.job_specs); unknown ids fall back to their description.
 JOB_LABELS = {
     "scout": "Look for new videos to clip", "process": "Download, transcribe, pick and render clips",
@@ -373,6 +373,17 @@ def _job_items(now: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]
     return timeline, routine
 
 
+def _game_items(now: datetime) -> list[dict[str, Any]]:
+    """Islanders games this week (assistant/nhl.py, from its cached schedule; never the network)."""
+    try:
+        from assistant import nhl
+
+        return nhl.schedule_items(now, now + timedelta(days=UPCOMING_DAYS))
+    except Exception as exc:
+        log.warning("islanders games unavailable: %s", exc)
+        return []
+
+
 def _cron_words(args: dict[str, Any]) -> str:
     if "day_of_week" in args:
         return f"weekly ({args['day_of_week']})"
@@ -397,7 +408,7 @@ def snapshot(now: datetime | None = None) -> dict[str, Any]:
                              "why": c.kind.replace("_", " ").replace(":", ": "), "recur": "", "actions": False})
     queued = [_row_item(d, now, reset_eta) for d in store.list_deferred("queued", limit=200)]
     jobs, routine = _job_items(now)
-    upcoming += queued + jobs
+    upcoming += queued + jobs + _game_items(now)
     upcoming.sort(key=lambda x: (x["at"] or "9999", x["title"]))
     running = [_row_item(d, now, reset_eta) for d in store.list_deferred("running", limit=50)]
     others = [{"task": t["task"], "started": when_words(db.parse_iso(t["started"]), now=now),
