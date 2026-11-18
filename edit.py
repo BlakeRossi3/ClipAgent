@@ -471,7 +471,7 @@ def layout_card_title(text: str, measure: Measure) -> tuple[float, list[list[tup
     words = text.split()
     for i, size in enumerate(CARD_TITLE_CSS):
         spacing = CARD_TITLE_SPACING * size
-        space = measure(" ", size) + CARD_WORD_GAP
+        space = CARD_WORD_GAP      # the trial's spans were inline-blocks: trailing spaces collapse, margin stays
         lines: list[list[tuple[str, float]]] = [[]]
         x = 0.0
         for w in words:
