@@ -443,15 +443,146 @@ def _wrap(text: str, width: int, max_lines: int) -> list[str]:
     return lines
 
 
+def _rounded_rect(w: float, h: float, r: float) -> str:
+    """ASS vector drawing (``\\p1``) of a ``w`` x ``h`` rectangle with corner radius ``r``."""
+    w, h = int(round(w)), int(round(h))
+    r = int(round(max(0.0, min(r, w / 2, h / 2))))
+    if r == 0:
+        return f"m 0 0 l {w} 0 l {w} {h} l 0 {h}"
+    return (f"m {r} 0 l {w - r} 0 b {w} 0 {w} 0 {w} {r} l {w} {h - r} b {w} {h} {w} {h} {w - r} {h} "
+            f"l {r} {h} b 0 {h} 0 {h} 0 {h - r} l 0 {r} b 0 0 0 0 {r} 0")
+
+
+def split_card_text(title: str, tag: str = "") -> tuple[str, str]:
+    """(kicker, headline) for the title card: ``"Ask an astronaut: The coolest..."`` splits on the
+    colon when no explicit ``tag`` is given and the part before it is short."""
+    title = re.sub(r"\s+", " ", title or "").strip()
+    tag = re.sub(r"\s+", " ", tag or "").strip()
+    if not tag and ":" in title:
+        head, rest = title.split(":", 1)
+        if 0 < len(head.strip()) <= 24 and len(rest.strip().split()) >= 2:
+            tag, title = head.strip(), rest.strip()
+    return tag, title
+
+
+def layout_card_title(text: str, measure: Measure) -> tuple[float, list[list[tuple[str, float]]]]:
+    """Wrap the headline into at most :data:`CARD_TITLE_MAX_LINES` lines inside :data:`CARD_W`,
+    shrinking the font through :data:`CARD_TITLE_CSS`. Returns (css size, lines of (word, x))."""
+    words = text.split()
+    for i, size in enumerate(CARD_TITLE_CSS):
+        spacing = CARD_TITLE_SPACING * size
+        space = measure(" ", size) + CARD_WORD_GAP
+        lines: list[list[tuple[str, float]]] = [[]]
+        x = 0.0
+        for w in words:
+            ww = measure(w, size) + spacing * len(w)
+            if lines[-1] and x + ww > CARD_W:
+                lines.append([])
+                x = 0.0
+            lines[-1].append((w, x))
+            x += ww + space
+        if len(lines) <= CARD_TITLE_MAX_LINES or i == len(CARD_TITLE_CSS) - 1:
+            if len(lines) > CARD_TITLE_MAX_LINES:   # still too long at the smallest size: cut + ellipsis
+                lines = lines[:CARD_TITLE_MAX_LINES]
+                w, wx = lines[-1][-1]
+                lines[-1][-1] = (w.rstrip(".,;:!?") + "…", wx)
+            return float(size), lines
+    raise AssertionError("unreachable")
+
+
+def build_title_card(title: str, tag: str, font: str, *, duration: float,
+                     measure: Measure | None = None, accent: str = CARD_ACCENT) -> list[str]:
+    """ASS Dialogue lines (style ``Card``) for the opening title card (pure).
+
+    Timeline (seconds), as in the HyperFrames trial: top scrim the whole clip; the kicker label
+    drops in 0.05-0.40, the accent bar wipes 0.20-0.65, headline words rise in from 0.30 with a
+    0.05 s stagger, then the whole card lifts 60 px and fades from :data:`CARD_OUT_SEC`.
+    """
+    measure = measure or approx_measure
+    tag, title = split_card_text(title, tag)
+    title = ass_escape(title).strip()
+    tag = ass_escape(tag).strip().upper()
+    font = _font_field(font)
+    duration = max(0.01, float(duration))
+    out: list[str] = []
+
+    def ev(layer: int, start: float, end: float, text: str) -> None:
+        end = min(end, duration)
+        if end > start and ass_time(end) != ass_time(start):
+            out.append(f"Dialogue: {layer},{ass_time(start)},{ass_time(end)},Card,,0,0,0,,{text}")
+
+    # top scrim: a stepped linear gradient, black at CARD_SCRIM_ALPHA -> transparent
+    bands = 26
+    bh = CARD_SCRIM_H / bands
+    for i in range(bands):
+        a = 255 - int(round(255 * CARD_SCRIM_ALPHA * (1 - (i + 0.5) / bands)))
+        ev(0, 0.0, duration, f"{{\\an7\\pos(0,{int(round(i * bh))})\\bord0\\shad0\\1c&H000000&\\1a&H{a:02X}&\\p1}}"
+                             f"{_rounded_rect(OUT_W, math.ceil(bh), 0)}{{\\p0}}")
+    if not title and not tag:
+        return out
+
+    out_at = max(0.6, min(CARD_OUT_SEC, duration - CARD_OUT_DUR))
+    out_ms = int(round(CARD_OUT_DUR * 1000))
+    acc = _inline_color(accent, CARD_ACCENT)
+
+    def two_phase(layer: int, x: float, y: float, base: str, body: str, *, in_ms: tuple[int, int] | None,
+                  dy_in: int = 0, extra_in: str = "") -> None:
+        """One element: [0, out_at) entering (optional move/fade), [out_at, +0.45s) lifting away."""
+        xi, yi = int(round(x)), int(round(y))
+        if in_ms:
+            t1, t2 = in_ms
+            anim = (f"\\move({xi},{yi + dy_in},{xi},{yi},{t1},{t2})" if dy_in else f"\\pos({xi},{yi})")
+            anim += f"\\fade(255,0,0,{t1},{t2},{t2},{t2})"
+        else:
+            anim = f"\\pos({xi},{yi})"
+        ev(layer, 0.0, out_at, "{\\an7" + anim + base + extra_in + "}" + body)
+        ev(layer, out_at, out_at + CARD_OUT_DUR,
+           f"{{\\an7\\move({xi},{yi},{xi},{yi - 60},0,{out_ms})\\fad(0,{out_ms}){base}}}{body}")
+
+    y = float(CARD_TOP)
+    if tag:
+        tag_h = CARD_TAG_CSS * CARD_EM_RATIO + 2 * CARD_TAG_PAD_Y
+        sp = CARD_TAG_SPACING * CARD_TAG_CSS
+        tag_w = measure(tag, CARD_TAG_CSS) + sp * len(tag) + 2 * CARD_TAG_PAD_X
+        drop = (50, 400)
+        two_phase(5, CARD_X, y, f"\\bord0\\shad0\\1c{acc}\\p1", _rounded_rect(tag_w, tag_h, 8) + "{\\p0}",
+                  in_ms=drop, dy_in=-40)
+        two_phase(6, CARD_X + CARD_TAG_PAD_X, y + CARD_TAG_PAD_Y,
+                  f"\\fn{font}\\fs{round(CARD_TAG_CSS * CARD_EM_RATIO)}\\fsp{sp:.1f}\\b1\\bord0\\shad0\\1c&H000000&",
+                  tag, in_ms=drop, dy_in=-40)
+        y += tag_h + CARD_TAG_GAP
+    # accent bar: wipes from 0 to full width (scale-x from the left edge, eased out)
+    two_phase(5, CARD_X, y, f"\\bord0\\shad0\\1c{acc}", "{\\p1}" + _rounded_rect(CARD_BAR_W, CARD_BAR_H, 5)
+              + "{\\p0}", in_ms=None, extra_in="\\fscx0\\t(200,650,0.5,\\fscx100)")
+    y += CARD_BAR_H + CARD_BAR_GAP
+    if title:
+        size, lines = layout_card_title(title, measure)
+        lh = size * CARD_TITLE_LINE_HEIGHT
+        fs = round(size * CARD_EM_RATIO)
+        off = (lh - fs) / 2          # CSS centres the taller font cell on the line box
+        base = (f"\\fn{font}\\fs{fs}\\fsp{CARD_TITLE_SPACING * size:.1f}\\b1\\1c&HFFFFFF&"
+                f"\\bord2\\3c&H000000&\\3a&HB0&\\blur3\\shad5\\4c&H000000&\\4a&H70&")
+        k = 0
+        for li, line in enumerate(lines):
+            for word, wx in line:
+                t1 = 300 + 50 * k
+                two_phase(6, CARD_X + wx, y + li * lh + off, base, word, in_ms=(t1, t1 + 400), dy_in=60)
+                k += 1
+    return out
+
+
 def build_ass(words: list[dict], clip_start: float, caption_style: dict, *, hook_text: str = "",
-              credit_text: str = "", duration: float, hook_sec: float = HOOK_SEC) -> str:
+              credit_text: str = "", duration: float, hook_sec: float = HOOK_SEC,
+              title_text: str = "", card_tag: str = "", measure: Measure | None = None) -> str:
     """Build the ASS subtitle file (pure).
 
     ``words`` are transcript words with absolute source times (``start``, ``end``,
     ``word``); they are shifted by ``clip_start`` and clipped to ``[0, duration]``.
     Captions: lines of up to ``max_words_per_line`` words, the spoken word
     highlighted (``word_pop``: colour + pop scale; ``karaoke``: progressive colour
-    fill; ``none``: plain lines). Hook: big boxed text in the top third for
+    fill; ``none``: plain lines). Opening: with ``caption_style["title_card"] == "card"``
+    (default) the animated title card (:func:`build_title_card`) from ``title_text``
+    (else ``hook_text``) and ``card_tag``; with ``"hook"`` the old big boxed hook for
     ``hook_sec``. Credit: small line at the top, visible for the whole clip.
     """
     duration = max(0.01, float(duration))
