@@ -92,7 +92,41 @@ DEFAULT_CAPTION_STYLE: dict[str, Any] = {
     "uppercase": True,
     "animation": "word_pop",
     "framing": "auto",
+    # "card" = the HyperFrames-style opening title card the owner chose on 2026-11-17 (yellow kicker
+    # label, wiping accent bar, headline words rising in, lifting away at ~3 s); "hook" = the old boxed hook.
+    "title_card": "card",
 }
+
+# Title card layout, ported from the HyperFrames trial (data/experiments/hyperframes/trial/index.html).
+# Sizes are CSS pixels (what the trial used); ASS font sizes are CSS size x CARD_EM_RATIO because
+# libass sizes a font by its ascent+descent cell, CSS by its em (Arial Black: (2254+634)/2048).
+CARD_EM_RATIO = 1.41
+CARD_X = 70
+CARD_W = OUT_W - 2 * CARD_X                # 940
+CARD_TOP = 190
+CARD_TAG_CSS = 34
+CARD_TAG_PAD_X, CARD_TAG_PAD_Y = 22, 10
+CARD_TAG_SPACING = 0.08                    # em
+CARD_TAG_GAP = 22                          # tag -> bar
+CARD_BAR_W, CARD_BAR_H, CARD_BAR_GAP = 260, 10, 18
+CARD_TITLE_CSS = (88, 76, 66, 58)          # shrink until the headline fits CARD_TITLE_MAX_LINES
+CARD_TITLE_MAX_LINES = 3
+CARD_TITLE_LINE_HEIGHT = 1.02
+CARD_TITLE_SPACING = -0.02                 # em
+CARD_WORD_GAP = 24                         # margin-right between headline words
+CARD_OUT_SEC = 3.0                         # lift-away starts
+CARD_OUT_DUR = 0.45
+CARD_SCRIM_H = 520                         # dark gradient behind the card and the credit
+CARD_SCRIM_ALPHA = 0.8
+CARD_ACCENT = "#FFD400"
+
+# measure(text, css_px) -> rendered width in px (render_clip passes a Pillow measurer for the real font)
+Measure = Callable[[str, float], float]
+
+
+def approx_measure(text: str, css_px: float) -> float:
+    """Rough width of ``text`` in a heavy sans at ``css_px`` (used when the font file can't be read)."""
+    return sum((0.42 if ch == " " else 0.80 if ch.isupper() or ch.isdigit() else 0.66) for ch in text) * css_px
 
 # Heavy, legible fonts tried in order when the configured font is not installed. Plain
 # "Montserrat" matches the variable-weight install (Bold=-1 then selects a heavy weight);
@@ -341,6 +375,8 @@ def merged_caption_style(caption_style: dict[str, Any] | None) -> dict[str, Any]
         style["position"] = "lower_third"
     if style.get("animation") not in ("word_pop", "karaoke", "none"):
         style["animation"] = "word_pop"
+    if style.get("title_card") not in ("card", "hook"):
+        style["title_card"] = "card"
     return style
 
 

@@ -107,11 +107,13 @@ CAPTION_STYLE_KEYS: dict[str, type | tuple[type, ...]] = {
     "uppercase": bool,
     "animation": str,         # word_pop | karaoke | none
     "framing": str,           # auto | center_crop | blur_fill | fit (optional; default auto)
+    "title_card": str,        # card | hook (optional; default card = the owner's chosen opening title)
 }
 CAPTION_STYLE_CHOICES: dict[str, tuple[str, ...]] = {
     "position": ("top", "center", "lower_third"),
     "animation": ("word_pop", "karaoke", "none"),
     "framing": ("auto", "center_crop", "blur_fill", "fit"),
+    "title_card": ("card", "hook"),
 }
 
 REQUIRED_KEYS = (

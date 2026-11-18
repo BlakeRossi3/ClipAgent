@@ -309,6 +309,7 @@ FINALIZE_SCHEMA: dict[str, Any] = {
                     "description": {"type": "string"},
                     "hashtags": {"type": "array", "items": {"type": "string"}},
                     "hook_text": {"type": "string"},
+                    "card_tag": {"type": "string"},
                     "rationale": {"type": "string"},
                 },
                 "required": ["start_sec", "end_sec", "title", "description", "hashtags", "hook_text",
@@ -341,8 +342,9 @@ Cutting rules:
 - Clips must make sense with zero context and must not overlap. Order clips best first. Fewer is better than weak: return an empty list if nothing is genuinely good.
 
 Metadata rules:
-- title: at most 100 characters, plain text.
-- hook_text: on-screen text for the first ~3 seconds.
+- title: at most 100 characters, plain text. The title is also the big headline of the on-screen title card for the first ~3 seconds, so make it read well there (e.g. "The coolest thing an astronaut has seen in space").
+- card_tag: a 2-4 word series-style kicker shown in a small label above that headline, e.g. "Ask an astronaut", "Webb telescope", "Mars rover", "Climate check". At most 24 characters, no punctuation.
+- hook_text: a short punchy line (backup on-screen text when there is no title).
 - description: 1-3 plain sentences on what happens and who speaks (only if the transcript or source title says so). No links, @mentions, hashtags or credit line (added automatically).
 - hashtags: 2-4 specific tags like "#Artemis"; the channel defaults are added automatically.
 - rationale: one or two sentences on why this cut works.
@@ -550,6 +552,7 @@ class Candidate:
     rank: int                     # position in Sonnet's output (0 = best)
     haiku_score: float | None = None
     haiku_reason: str | None = None   # the best overlapping window's Haiku reason (audit/dashboard)
+    card_tag: str = ""                # kicker label over the title card
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,6 +604,19 @@ def clean_title(v: Any) -> str:
     if len(s) >= 2 and s[0] in "\"'“" and s[-1] in "\"'”":
         s = s[1:-1].strip()
     return _public_text(s, TITLE_MAX_CHARS)
+
+
+CARD_TAG_MAX_CHARS = 24
+
+
+def clean_card_tag(v: Any) -> str:
+    """The title-card kicker: plain words only, at most :data:`CARD_TAG_MAX_CHARS` (cut on a word)."""
+    s = re.sub(r"[^\w '&-]+", " ", strip_links(str(v or ""), hashtags=True))
+    s = re.sub(r"\s+", " ", s).strip(" -'")
+    if len(s) > CARD_TAG_MAX_CHARS:
+        s = s[:CARD_TAG_MAX_CHARS + 1].rsplit(" ", 1)[0].strip(" -'") if " " in s[:CARD_TAG_MAX_CHARS + 1] \
+            else s[:CARD_TAG_MAX_CHARS]
+    return s
 
 
 def merge_hashtags(model_tags: Any, defaults: Sequence[str], limit: int = MAX_HASHTAGS) -> list[str]:
@@ -772,6 +788,7 @@ def postprocess_clips(
             hook_text=hook, rationale=_clean_text(c.get("rationale"), 1000), rank=rank,
             haiku_score=float(best[0]) if best else None,
             haiku_reason=(best[1] or None) if best else None,
+            card_tag=clean_card_tag(c.get("card_tag")),
         ))
     return accepted, rejected
 
@@ -960,6 +977,7 @@ def _finish(source_id: int, accepted: Sequence[Candidate], stats: dict, state: d
                 source_id, cand.start_sec, cand.end_sec, title=cand.title, description=cand.description,
                 hashtags=cand.hashtags, hook_text=cand.hook_text, credit_text=credit,
                 haiku_score=cand.haiku_score, sonnet_rationale=cand.rationale, haiku_reason=cand.haiku_reason,
+                card_tag=cand.card_tag,
                 strategy_version=strategy.version if strategy else None,
                 experiment_id=exp_id, experiment_variant=arm, conn=c))
         if ids or had_existing:

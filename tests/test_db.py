@@ -262,8 +262,8 @@ def test_v1_database_upgrades_in_place(tmp_path, monkeypatch):
     assert db.schema_version(path) == 1
 
     monkeypatch.undo()
-    assert db.init_db(path) == db.SCHEMA_VERSION == 3
-    assert db.schema_version(path) == 3
+    assert db.init_db(path) == db.SCHEMA_VERSION == 4
+    assert db.schema_version(path) == 4
     with db.transaction(db.connect(path)) as c:
         up = db.get_upload(7, conn=c)
         assert up.youtube_video_id == "vidOld" and up.quota_units == 1600 and up.lifetime_views is None
@@ -274,6 +274,9 @@ def test_v1_database_upgrades_in_place(tmp_path, monkeypatch):
         assert {"idx_uploads_clip", "idx_uploads_uploaded_at", "idx_notifications_sid", "idx_llm_usage_clip",
                 "idx_llm_usage_source", "idx_events_module_ts"} <= idx
         assert db.get_clip(1, conn=c).haiku_reason is None
+        assert db.get_clip(1, conn=c).card_tag == ""
+        db.update_clip(1, card_tag="ASK AN ASTRONAUT", conn=c)
+        assert db.get_clip(1, conn=c).card_tag == "ASK AN ASTRONAUT"
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
         c.commit()
 
