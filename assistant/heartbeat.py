@@ -177,11 +177,8 @@ def due_items(items: list[str], now: datetime | None = None) -> list[tuple[str, 
 def _mark_due_done(due: list[tuple[str, str]]) -> None:
     if not due:
         return
-    done = dict(db.kv_get(KV_DUE, {}) or {})
-    for kp, _item in due:
-        k, period = kp.split("|", 1)
-        done[k] = period
-    db.kv_set(KV_DUE, done)
+    marks = dict(kp.split("|", 1) for kp, _item in due)
+    db.kv_update(KV_DUE, lambda cur: {**(cur if isinstance(cur, dict) else {}), **marks}, {})
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +395,7 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     plan = _parse(reply.text)
 
     held = False
-    sent = dict(db.kv_get(KV_SENT, {}) or {})
+    sent_now: dict[str, Any] = {}
     for n in plan["notify"]:
         if _is_repeat(n["text"], recent):
             continue
@@ -417,11 +414,12 @@ def tick(*, force: bool = False) -> dict[str, Any]:
 
         tasks.say(n["text"], origin="any", task="heartbeat", urgency=n["urgency"])
         entry = {"text": n["text"], "at": db.now_iso()}
-        sent[_key(n["text"])] = entry
+        sent_now[_key(n["text"])] = entry
         recent[_key(n["text"])] = entry
         result["notified"] += 1
     cutoff = db.utcnow() - timedelta(hours=DEDUP_HOURS)
-    db.kv_set(KV_SENT, {k: v for k, v in sent.items() if isinstance(v, dict) and db.parse_iso(v["at"]) > cutoff})
+    db.kv_update(KV_SENT, lambda cur: {k: v for k, v in {**(cur if isinstance(cur, dict) else {}), **sent_now}.items()
+                                       if isinstance(v, dict) and db.parse_iso(v["at"]) > cutoff}, {})
 
     for t in plan["tasks"]:
         if quiet:

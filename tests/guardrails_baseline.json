@@ -1,27 +1,5 @@
 {
- "kv_read_then_write": {
-  "assistant/checkins.py::send_due::f\"checkins:reasked:{chk.id}\"": 1,
-  "assistant/events.py::drain_outbox::KV_OUTBOX_DONE": 1,
-  "assistant/heartbeat.py::_mark_due_done::KV_DUE": 1,
-  "assistant/heartbeat.py::tick::KV_SENT": 1,
-  "assistant/history_import.py::init_tables::VERSION_KEY": 1,
-  "assistant/hud.py::geocode::KV_GEO.format(q=q)": 1,
-  "assistant/initiative.py::announcement::KV_REPORTED": 1,
-  "assistant/initiative.py::seed::KV_SEEDED": 1,
-  "assistant/page_reader.py::act::KV_ACTION": 1,
-  "assistant/page_reader.py::finish_action::KV_ACTION": 1,
-  "assistant/page_reader.py::take_action::KV_ACTION": 2,
-  "assistant/retry.py::report_blocker::kv": 1,
-  "assistant/selfedit.py::_finish::KV_DIRTY_NOTED": 1,
-  "assistant/semantic.py::sync::_ROOT_KEY": 1,
-  "assistant/skill_catalog.py::_cached::key": 1,
-  "assistant/store.py::init_store::VERSION_KEY": 1,
-  "assistant/usage.py::_check_freed::KV_WAS_TIGHT": 1,
-  "assistant/usage.py::_infer_siblings::KV_WINDOW.format(kind=other)": 1,
-  "assistant/usage.py::poll_plan_usage::KV_POLL": 2,
-  "assistant/vault.py::sync_index::_ROOT_KEY": 1,
-  "scout.py::scout::\"scout:topic_cursor\"": 1
- },
+ "kv_read_then_write": {},
  "silent_excepts": {
   "assistant/admin.py::_assistant_name": 1,
   "assistant/admin.py::_ensure_tables": 1,

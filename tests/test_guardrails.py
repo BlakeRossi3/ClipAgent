@@ -84,7 +84,9 @@ def _calls_in_order(fn: ast.AST, src: str) -> list[tuple[int, str, ast.Call]]:
 
 
 def kv_read_then_write() -> Counter:
-    """``kv_get(K)`` then ``kv_set(K, ...)`` in one function: use ``db.kv_update`` / ``db.kv_append``."""
+    """``x = kv_get(K)`` then ``kv_set(K, <something computed from x>)`` in one function: an append, merge or
+    count that a second writer can interleave with. Use ``db.kv_update`` / ``db.kv_append``. (Replacing a
+    whole value, e.g. a refreshed cache, is fine and not flagged.)"""
     out: Counter = Counter()
     for p in _files():
         if p.name == "db.py":
@@ -93,15 +95,24 @@ def kv_read_then_write() -> Counter:
         for fn in ast.walk(ast.parse(src)):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            read: dict[str, int] = {}
-            for line, name, c in _calls_in_order(fn, src):
-                if not c.args:
-                    continue
-                key = ast.get_source_segment(src, c.args[0]) or ""
-                if name.endswith("kv_get"):
-                    read.setdefault(key, line)
-                elif name.endswith("kv_set") and key in read and read[key] < line:
-                    out[f"{_rel(p)}::{fn.name}::{key}"] += 1
+            # names holding a kv value read in this function (and names computed from them, one level)
+            tainted: dict[str, str] = {}
+            for node in sorted((n for n in ast.walk(fn) if isinstance(n, ast.Assign)), key=lambda n: n.lineno):
+                names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+                keys = [tainted[x] for x in names if x in tainted]
+                for c in (n for n in ast.walk(node.value) if isinstance(n, ast.Call)):
+                    if (ast.get_source_segment(src, c.func) or "").endswith("kv_get") and c.args:
+                        keys.append(ast.get_source_segment(src, c.args[0]) or "")
+                for t in node.targets:
+                    for nm in (n.id for n in ast.walk(t) if isinstance(n, ast.Name)):
+                        if keys:
+                            tainted[nm] = keys[0]
+            for _line, name, c in _calls_in_order(fn, src):
+                if name.endswith("kv_set") and len(c.args) >= 2:
+                    key = ast.get_source_segment(src, c.args[0]) or ""
+                    used = {n.id for n in ast.walk(c.args[1]) if isinstance(n, ast.Name)}
+                    if any(tainted.get(u) == key for u in used):
+                        out[f"{_rel(p)}::{fn.name}::{key}"] += 1
     return out
 
 

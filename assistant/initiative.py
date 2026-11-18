@@ -694,7 +694,7 @@ def announcement() -> str:
     newest = items[0].finished_at or db.now_iso()
     if not db.kv_set_if_absent(f"{KV_REPORTED}:{newest}", db.now_iso()):
         return ""
-    db.kv_set(KV_REPORTED, newest)
+    db.kv_update(KV_REPORTED, lambda cur: max(cur, newest) if isinstance(cur, str) else newest)
     names = [_short(it) for it in reversed(items[:3])]
     more = len(items) - len(names)
     tail = f", plus {more} more thing{'s' if more != 1 else ''}" if more > 0 else ""

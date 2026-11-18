@@ -547,9 +547,8 @@ def scout(max_candidates: int | None = None, strategy: Strategy | None = None) -
         # round-robin across topics, rotating the starting topic each run, with a per-topic share cap
         order = [t["query"] for t in strat.topics if pools.get(t["query"])]
         if order:
-            start = int(db.kv_get("scout:topic_cursor", 0) or 0) % len(order)
+            start = (db.kv_incr("scout:topic_cursor") - 1) % len(order)   # atomic: never two runs on one start
             order = order[start:] + order[:start]
-            db.kv_set("scout:topic_cursor", start + 1)
         per_topic = max(1, math.ceil(cap * TOPIC_SHARE))
         taken: Counter = Counter()
         new_ids: list[int] = []

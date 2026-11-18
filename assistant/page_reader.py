@@ -291,16 +291,20 @@ def take_action(*, mark_seen: bool = True) -> dict[str, Any] | None:
     """The extension's poll: mark it connected and hand over the pending action (once)."""
     if mark_seen:
         db.kv_set(KV_SEEN, db.now_iso())
-    act = db.kv_get(KV_ACTION)
-    if not isinstance(act, dict) or act.get("status") != "pending":
+    got: dict[str, Any] = {}
+
+    def claim(act: Any) -> Any:   # atomic: two polls at once can never both take (and run) one click
+        if not isinstance(act, dict) or act.get("status") != "pending":
+            return act
+        if _seconds_since(act.get("created_at")) > ACTION_EXPIRE_S:
+            return {**act, "status": "expired"}
+        got.update(act)
+        return {**act, "status": "taken"}
+
+    db.kv_update(KV_ACTION, claim)
+    if not got:
         return None
-    if _seconds_since(act.get("created_at")) > ACTION_EXPIRE_S:
-        act["status"] = "expired"
-        db.kv_set(KV_ACTION, act)
-        return None
-    act["status"] = "taken"
-    db.kv_set(KV_ACTION, act)
-    return {k: act[k] for k in ("id", "kind", "label", "occurrence", "text", "url", "direction") if k in act}
+    return {k: got[k] for k in ("id", "kind", "label", "occurrence", "text", "url", "direction") if k in got}
 
 
 def finish_action(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -315,17 +319,21 @@ def finish_action(payload: dict[str, Any]) -> dict[str, Any] | None:
             title = save_capture(capture)["title"]
         except PageReaderError:
             pass
-    act = db.kv_get(KV_ACTION)
-    if not isinstance(act, dict) or act.get("id") != payload.get("id"):
-        return None  # a late answer to an action that was replaced: the capture is still useful
-    act["status"] = "done" if payload.get("ok") else "failed"
-    act["detail"] = _clean(payload.get("detail"), 300, keep_newlines=False)
-    if payload.get("capture_error"):
-        act["capture_error"] = _clean(payload.get("capture_error"), 200, keep_newlines=False)
-    act["finished_at"] = db.now_iso()
-    act["page_title"] = title
-    db.kv_set(KV_ACTION, act)
-    return act
+    done: dict[str, Any] = {}
+
+    def record(act: Any) -> Any:
+        if not isinstance(act, dict) or act.get("id") != payload.get("id"):
+            return act  # a late answer to an action that was replaced: the capture is still useful
+        new = {**act, "status": "done" if payload.get("ok") else "failed",
+               "detail": _clean(payload.get("detail"), 300, keep_newlines=False),
+               "finished_at": db.now_iso(), "page_title": title}
+        if payload.get("capture_error"):
+            new["capture_error"] = _clean(payload.get("capture_error"), 200, keep_newlines=False)
+        done.update(new)
+        return new
+
+    db.kv_update(KV_ACTION, record)
+    return done or None
 
 
 def _wait_for(action_id: str, timeout_s: float) -> dict[str, Any] | None:
@@ -350,10 +358,9 @@ def act(kind: str, *, timeout_s: float = ACTION_TIMEOUT_S, **kw: Any) -> dict[st
     if not isinstance(res, dict) or res.get("id") != queued["id"]:
         return {"done": False, "say": "Another page action replaced this one before it ran."}
     if res.get("status") not in ("done", "failed"):
-        cur = db.kv_get(KV_ACTION)
-        if isinstance(cur, dict) and cur.get("id") == queued["id"] and cur.get("status") == "pending":
-            cur["status"] = "expired"  # never let it run late, after Cecil has moved on
-            db.kv_set(KV_ACTION, cur)
+        db.kv_update(KV_ACTION, lambda cur: {**cur, "status": "expired"}   # never run late, after Cecil moved on
+                     if isinstance(cur, dict) and cur.get("id") == queued["id"] and cur.get("status") == "pending"
+                     else cur)
         return {"done": False, "action": kind,
                 "say": "Chrome didn't answer in time; the page may still be loading. Read it before trying again."}
     out: dict[str, Any] = {"done": res["status"] == "done", "action": kind, "detail": res.get("detail", "")}
