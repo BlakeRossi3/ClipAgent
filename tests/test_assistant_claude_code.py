@@ -338,3 +338,18 @@ def test_permission_rules_allow_each_passed_server():
     rules = claude_code.permission_settings(mcp_tools=["memory_search"], extra_servers=["gmail", "bad name"])
     allow = rules["permissions"]["allow"]
     assert "mcp__gmail__*" in allow and not any("bad name" in a for a in allow)
+
+
+def test_pyright_plugin_installed_once_into_cecils_profile(cc, monkeypatch, clock):
+    monkeypatch.setattr(claude_code.shutil, "which", lambda name: None)
+    assert claude_code.ensure_pyright()["status"] == "no_server" and not cc.calls   # npm i -g pyright first
+    monkeypatch.setattr(claude_code.shutil, "which", lambda name: "/usr/bin/pyright-langserver")
+    cc.outputs = [claude_code.Completed(1, "", "marketplace not found"), claude_code.Completed(0, "Installed", "")]
+    assert claude_code.ensure_pyright()["status"] == "no_server"                    # retried after 12 h only
+    clock.advance(hours=13)
+    assert claude_code.ensure_pyright()["status"] == "installed"
+    first, second = (c["argv"] for c in cc.calls)
+    assert first[1:4] == ["plugin", "install", "pyright-lsp@claude-plugins-official"]
+    assert "--marketplace" in second and "anthropics/claude-plugins-official" in second
+    claude_code.ensure_pyright()
+    assert len(cc.calls) == 2                                                       # installed: never again
