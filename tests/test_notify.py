@@ -431,16 +431,12 @@ def test_no_token_dry_run_refuses_requests_relayed_by_a_proxy(settings, clock):
     assert db.get_decision(did).status == "pending"
 
 
-def test_daily_notification_cap_stops_a_storm(live, clock):
-    for i in range(notify.MAX_NOTIFICATIONS_PER_DAY + 5):
+def test_no_daily_cap_on_texts(live, clock):
+    """Blake: no cap at all. 30 texts in a day all go out; none is skipped."""
+    for i in range(30):
         notify.sms(f"message {i}", kind="job_error")
-    assert len(live.messages.created) == notify.MAX_NOTIFICATIONS_PER_DAY
-    skipped = rows("skipped")
-    assert len(skipped) == 5 and "daily cap" in skipped[0].error
-    assert len([e for e in db.list_events(module="notify", level="warning") if "daily cap" in e.message]) == 1
-    clock.advance(days=1)
-    notify.sms("tomorrow", kind="job_error")
-    assert len(live.messages.created) == notify.MAX_NOTIFICATIONS_PER_DAY + 1
+    assert len(live.messages.created) == 30 and rows("skipped") == []
+    assert not hasattr(notify, "MAX_NOTIFICATIONS_PER_DAY")
 
 
 def test_sms_from_stranger_ignored(approval, client, applied):

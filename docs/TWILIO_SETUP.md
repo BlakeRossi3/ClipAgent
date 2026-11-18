@@ -103,6 +103,6 @@ WhatsApp state, and explains each problem with the exact fix. Common codes:
 | 63016 | Outside WhatsApp's 24-hour window | Send any WhatsApp message |
 | 63007 | Wrong WhatsApp From number | Use the number on the sandbox page |
 
-Defaults that still apply on every channel: quiet hours 22:00-08:00 (non-urgent texts wait), at most
-25 calls + texts per day, urgent problem calls de-duplicated for 6 hours. Never commit `config.env`;
+Defaults that still apply on every channel: quiet hours 22:00-08:00 (non-urgent texts wait), no daily
+cap on calls or texts, urgent problem calls de-duplicated for 6 hours. Never commit `config.env`;
 if the Auth Token leaks, rotate it in the console.

@@ -56,9 +56,9 @@ GATHER_MAX_ATTEMPTS = 3             # prompts per approval call before falling b
 RING_TIMEOUT_SEC = 25               # how long the phone rings before "no-answer"
 MAX_SPOKEN_CHARS = 700              # ~45 s of speech
 MAX_SMS_CHARS = 1500                # Twilio hard limit is 1600
-# Backstop against call loops / SMS storms: at most this many calls+texts reach the owner's phone
-# per local day (sent or attempted). Further sends are recorded as ``skipped`` with a warning event.
-MAX_NOTIFICATIONS_PER_DAY = 25
+# No daily cap on calls/texts to the owner (Blake: "there should be no cap at all"). Storms are still
+# contained elsewhere: urgent-call de-duplication (URGENT_CALL_DEDUP_HOURS), one job_error text per job
+# per day, quiet hours for non-urgent kinds.
 
 _MACHINE_PREFIXES = ("machine", "fax")
 _FAILED_CALL_STATUSES = {"busy", "no-answer", "failed", "canceled"}
@@ -267,16 +267,6 @@ def _deliver(notification_id: int, channel: str, kind: str, text: str, decision_
 
         messaging.hold(notification_id, route.reason)
         return "queued"
-    day_start, day_end = db.local_day_bounds()
-    used = db.count_notifications_between(day_start, day_end, status=("sent", "failed"), channels=("call", "sms"))
-    if used >= MAX_NOTIFICATIONS_PER_DAY:
-        db.update_notification(notification_id, status="skipped",
-                               error=f"daily cap of {MAX_NOTIFICATIONS_PER_DAY} calls/texts reached")
-        if db.kv_set_if_absent(f"notify:daily_cap:{db.local_today().isoformat()}", db.now_iso()):
-            db.log_event(MODULE, f"daily cap of {MAX_NOTIFICATIONS_PER_DAY} calls/texts reached; "
-                         "further notifications today are only recorded", level="warning",
-                         data={"notification_id": notification_id, "kind": kind})
-        return "skipped"
     try:
         client = _get_client(s)
         if channel == "call":

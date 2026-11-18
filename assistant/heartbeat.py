@@ -15,7 +15,7 @@ HEARTBEAT.md poisoning taught us:
 * **One fast call otherwise** (``assistant/quick.py``: ASSISTANT_QUICK_MODEL; assistant budget), with the checklist
   and the status snapshot wrapped as untrusted data. It answers JSON:
   ``{"notify": [{"text", "urgency": "low|normal|urgent"}], "tasks": [{"task", "why"}], "nothing": bool}``.
-* **Notifications** go through ``tools.send_to_owner`` (daily cap; quiet hours: urgent only),
+* **Notifications** go through ``tools.send_to_owner`` (no daily cap; quiet hours: urgent only),
   never the same point twice within :data:`DEDUP_HOURS`, and are spoken by the voice process and
   the Jarvis page (``tasks.say``: a ``task_done`` voice message with origin ``any`` + a live event).
 * **Tasks** go to a background worker session exactly like the brain's ``start_task`` (``assistant/tasks.py``): one at a
