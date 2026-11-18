@@ -59,7 +59,8 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TIMEZONE", "America/New_York")
     monkeypatch.setenv("SETUP_COMPLETE", "true")  # the web setup wizard's redirect is tested in test_setup_web
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))  # never the owner's real vault
-    # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
+    # never his real Google sign-in file (it sits in the app folder once YouTube is connected)
+    monkeypatch.setattr(config, "DEFAULT_CLIENT_SECRETS", tmp_path / "no-client_secret.json")    # never the real Claude Code CLI: a path that does not exist = "not installed" (tests inject a runner)
     monkeypatch.setenv("ASSISTANT_CLAUDE_BIN", str(tmp_path / "no-claude" / "claude"))
     # never git-commit / reset / branch the real checkout: self-editing works on a folder that is not a repo
     from assistant import selfedit
@@ -96,8 +97,12 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     llm.reset()
     config.get_settings().ensure_dirs()
     yield
-    # NOT None: None means "the real checkout", and a background thread that outlives its test (a worker
-    # with the self-edit guard) would then commit to / switch branches in the real repo. It did once.
+    # a background task still finishing would write to the real DB/vault once the env is restored below
+    from assistant import tasks
+    stuck = tasks.join_all(30)
+    assert not stuck, f"background task threads outlived the test: {stuck}"
+    # NOT None: None means "the real checkout", and a thread that outlives its test (a worker with the
+    # self-edit guard) would then commit to / switch branches in the real repo. It did once.
     selfedit.set_app_dir(tmp_path / "no-repo-after-test")
     claude_code.set_claude_json(None)
     hud.reset()

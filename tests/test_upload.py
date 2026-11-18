@@ -355,11 +355,11 @@ def test_live_upload_scheduled(clock, live, fake_yt, rendered_clip):
     assert len(fake_yt.insert_calls) == 1
 
 
-def test_live_upload_immediate_uses_default_privacy(clock, live, fake_yt, rendered_clip):
+def test_live_upload_immediate_goes_public(clock, live, fake_yt, rendered_clip):
     cid = rendered_clip()
     uid = upload.upload_clip(cid, immediate=True)
     body = fake_yt.insert_calls[0]["body"]
-    assert body["status"]["privacyStatus"] == "private" and "publishAt" not in body["status"]
+    assert body["status"]["privacyStatus"] == "public" and "publishAt" not in body["status"]
     assert db.get_upload(uid).publish_at is None
 
 

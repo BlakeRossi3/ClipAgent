@@ -628,7 +628,8 @@ def upload_clip(clip_id: int, publish_at: datetime | None = None, *, immediate: 
         youtube = holder.get("s")
 
     slot = _resolve_slot(publish_at, immediate)
-    body = build_metadata(clip, source, settings=settings, strategy=strat, publish_at=slot)
+    body = build_metadata(clip, source, settings=settings, strategy=strat, publish_at=slot,
+                          privacy="public" if immediate else None)
     privacy = body["status"]["privacyStatus"]
     # atomic check-and-insert: a concurrent process (scheduler + CLI) cannot start a second insert
     upload_id = db.claim_upload(clip_id, privacy=privacy, publish_at=db.to_iso(slot) if slot else None,

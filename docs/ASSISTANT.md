@@ -133,6 +133,11 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   public scoreboard JSON -> a wide tile (key `nfl-scores`, 16 h) with every game of the week, his team first
   and marked (kv `nfl:team`, default NYG), and stats (team star, shootout, rout, nail-biters, top passer).
   Jobs `assistant_nfl_monday` (Mon 08:05) and `assistant_nfl_mnf` (Mon 23:40). Tests: `nfl.set_http`.
+* **Islanders live** (`assistant/nhl.py`, tool `nhl_games`, CLI `python -m assistant.nhl [tick|show|schedule|refresh]`):
+  the NHL public API's club season schedule (regular season + playoffs, cached) and, every minute, the game in its
+  window: a preview tile 90 min before puck drop, a live wide tile (key `nhl-islanders`) with score, period/clock,
+  shots, hits/blocks, PP goals/PIM, last goal, top Islanders, goalies and the three stars, and the final for 4 h.
+  Closing the tile mutes that game until he asks. Each game is listed on the Scheduled page. Tests: `nhl.set_http`.
 * **Page reader** (`assistant/page_reader.py`, tools `page_read` + `page_act`, CLI `python -m assistant.page_reader [show|clear]`):
   the unpacked Chrome extension `extension/page-reader/` keeps the active tab's url, title, selection, headings, text
   and numbered control labels (never field values or password fields) current in `POST /pagereader/capture` by itself

@@ -103,6 +103,7 @@ PLANNED_TOOLS: dict[str, str] = {
     "ideas_list": "assistant.ideas",
     "autofix_log": "assistant.autofix",
     "nfl_scores": "assistant.nfl",
+    "nhl_games": "assistant.nhl",
     "page_read": "assistant.page_reader",
     "page_act": "assistant.page_reader",
     "ledger_log_hours": "assistant.ledger",
@@ -174,7 +175,7 @@ EXTENSION_MODULES = ("assistant.ledger", "assistant.meals", "assistant.checkins"
                      "assistant.hud", "assistant.selfcheck", "assistant.fast_search", "assistant.approvals",
                      "assistant.skill_catalog", "assistant.speaking_style", "assistant.selfedit", "assistant.needs", "assistant.usage_report", "assistant.capabilities",
                      "assistant.schedule", "assistant.handoff", "assistant.initiative",
-                     "assistant.tiles", "assistant.nfl", "assistant.page_reader", "assistant.tasks", "assistant.ideas",
+                     "assistant.tiles", "assistant.nfl", "assistant.nhl", "assistant.page_reader", "assistant.tasks", "assistant.ideas",
                      "assistant.autofix", "assistant.screen")
 APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # Refused once a restricted third-party skill has been read in the turn: anything that messages or reaches

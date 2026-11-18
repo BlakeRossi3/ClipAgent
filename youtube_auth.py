@@ -54,11 +54,12 @@ from config import Settings, get_settings
 log = logging.getLogger(__name__)
 
 SCOPE_UPLOAD = "https://www.googleapis.com/auth/youtube.upload"
+SCOPE_MANAGE = "https://www.googleapis.com/auth/youtube"
 SCOPE_READONLY = "https://www.googleapis.com/auth/youtube.readonly"
 SCOPE_ANALYTICS = "https://www.googleapis.com/auth/yt-analytics.readonly"
 SCOPE_MONETARY = "https://www.googleapis.com/auth/yt-analytics-monetary.readonly"
 
-SCOPES: tuple[str, ...] = (SCOPE_UPLOAD, SCOPE_READONLY, SCOPE_ANALYTICS)
+SCOPES: tuple[str, ...] = (SCOPE_UPLOAD, SCOPE_MANAGE, SCOPE_READONLY, SCOPE_ANALYTICS)
 MONETARY_SCOPES: tuple[str, ...] = SCOPES + (SCOPE_MONETARY,)
 
 # --- Data API v3 quota ------------------------------------------------------

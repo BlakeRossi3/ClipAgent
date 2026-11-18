@@ -379,7 +379,7 @@ def _upload_batch(todo: list[db.Clip], limit: int | None, ids: list[int]) -> Non
         progress.step("upload", "upload", source_id=clip.source_id, clip_id=clip.id, title=clip.title or "",
                       detail=f"clip {clip.id}", done=i, total=len(todo))
         try:
-            ids.append(upload.upload_clip(clip.id))
+            ids.append(upload.upload_clip(clip.id, immediate=True))
         except (upload.UploadCapReached, upload.UploadAuthError) as exc:   # QuotaExhausted included
             routine = type(exc) is upload.UploadCapReached                  # the daily cap, not a problem
             db.log_event(MODULE, f"upload batch stopped: {exc}", level="info" if routine else "warning",
@@ -476,7 +476,7 @@ def manual(url: str, source_type: str | None = None, *, upload: bool = True) -> 
         with stage_lock("upload"):
             for clip in db.list_clips(["rendered", "scheduled"], source_id=sid):
                 try:
-                    upload_mod.upload_clip(clip.id)
+                    upload_mod.upload_clip(clip.id, immediate=True)
                 except (upload_mod.UploadCapReached, upload_mod.UploadAuthError) as exc:
                     db.log_event(MODULE, f"manual upload stopped: {exc}", level="warning",
                                  data={"clip_id": clip.id})
@@ -722,6 +722,8 @@ def assistant_job_specs() -> list[JobSpec]:
                 "cron", {"day_of_week": "mon", "hour": 8, "minute": 5}, "NFL scores tile after Sunday's games"),
         JobSpec("assistant_nfl_mnf", lambda: __import__("assistant.nfl", fromlist=["x"]).scheduled(),
                 "cron", {"day_of_week": "mon", "hour": 23, "minute": 40}, "NFL scores tile after Monday night"),
+        JobSpec("assistant_nhl_live", lambda: __import__("assistant.nhl", fromlist=["x"]).tick(),
+                "interval", {"minutes": 1}, "live Islanders game tile (idle between games)"),
     ] + _surprise_spec() + _initiative_specs() + ([JobSpec("assistant_heartbeat", lambda: __import__("assistant.heartbeat", fromlist=["x"]).tick()["status"],
                   "interval", {"minutes": get_assistant_settings().heartbeat_minutes},
                   "heartbeat: check Agent/Heartbeat.md against the live status")]
