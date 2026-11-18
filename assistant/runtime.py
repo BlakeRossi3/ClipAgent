@@ -181,6 +181,16 @@ class TurnResult:
     message_in_id: int | None = None
     message_out_id: int | None = None
     raw_text: str = ""
+    error: str = ""                  # what actually went wrong (status error/budget), for the rail and retries
+    error_kind: str = ""             # ClaudeCodeError.kind / budget reason (assistant.retry uses it)
+    track_id: str | None = None      # its row on the task rail (run_task), reused by a retry
+
+
+def error_text(exc: BaseException) -> tuple[str, str]:
+    """(kind, a short plain description) of why a run failed - never the canned apology."""
+    kind = str(getattr(exc, "kind", "") or getattr(exc, "reason", "") or "")
+    msg = " ".join(str(exc).split())[:300] or type(exc).__name__
+    return kind or "error", (f"{kind}: {msg}" if kind and not msg.lower().startswith(kind) else msg)
 
 
 @dataclass
@@ -761,9 +771,10 @@ def tasks_mod() -> Any:
     return tasks
 
 
-def _start_tracking(title: str, *, origin: str, heard: str, meta: dict[str, Any], control: Any) -> str | None:
+def _start_tracking(title: str, *, origin: str, heard: str, meta: dict[str, Any], control: Any,
+                    reuse_id: str | None = None) -> str | None:
     try:
-        tid = tasks_mod().track(title, origin=origin, heard=heard, meta=meta,
+        tid = tasks_mod().track(title, origin=origin, heard=heard, meta=meta, task_id=reuse_id,
                                 on_cancel=(lambda: control.cancel()) if control is not None else None)
     except Exception as exc:   # the rail is a view: never let it stop the work
         log.warning("request not put on the task rail: %s", exc)
@@ -773,11 +784,11 @@ def _start_tracking(title: str, *, origin: str, heard: str, meta: dict[str, Any]
     return tid
 
 
-def _end_tracking(tid: str | None, text: str, status: str, *, summary: str | None = None) -> None:
+def _end_tracking(tid: str | None, text: str, status: str, *, summary: str | None = None, error: str = "") -> None:
     if tid is None:
         return
     try:
-        tasks_mod().track_done(tid, text, status, summary=summary)
+        tasks_mod().track_done(tid, text, status, summary=summary, error=error)
     except Exception as exc:
         log.warning("task rail row not closed: %s", exc)
 
@@ -841,7 +852,7 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
     if attachments:
         parts.append(attachment_note(list(attachments)))
     user_content = "\n\n".join(p for p in parts if p)
-    status = "ok"
+    status, turn_error = "ok", ""
     try:
         raw, status = _run_agent(r, "main", user_content, channel=channel, parent_id=None)
     except AssistantBudgetExceeded as exc:
@@ -859,6 +870,7 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
         else:
             log.exception("assistant turn failed")
             status, raw = "error", _failure_text(exc, s)
+            turn_error = error_text(exc)[1]
     if control is not None and control.cancelled:
         # replaced by his next text, or stopped from the rail: no reply, nothing remembered from it
         db.log_event("assistant", "a request was stopped before it was answered",
@@ -868,7 +880,7 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
     text = persona.polish(raw, channel if channel in persona.CHANNEL_LIMITS else "dashboard", settings=s)
     if not text:  # the model produced nothing usable once the rules were applied
         text = f"Understood, {s.owner_honorific}."
-    _end_tracking(track_id, text, status)
+    _end_tracking(track_id, text, status, summary=f"Failed: {turn_error}" if turn_error else None, error=turn_error)
     out_id = None
     if deliver and channel == "sms":
         try:
@@ -887,11 +899,15 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
 
 
 def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bool = False,
-             kind: str = "task", context: dict[str, Any] | None = None, track: bool = True) -> TurnResult:
+             kind: str = "task", context: dict[str, Any] | None = None, track: bool = True,
+             track_meta: dict[str, Any] | None = None, track_id: str | None = None,
+             title: str | None = None) -> TurnResult:
     """Run ``agent_name`` on a task (scheduled briefs, tidy-ups, reviews).
 
     ``deliver=True`` texts the polished result to the owner (``kind`` e.g. ``morning_brief``;
     daily cap and quiet hours apply). Otherwise the text is returned (and logged as a system message).
+    The rail row gets ``track_meta`` (e.g. ``deferred_id``) and reuses ``track_id`` when given (a retry
+    of the same work shows as the same row). A failure's real cause is in ``TurnResult.error``.
     """
     s = get_assistant_settings()
     if is_stopped():
@@ -903,7 +919,8 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
         raise KeyError(f"unknown agent {agent_name!r}")
     out_channel = "sms" if deliver else channel
     user_content = _local_context(out_channel, context) + f"\n\n<task from=\"scheduler\">\n{task}\n</task>"
-    track_id = None
+    reuse_id, track_id = track_id, None
+    err_kind, err_text = "", ""
     if track and kind not in TRACK_SKIP_KINDS:
         control = None
         if getattr(r.backend, "whole_run", False):
@@ -917,24 +934,32 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
             who = home.agent_display(agent_name)
         except Exception:
             who = agent_name
-        title = f"{kind.replace('_', ' ').capitalize()}: {' '.join(task.split())}" if kind != "task" else task
+        title = title or (f"{kind.replace('_', ' ').capitalize()}: {' '.join(task.split())}" if kind != "task" else task)
         track_id = _start_tracking(title, origin="any", heard="",
-                                   meta={"via": "scheduled", "label": who, "staff": agent_name, "kind": kind},
-                                   control=control)
+                                   meta={"via": "scheduled", "label": who, "staff": agent_name, "kind": kind,
+                                         **(track_meta or {})},
+                                   control=control, reuse_id=reuse_id)
     status = "ok"
     try:
         raw, status = _run_agent(r, agent_name, user_content, channel=out_channel, parent_id=None)
     except AssistantBudgetExceeded as exc:
         status, raw = "budget", CANNED[exc.reason].format(h=s.owner_honorific, when=exc.when or "soon")
+        err_kind, err_text = error_text(exc)
     except Exception as exc:
         log.exception("assistant task failed")
         status, raw = ("cancelled" if r.control is not None and r.control.cancelled else "error"), _failure_text(exc, s)
+        err_kind, err_text = error_text(exc)
     text = persona.polish(raw, out_channel if out_channel in persona.CHANNEL_LIMITS else "system", settings=s)
     if not text:
         status, text = ("error" if status == "ok" else status), CANNED["error"].format(h=s.owner_honorific)
-    _end_tracking(track_id, text, status)
+        err_text = err_text or "the run produced no answer"
+    if status not in ("ok", "rounds") and not err_text:
+        err_text = {"denied": "Claude refused the request", "stopped": "I was switched off"}.get(status, status)
+    _end_tracking(track_id, text, status, summary=f"Failed: {err_text}" if err_text and status == "error" else None,
+                  error=err_text)
     if status == "cancelled":
-        return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, None, None, raw)
+        return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, None, None, raw,
+                          error=err_text, track_id=track_id)
     out_id = None
     if deliver and status == "ok":
         try:
@@ -943,7 +968,8 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
             db.log_event("assistant", f"{kind} not delivered", level="warning", data={"error": str(exc)})
     elif not deliver:
         out_id = store.add_message("out", "system", text, kind=kind, agent=agent_name, cost_usd=r.turn.spent)
-    return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, None, out_id, raw)
+    return TurnResult(text, round(r.turn.spent, 6), r.run_ids, ctx.calls, status, None, out_id, raw,
+                      error=err_text, error_kind=err_kind, track_id=track_id)
 
 
 def handle_inbound_sms(body: str) -> TurnResult | None:

@@ -48,7 +48,14 @@ INFERABLE = ("five_hour", "seven_day")   # the general windows; one's reading bo
 DEFER_THRESHOLD = 0.80        # non-urgent work waits once a window is this full
 HANDOFF_THRESHOLD = 0.90      # work in flight is handed over to the next window (assistant/handoff.py)
 RESET_GRACE = timedelta(minutes=5)
-MAX_PER_RUN = 3               # deferred prompts run per scheduler tick (they cost plan usage too)
+MAX_PER_RUN = 8               # deferred rows claimed per tick
+MAX_PARALLEL = 4              # deferred prompts running at once, each in its own thread (never one after another)
+MAX_ATTEMPTS = 6              # a background pass that keeps failing stops after this many tries ...
+FOREVER_KINDS = ("owner_request",)   # ... but his own requests are retried until they are done
+KV_WAS_TIGHT = "assistant:usage:was_tight"
+KIND_TITLES = {"auto_memory": "Memory pass", "initiative_harvest": "Backlog pass", "owner_request": "Your request",
+               "prompt": "Queued prompt", "reel": "Reel", "history": "History import", "evals": "Evals",
+               "improve": "Weekly improvement", "reflection": "Reflection", "distill": "Distil"}
 # Deferred kinds that are scheduler jobs (module:function), run as such when their time comes.
 JOB_FUNCS = {"improve": "assistant.improve:weekly_improvement"}
 NON_URGENT = ("history", "reflection", "evals", "reel", "improve", "distill", "prompt")
@@ -128,6 +135,7 @@ def record_window(info: dict[str, Any]) -> None:
         peak = max(peak, u)
     _record_overage(info)
     _after_reading(kind, status, peak, resets_iso)
+    _check_freed()
 
 
 KV_OVERAGE = "assistant:usage:overage"
@@ -251,6 +259,7 @@ def poll_plan_usage(*, force: bool = False) -> dict[str, Any]:
     s = get_assistant_settings()
     if not s.enabled or s.backend != "claude_code" or (s.fake and _poller is None):
         return {"status": "skipped", "reason": "assistant off, not on Claude Code, or fake"}
+    _check_freed()   # also notices a plan limit that simply ran out, with no new reading
     last = db.kv_get(KV_POLL)
     if not force and isinstance(last, dict) and last.get("ok") and last.get("at") \
             and db.utcnow() - db.parse_iso(last["at"]) < POLL_MIN_GAP:
@@ -265,6 +274,7 @@ def poll_plan_usage(*, force: bool = False) -> dict[str, Any]:
         return {"status": "error", "error": err}
     available = bool((resp or {}).get("rate_limits_available"))
     n = record_plan_usage(resp or {}) if available else 0
+    _check_freed()
     db.kv_set(KV_POLL, {"at": db.now_iso(), "ok": True, "error": None, "available": available, "windows": n,
                         "subscription": (resp or {}).get("subscription_type")})
     return {"status": "ok" if available else "unavailable", "windows": n}
@@ -423,13 +433,119 @@ def due(now: datetime | None = None) -> list[store.Deferred]:
     now = now or db.utcnow()
     tight, _ = constrained(threshold=1.01)   # only a real limit blocks after-reset items
     out = []
-    for d in store.list_deferred("queued"):
+    for d in store.list_deferred("queued", limit=500):
         if d.after_reset:
             if not tight:
                 out.append(d)
         elif d.run_after and db.parse_iso(d.run_after) <= now:
             out.append(d)
     return out
+
+
+# -- running the queue: parallel, retried, explained -----------------------------------
+
+def _spawn_thread(fn: Callable[[], Any]) -> None:
+    import threading
+
+    threading.Thread(target=fn, name="deferred", daemon=True).start()
+
+
+_spawn: Callable[[Callable[[], Any]], None] = _spawn_thread
+
+
+def set_spawner(fn: Callable[[Callable[[], Any]], None] | None) -> None:
+    """Tests: run the queue inline (``lambda f: f()``) instead of in threads."""
+    global _spawn
+    _spawn = fn or _spawn_thread
+
+
+def kick(reason: str = "") -> None:
+    """Start whatever is waiting, right now and without blocking: due deferred rows and due task retries.
+    Called when plan usage frees up again (:func:`_check_freed`) and when he asks for a retry."""
+    from assistant import tasks
+
+    def go() -> None:
+        for fn in (run_due, tasks.retry_due):
+            try:
+                fn()
+            except Exception as exc:   # one queue's trouble must not stop the other
+                log.warning("kick: %s failed: %s", getattr(fn, "__name__", fn), exc)
+
+    if reason:
+        db.log_event("assistant", f"starting waiting work ({reason})")
+    _spawn(go)
+
+
+def _check_freed() -> None:
+    """Plan usage just went from limited/tight to free: start everything that waited for it at once."""
+    try:
+        tight = constrained()[0]
+    except Exception:
+        return
+    was = bool(db.kv_get(KV_WAS_TIGHT, False))
+    if tight != was:
+        db.kv_set(KV_WAS_TIGHT, tight)
+    if was and not tight:
+        kick("Claude plan usage is free again")
+
+
+def _meta(d: store.Deferred) -> dict[str, Any]:
+    return dict(d.meta) if isinstance(d.meta, dict) else {}
+
+
+def title_of(d: store.Deferred) -> str:
+    if d.title:
+        return d.title
+    base = KIND_TITLES.get(d.kind, d.kind.replace("_", " ").capitalize())
+    if d.kind in ("owner_request", "prompt"):
+        first = " ".join((d.prompt or "").split())[:120]
+        return f"{base}: {first}" if first else base
+    return base
+
+
+def retry_later(d: store.Deferred, status: str, error: str, kind: str = "") -> bool:
+    """A claimed (``running``) row did not finish: back in the queue with a backoff (or until the plan
+    resets, for a plan limit), its real error kept. False when it has used its attempts (then ``failed``)."""
+    from assistant import retry, tasks
+
+    meta = _meta(d)
+    attempts = int(meta.get("attempts") or 0) + 1
+    why = error or retry.describe(status, kind)
+    meta.update(attempts=attempts, last_error=why[:300], last_status=status)
+    if d.kind not in FOREVER_KINDS and status != "budget" and attempts >= MAX_ATTEMPTS:
+        store.update_deferred(d.id, meta=meta)
+        store.set_deferred_status(d.id, "failed", result=f"Gave up after {attempts} attempts: {why}"[:500])
+        db.log_event("assistant", f"deferred {d.kind} #{d.id} gave up after {attempts} attempts", level="warning",
+                     data={"error": why[:300]})
+        tid = meta.get("track_id")
+        if tid:
+            tasks.track_done(tid, "", "error", summary=f"Gave up after {attempts} attempts: {why}"[:300], error=why)
+        return False
+    nxt = retry.next_try(status, attempts, kind)
+    plan = status == "budget"
+    store.update_deferred(d.id, meta=meta, run_after=None if plan else db.to_iso(nxt), after_reset=plan)
+    store.requeue_deferred(d.id)
+    tasks.track_retrying(meta.get("track_id"), nxt, why)
+    db.log_event("assistant", f"deferred {d.kind} #{d.id} will be retried", level="warning",
+                 data={"attempt": attempts, "status": status, "error": why[:300],
+                       "next_try": "after the plan resets" if plan else db.to_iso(nxt)})
+    return True
+
+
+def retry_deferred(did: int) -> bool:
+    """Run this deferred row again now (he asked): a failed one is reopened; a queued one is due at once."""
+    d = store.get_deferred(did)
+    if d is None:
+        return False
+    if d.status == "running":
+        return True
+    if d.status in ("failed", "cancelled"):
+        store.reopen_deferred(did)
+    elif d.status != "queued":
+        return False
+    store.update_deferred(did, run_after=db.now_iso(), after_reset=False)
+    kick()
+    return True
 
 
 def run_due(limit: int = MAX_PER_RUN) -> int:
@@ -451,17 +567,34 @@ def run_due(limit: int = MAX_PER_RUN) -> int:
     if claude_code.backoff_until() is not None:
         return 0
     n = 0
+    room = MAX_PARALLEL - sum(1 for d in store.list_deferred("running", limit=200) if d.kind not in schedule.TASK_KINDS)
     for d in due()[:limit]:
-        if n and claude_code.backoff_until() is not None:
+        if claude_code.backoff_until() is not None:
             break
-        if d.kind in schedule.TASK_KINDS and not schedule.can_start_task():
-            continue                       # two scheduled tasks already running: next tick
+        if d.kind in schedule.TASK_KINDS:
+            if not schedule.can_start_task():
+                continue                   # the scheduled-task slots are full: next tick (or the next kick)
+        elif room <= 0:
+            continue
         if not store.set_deferred_status(d.id, "running"):
             continue
         n += 1
-        if run_claimed(d) == "limited":
-            break
+        if d.kind in schedule.TASK_KINDS:
+            run_claimed(d)                 # starts its own background worker and returns at once
+        else:
+            room -= 1
+            _spawn(lambda d=d: _run_safely(d))
     return n
+
+
+def _run_safely(d: store.Deferred) -> None:
+    try:
+        run_claimed(d)
+    except Exception as exc:   # never leave a row stuck as "running"
+        log.exception("deferred row failed")
+        current = store.get_deferred(d.id) or d
+        if current.status == "running":
+            retry_later(current, "error", f"{type(exc).__name__}: {exc}"[:300])
 
 
 def run_claimed(d: store.Deferred) -> str:
@@ -472,7 +605,7 @@ def run_claimed(d: store.Deferred) -> str:
         try:
             schedule.start_row(d)
         except Exception as exc:
-            store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
+            retry_later(d, "error", f"could not start: {type(exc).__name__}: {exc}"[:300])
             return "failed"
         return "started"
     if d.kind in JOB_FUNCS:  # a deferred scheduler job: run its plain function, not a prompt
@@ -483,28 +616,33 @@ def run_claimed(d: store.Deferred) -> str:
             getattr(importlib.import_module(mod), fn)()
             store.set_deferred_status(d.id, "done", result="ran")
         except Exception as exc:
-            store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
+            retry_later(d, "error", f"{type(exc).__name__}: {exc}"[:300])
             return "failed"
         return "done"
     sms = d.channel == "sms"
-    task = (f"Earlier request from the owner (queued {d.created_at[:16]}Z because of the Claude plan limit; "
-            f"do it now and report the result):\n{d.prompt}" if d.kind == "owner_request" else d.prompt)
-    try:
-        res = runtime.run_task(d.agent, task, channel=d.channel if d.channel in ("sms", "dashboard") else "system",
-                               deliver=sms, kind="deferred")
-    except Exception as exc:
-        store.set_deferred_status(d.id, "failed", result=repr(exc)[:300])
+    meta = _meta(d)
+    task = (f"Earlier request from the owner (queued {d.created_at[:16]}Z; do it now and report the "
+            f"result):\n{d.prompt}" if d.kind == "owner_request" else d.prompt)
+    res = runtime.run_task(d.agent, task, channel=d.channel if d.channel in ("sms", "dashboard") else "system",
+                           deliver=sms, kind="deferred", title=title_of(d), track_meta={"deferred_id": d.id},
+                           track_id=meta.get("track_id"))
+    if res.track_id and res.track_id != meta.get("track_id"):
+        meta["track_id"] = res.track_id
+        store.update_deferred(d.id, meta=meta)
+        d = store.get_deferred(d.id) or d
+    if res.status == "ok":
+        mid = res.message_out_id
+        if d.channel == "dashboard":
+            mid = store.add_message("out", "dashboard", res.text, kind="deferred", agent=d.agent)
+        store.set_deferred_status(d.id, "done", result=res.text[:500], message_id=mid)
+        schedule.book_next(d)
+        return "done"
+    if res.status in ("cancelled", "denied"):   # he stopped it / a refusal: final
+        store.set_deferred_status(d.id, "cancelled" if res.status == "cancelled" else "failed",
+                                  result=(res.error or res.text)[:500])
         return "failed"
-    if res.status == "budget":   # limited again: back in the queue
-        store.requeue_deferred(d.id)
-        return "limited"
-    mid = res.message_out_id
-    if d.channel == "dashboard":
-        mid = store.add_message("out", "dashboard", res.text, kind="deferred", agent=d.agent)
-    ok = res.status == "ok"
-    store.set_deferred_status(d.id, "done" if ok else "failed", result=res.text[:500], message_id=mid)
-    schedule.book_next(d)
-    return "done" if ok else "failed"
+    retry_later(d, res.status, res.error, res.error_kind)
+    return "limited" if res.status == "budget" else "failed"
 
 
 def parse_at(at: str | None) -> datetime | None:

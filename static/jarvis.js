@@ -910,8 +910,15 @@
       var st = t.status || 'running', steps = (t.steps || []).map(function (s) { return String(s && s.label || ''); })
         .filter(Boolean), last = steps.length ? steps[steps.length - 1] : '';
       var running = st === 'running', took = running ? dur(t.started, null, nowMs) : dur(t.started, t.finished, nowMs);
-      var line = running ? 'Working · ' + took + (last ? ' · ' + last : '')
-        : word(st) + ' · ' + took + (t.summary ? ' · ' + t.summary : '');
+      var err = String(t.last_error || '').trim(), line;
+      if (running) line = 'Working · ' + took + (last ? ' · ' + last : '') + ((t.attempts || 0) > 1 ? ' · attempt ' + t.attempts : '');
+      else if (st === 'retrying') {
+        /* a countdown to the next attempt, never time since it first started */
+        var due = Date.parse(t.next_try || ''), left = due ? Math.round((due - nowMs) / 1000) : 0;
+        line = (left > 0 ? 'Retrying in ' + dur(new Date(nowMs).toISOString(), new Date(due).toISOString(), nowMs)
+          : 'Retrying now · waiting for a free slot') + (err ? ' · ' + err : '');
+      } else line = word(st) + ' · ' + took + (st !== 'done' && err && (t.summary || '').indexOf(err) < 0 ? ' · ' + err
+        : (t.summary ? ' · ' + t.summary : ''));
       var task = String(t.task || 'Task'), heard = String(t.heard || '').trim();
       var who = t.meta && t.meta.label ? String(t.meta.label) : '';   // "Text", "Chat", or the staff member on it
       return {
@@ -919,7 +926,9 @@
         detail: {
           request: task,
           heard: heard && heard !== task ? heard : '',
-          meta: (running ? 'Running for ' + took : word(st) + (took ? ' in ' + took : '')) + (steps.length ? ' · ' + steps.length + ' step' + (steps.length === 1 ? '' : 's') : ''),
+          meta: (running ? 'Running for ' + took : st === 'retrying' ? line : word(st) + (took ? ' in ' + took : ''))
+            + (steps.length ? ' · ' + steps.length + ' step' + (steps.length === 1 ? '' : 's') : '')
+            + ((t.attempts || 0) > 1 && st !== 'retrying' ? ' · ' + t.attempts + ' attempts' : ''),
           steps: steps,
           result: running ? '' : String(t.result || t.summary || '')
         }
@@ -1216,7 +1225,7 @@
   function closeBlade() { if (!bladeEl) return; bladeId = null; bladeEl.hidden = true; bladeEl.textContent = ''; root.classList.remove('has-blade'); }
   function renderRail() { renderSteps(); renderTasks(); renderPanels(); renderTrail(); }
   setInterval(function () {
-    if (Object.keys(act.tasks).some(function (k) { return act.tasks[k].status === 'running'; })) renderTasks();
+    if (Object.keys(act.tasks).some(function (k) { var st = act.tasks[k].status; return st === 'running' || st === 'retrying'; })) renderTasks();
   }, 1000);
 
   /* ---- the live stream ---------------------------------------------------------------------- */

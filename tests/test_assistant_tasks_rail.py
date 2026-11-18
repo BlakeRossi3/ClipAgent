@@ -77,7 +77,14 @@ var out = {
                        steps: [{ label: 'Reading' }] }, now),
   old: TASKROW.view({ id: 'c', task: 'Old', status: 'error', started: '2026-11-15T12:00:00Z',
                       finished: '2026-11-15T12:01:00Z', summary: 'Broke.' }, now),
-  empty: TASKROW.view({}, now)
+  empty: TASKROW.view({}, now),
+  retrying: TASKROW.view({ id: 'd', task: 'Memory pass', status: 'retrying', started: '2026-11-15T11:55:40Z',
+                           next_try: '2026-11-15T12:09:10Z', last_error: 'auth: Not logged in', attempts: 2 }, now),
+  retry_due: TASKROW.view({ id: 'e', task: 'Backlog pass', status: 'retrying', started: '2026-11-15T11:50:00Z',
+                            next_try: '2026-11-15T12:04:00Z' }, now),
+  failed: TASKROW.view({ id: 'f', task: 'Brief', status: 'error', started: '2026-11-15T12:00:00Z',
+                         finished: '2026-11-15T12:00:01Z', summary: 'Something went wrong.',
+                         last_error: 'blocked: Claude Code could not start' }, now)
 };
 console.log(JSON.stringify(out));
 """
@@ -115,3 +122,10 @@ def test_page_wires_rows_as_click_toggles():
     assert "'rail-task-head'" in JS and "aria-expanded" in JS and "closest('.rail-task-head')" in JS
     css = (ROOT / "static" / "home.css").read_text(encoding="utf-8")
     assert ".rail-task-head" in css and ".rail-task-detail" in css and ".rail-task.is-open" in css
+
+
+def test_retrying_rows_count_down_to_the_next_try_and_say_why(rows):
+    """Blake: "it says retrying 9 minutes and 20 seconds and it's counting up" - it counts down now."""
+    assert rows["retrying"]["line"] == "Retrying in 4m 10s · auth: Not logged in"
+    assert rows["retry_due"]["line"] == "Retrying now · waiting for a free slot"
+    assert rows["failed"]["line"] == "Error · 1s · blocked: Claude Code could not start"

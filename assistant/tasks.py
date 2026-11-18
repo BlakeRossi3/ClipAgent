@@ -57,6 +57,7 @@ KV_ANNOUNCED = "assistant:tasks:announced:{id}"
 TASK_KEEP = 12
 MAX_STEPS = 30
 UNFINISHED = ("running", "retrying")   # never trimmed from the kv list
+MAX_PARALLEL = 4                       # background workers at once (retries included); not one at a time
 ORPHAN_GRACE_SEC = 600                 # a "running" row this long past the run timeout was cut off by a restart
 RETRY_STATUSES = ("error", "stopped", "rounds")   # budget -> assistant.handoff instead
 RESULT_CHARS = 4000   # full result kept on the row for the expanded rail view (History has all of it)
@@ -228,12 +229,16 @@ def staff_note(agent: str) -> str:
 # ---------------------------------------------------------------------------
 
 def track(task: str, *, origin: str = "sms", heard: str = "", meta: dict[str, Any] | None = None,
-          on_cancel: Callable[[], None] | None = None) -> str:
-    """Put work that is running elsewhere on the rail; returns its id. Close it with :func:`track_done`."""
-    tid = uuid.uuid4().hex[:10]
+          on_cancel: Callable[[], None] | None = None, task_id: str | None = None) -> str:
+    """Put work that is running elsewhere on the rail; returns its id. Close it with :func:`track_done`.
+    ``task_id`` of an existing row = the same work again (a retry): that row runs again, one more attempt."""
+    old = get_task(task_id) if task_id else None
+    tid = old["id"] if old else uuid.uuid4().hex[:10]
     row = {"id": tid, "task": " ".join(str(task).split())[:300] or "Request", "heard": heard[:300], "origin": origin,
            "status": "running", "started": db.now_iso(), "finished": None, "summary": "", "steps": [],
-           "announce": False, "tracked": True, "meta": dict(meta or {})}
+           "announce": False, "tracked": True, "meta": {**((old or {}).get("meta") or {}), **dict(meta or {})},
+           "attempts": int((old or {}).get("attempts") or 0) + 1, "next_try": None,
+           "last_error": (old or {}).get("last_error")}
     _tracked.add(tid)
     if on_cancel is not None:
         _cancellers[tid] = on_cancel
@@ -253,8 +258,10 @@ def track_step(task_id: str, label: str) -> None:
     _save(row)
 
 
-def track_done(task_id: str, text: str, status: str = "ok", *, summary: str | None = None) -> None:
-    """Close a tracked row. One he cancelled (or that a newer request replaced) keeps its cancelled state."""
+def track_done(task_id: str, text: str, status: str = "ok", *, summary: str | None = None,
+               error: str = "") -> None:
+    """Close a tracked row. One he cancelled (or that a newer request replaced) keeps its cancelled state.
+    ``error``: what actually went wrong (kept as ``last_error``, shown on the rail)."""
     _tracked.discard(task_id)
     _cancellers.pop(task_id, None)
     row = get_task(task_id)
@@ -264,6 +271,22 @@ def track_done(task_id: str, text: str, status: str = "ok", *, summary: str | No
     result = polished if len(polished) <= RESULT_CHARS else polished[:RESULT_CHARS - 1].rstrip() + "…"
     row.update(status="done" if status in ("ok", "rounds") else status, finished=db.now_iso(),
                summary=(summary or fallback_summary(text, 1))[:300], result=result)
+    if error:
+        row["last_error"] = error[:300]
+    elif status in ("ok", "rounds"):
+        row["last_error"] = None
+    _save(row)
+
+
+def track_retrying(task_id: str | None, next_try: Any, why: str) -> None:
+    """A tracked row whose owner (e.g. the deferred queue) will run it again at ``next_try``."""
+    row = get_task(task_id) if task_id else None
+    if row is None or row.get("status") == "cancelled":
+        return
+    from assistant import claude_code
+
+    row.update(status="retrying", next_try=db.to_iso(next_try), last_error=why[:300], finished=None,
+               summary=f"Retrying {claude_code.friendly_time(next_try)}: {why}"[:300])
     _save(row)
 
 
@@ -336,8 +359,10 @@ def _run(row: dict[str, Any]) -> None:
                 should_stop=lambda: (get_task(row["id"]) or {}).get("status") == "cancelled")
     except Exception as exc:
         log.exception("background task failed")
-        db.log_event("assistant", "background task failed", level="error", data={"error": repr(exc)[:300]})
-        full, st = f"I couldn't finish that, {s.owner_honorific}: something went wrong on my side.", "error"
+        db.log_event("assistant", "background task failed", level="error",
+                     data={"error": repr(exc)[:300], "task_id": row["id"]})
+        reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+        full, st = f"I couldn't finish that, {s.owner_honorific}: {type(exc).__name__}: {reason}", "error"
         kind = getattr(exc, "kind", "") or "error"
     restart = _edit_finish(snap, row) if snap is not None else False
     if (get_task(row["id"]) or {}).get("status") == "cancelled":   # he stopped it while it ran: leave it stopped
@@ -393,6 +418,9 @@ def _schedule_retry(row: dict[str, Any], full: str, status: str, kind: str) -> N
     attempt = int(row.get("attempts") or 1)
     nxt = retry.next_try(status, attempt, kind)
     why = retry.describe(status, kind)
+    detail = " ".join((full or "").split())
+    if status == "error" and kind in ("", "error") and detail:   # the real reason, not "it failed with an error"
+        why = f"{why} ({detail[:180]})"
     row.update(status="retrying", next_try=db.to_iso(nxt), last_error=why, last_status=status, finished=None,
                summary=f"Retrying {claude_code.friendly_time(nxt)}: {why}"[:300])
     _save(row)
@@ -460,16 +488,38 @@ def cancel(task_id: str, why: str = "stopped at his request") -> dict[str, Any] 
 
 
 def retry_now(task_id: str) -> dict[str, Any] | None:
-    """Run an unfinished/failed task again NOW - the same task, not a new one (so no duplicate sits on
-    "retrying"). ``None`` when unknown; a running or finished-ok task is left alone."""
+    """Run an unfinished/failed task again NOW - the same work, never a duplicate. ``None`` when unknown;
+    a running or finished-ok task is left alone.
+
+    A background worker row restarts at once (no waiting for other tasks). A *tracked* row is re-run by
+    whoever owns it: a deferred item goes back to the deferred queue and runs now
+    (``usage.retry_deferred``); a text or dashboard request is queued as his request again
+    (``usage.defer`` kind ``owner_request``), which answers on the same channel."""
     row = get_task(task_id)
     if row is None:
         return None
     if row.get("status") in ("running", "done"):
         return row
+    meta = row.get("meta") or {}
+    if row.get("tracked"):
+        from assistant import usage
+
+        did = meta.get("deferred_id")
+        if not did:
+            channel = str(meta.get("via") or "dashboard")
+            did = usage.defer(row.get("heard") or row.get("task") or "", kind="owner_request",
+                              channel=channel if channel in ("sms", "dashboard") else "dashboard",
+                              at=db.utcnow(), reason="retry asked for")
+            store.update_deferred(did, meta={"track_id": task_id})
+            meta = {**meta, "deferred_id": did}
+        # mark it first: the rerun may finish (and update this row) before retry_deferred returns
+        row.update(status="retrying", next_try=db.now_iso(), finished=None, meta=meta, summary="Retrying now")
+        _save(row)
+        usage.retry_deferred(int(did))
+        return get_task(task_id)
     row.update(status="retrying", next_try=db.now_iso(), finished=None)
     _save(row)
-    retry_due()
+    retry_due(force=True)
     return get_task(task_id)
 
 
@@ -506,34 +556,58 @@ def register_tools(register: Callable[..., None]) -> None:
     register(Tool("task_cancel", "Cancel a background task (id or words of its request): a retrying one never runs "
                   "again and leaves the list as cancelled; a running one stops.", _obj({"task": {"type": "string"},
                   "why": {"type": "string"}}, ["task"]), _cancel, owner=__name__, side_effects=True), replace=True)
-    register(Tool("task_retry", "Run a failed or retrying background task again now - the same task, never a new "
-                  "copy.", _obj({"task": {"type": "string"}}, ["task"]), _retry, owner=__name__, side_effects=True),
+    register(Tool("task_retry", "Run a failed or retrying task from the rail again NOW - the same work, never a new "
+                  "copy, in parallel with whatever else runs. Works for background tasks, deferred/scheduled passes "
+                  "and failed text or dashboard requests (each goes back through its own path). Every row has "
+                  "last_error = the real reason it failed: tell him that, not a guess.",
+                  _obj({"task": {"type": "string"}}, ["task"]), _retry, owner=__name__, side_effects=True),
              replace=True)
 
 
-def retry_due(now: Any = None, *, limit: int = 1) -> int:
-    """Scheduler job: requeue orphans, then restart background tasks whose retry time has come. One at a
-    time, never while another task runs here, while switched off, or while the plan is limited.
-    Returns how many were started."""
-    from assistant import claude_code, runtime
+def _due_now(t: dict[str, Any], now: Any, plan_free: bool) -> bool:
+    if not t.get("next_try"):
+        return True
+    if db.parse_iso(t["next_try"]) <= now:
+        return True
+    # stopped by the plan limit: the moment usage is free again it goes, whatever the estimated reset said
+    return plan_free and t.get("last_status") == "budget"
+
+
+def retry_due(now: Any = None, *, limit: int | None = None, force: bool = False) -> int:
+    """Scheduler job (every minute) and :func:`assistant.usage.kick`: requeue orphans, then restart every
+    background task whose retry time has come - in parallel, up to :data:`MAX_PARALLEL` workers alive at
+    once (never "one at a time" and never waiting for unrelated tasks). Skipped while switched off or while
+    the plan is limited (``force``: one he asked for goes anyway when the plan is free). Tracked rows (texts,
+    deferred items) are re-run by their owner, never here. Returns how many were started."""
+    from assistant import claude_code, runtime, usage
 
     s = get_assistant_settings()
     if not s.enabled:
         return 0
     now = now or db.utcnow()
     _requeue_orphans(now)
-    if runtime.is_stopped() or any(_alive(tid) for tid in list(_threads)) or claude_code.backoff_until() is not None:
+    if runtime.is_stopped() or claude_code.backoff_until() is not None:
         return 0
-    due = [t for t in list_tasks() if t.get("status") == "retrying"
-           and (not t.get("next_try") or db.parse_iso(t["next_try"]) <= now)]
+    try:
+        plan_free = not usage.constrained()[0]
+    except Exception:
+        plan_free = True
+    room = MAX_PARALLEL - sum(1 for tid in list(_threads) if _alive(tid))
+    if limit is not None:
+        room = min(room, limit)
+    due = [t for t in list_tasks() if t.get("status") == "retrying" and not t.get("tracked")
+           and (force or _due_now(t, now, plan_free))]
     n = 0
-    for t in due[:limit]:
+    for t in due[:max(0, room)]:
         t.update(status="running", started=db.to_iso(now), next_try=None)
         _save(t)
         db.log_event("assistant", "background task retry started",
                      data={"task_id": t["id"], "attempt": int(t.get("attempts") or 0) + 1})
         _start(t)
         n += 1
+    if len(due) > n:
+        db.log_event("assistant", f"{len(due) - n} task retry(ies) waiting for a free worker",
+                     data={"max_parallel": MAX_PARALLEL})
     return n
 
 

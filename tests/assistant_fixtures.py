@@ -53,6 +53,9 @@ def _reset_live() -> None:
 
     sms_inbox.reset()
     sms_inbox.set_sleeper(None)
+    from assistant import usage
+
+    usage.set_spawner(lambda f: f())   # the deferred queue runs inline in tests (threads in the app)
     brain.reset()
     events.reset()
     quick.reset()
