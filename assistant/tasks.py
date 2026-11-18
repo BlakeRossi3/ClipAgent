@@ -96,10 +96,22 @@ def get_task(task_id: str) -> dict[str, Any] | None:
     return next((t for t in list_tasks() if t.get("id") == task_id), None)
 
 
-def _save(task: dict[str, Any], *, publish: bool = True) -> None:
-    """Unfinished rows (running / retrying) are always kept; finished ones are trimmed to ``TASK_KEEP``."""
+_CANCEL_KEEP = ("status", "next_try", "finished", "summary")
+
+
+def _save(task: dict[str, Any], *, publish: bool = True, revive: bool = False) -> None:
+    """Unfinished rows (running / retrying) are always kept; finished ones are trimmed to ``TASK_KEEP``.
+
+    A cancel is final: the worker thread keeps saving its own stale copy of the row (every step, and a
+    retry when the run fails), so a stored ``cancelled`` row keeps its cancelled fields unless ``revive``
+    (he asked for it to run again: :func:`retry_now`, :func:`track` of the same id). ``task`` is updated
+    in place to match."""
     def put(cur: Any) -> list[dict[str, Any]]:
-        rows = [t for t in (cur if isinstance(cur, list) else []) if t.get("id") != task["id"]]
+        cur = cur if isinstance(cur, list) else []
+        old = next((t for t in cur if t.get("id") == task["id"]), None)
+        if old and old.get("status") == "cancelled" and task.get("status") != "cancelled" and not revive:
+            task.update({k: old.get(k) for k in _CANCEL_KEEP})
+        rows = [t for t in cur if t.get("id") != task["id"]]
         rows.append(dict(task))
         keep = {r.get("id") for r in [r for r in rows if r.get("status") not in UNFINISHED][-TASK_KEEP:]}
         return [t for t in rows if t.get("status") in UNFINISHED or t.get("id") in keep]
@@ -182,7 +194,18 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
     (shown with the task) and ``on_finish(row, full_text, status)``. ``self_edit=True`` (initiative work)
     wraps the run in the self-edit guardrail (``selfedit.begin``/``finish``): code it changed is tested and
     committed (or rolled back) before ``on_finish`` runs, which then sees ``row["edit"]`` = {status, summary,
-    files, commit, commits}; a committed change restarts the app afterwards."""
+    files, commit, commits}; a committed change restarts the app afterwards.
+
+    A conversation task asked for again while the same request is still running or retrying is not
+    started twice: the running one keeps going, a retrying one is run again now, and its id is returned."""
+    if on_finish is None and not self_edit:
+        same = _unfinished_twin(task)
+        if same is not None:
+            db.log_event("assistant", "background task already in hand; not started twice",
+                         data={"task_id": same["id"], "status": same.get("status")})
+            if same.get("status") == "retrying":
+                retry_now(same["id"])
+            return same["id"]
     tid = uuid.uuid4().hex[:10]
     meta = dict(meta or {})
     if staff:
@@ -209,6 +232,17 @@ def start(task: str, *, heard: str = "", origin: str = "browser", brief: str | N
     db.log_event("assistant", "background task started", data={"task_id": tid, "task": row["task"][:200]})
     _start(row)
     return tid
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").lower().split())[:300]
+
+
+def _unfinished_twin(task: str) -> dict[str, Any] | None:
+    """A running or retrying conversation task with the same request (case and spacing ignored)."""
+    key = _norm(task)
+    return next((t for t in list_tasks() if key and t.get("status") in UNFINISHED and t.get("retry")
+                 and not t.get("tracked") and _norm(t.get("task") or "") == key), None)
 
 
 def _display(agent: str) -> str:
@@ -246,7 +280,7 @@ def track(task: str, *, origin: str = "sms", heard: str = "", meta: dict[str, An
     _tracked.add(tid)
     if on_cancel is not None:
         _cancellers[tid] = on_cancel
-    _save(row)
+    _save(row, revive=True)   # the same work run again on purpose
     return tid
 
 
@@ -440,6 +474,8 @@ def _schedule_retry(row: dict[str, Any], full: str, status: str, kind: str) -> N
     row.update(status="retrying", next_try=db.to_iso(nxt), last_error=why, last_status=status, finished=None,
                summary=f"Retrying {claude_code.friendly_time(nxt)}: {why}"[:300])
     _save(row)
+    if row.get("status") == "cancelled":   # he stopped it a moment ago: no retry, no notice
+        return
     db.log_event("assistant", "background task will be retried", level="warning",
                  data={"task_id": row["id"], "attempt": attempt, "status": status, "kind": kind,
                        "next_try": row["next_try"]})
@@ -530,11 +566,11 @@ def retry_now(task_id: str) -> dict[str, Any] | None:
             meta = {**meta, "deferred_id": did}
         # mark it first: the rerun may finish (and update this row) before retry_deferred returns
         row.update(status="retrying", next_try=db.now_iso(), finished=None, meta=meta, summary="Retrying now")
-        _save(row)
+        _save(row, revive=True)
         usage.retry_deferred(int(did))
         return get_task(task_id)
     row.update(status="retrying", next_try=db.now_iso(), finished=None)
-    _save(row)
+    _save(row, revive=True)
     retry_due(force=True)
     return get_task(task_id)
 
