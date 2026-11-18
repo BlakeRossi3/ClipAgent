@@ -55,6 +55,11 @@ Owner-facing docs: `README.md` (install, go-live checklist, unverified-live list
 
 ## Conventions (mandatory)
 
+**Read `docs/ENGINEERING.md` before changing code**: who owns each job (extend it, never build a second),
+and the 10 rules (one gate, one runner, never swallow an error, atomic state, bookkeeping before work,
+deferral reruns the same code, nothing stuck in `running`, parallel by default, retries via their own
+path, tests never touch the real world). `tests/test_guardrails.py` enforces the guarded ones.
+
 - **Timestamps**: UTC ISO-8601 text `YYYY-MM-DDTHH:MM:SSZ` everywhere in the DB
   (`db.now_iso()`, `db.to_iso(dt)`, `db.parse_iso(s)`). Python datetimes are
   timezone-aware. Never call `datetime.now()` directly in pipeline code - use
@@ -754,6 +759,12 @@ Blake: "too many things are failing and then not retrying". The rules now:
 - **Every failure carries its real cause.** `runtime.error_text(exc)`; `TurnResult.error` / `.error_kind` / `.track_id`;
   rail rows keep `last_error` (`tasks.track_done(error=)`, `_schedule_retry` appends the run's own words for vague
   errors); deferred rows keep `meta.attempts / last_error / last_status`. Never show "unknown" or a canned apology.
+- **One gate**: `usage.wait_reason(optional=True)` ("" = go). `should_defer` only for `JOB_FUNCS` kinds; the
+  memory/backlog passes keep their cursor and rerun when usage frees (`auto_memory.catch_up` from `usage.kick`).
+- **Orphans**: `usage.sweep_orphans` (every `run_due`) requeues rows left `running` by a restart (`usage._live`
+  = rows this process runs; started before `_boot` or older than the task limit = orphan) and closes stale
+  staff runs (`store.close_stale_runs`). Atomic state: `db.kv_update`, `db.kv_append`,
+  `store.merge_deferred_meta`, `store.merge_backlog_meta`.
 - **Deferred rows retry by themselves** (`usage.retry_later`): backoff 5/15/30/60 min (`retry.next_try`), a plan limit
   waits for the reset (`after_reset`); background passes give up after `MAX_ATTEMPTS` (6), `owner_request` never.
   Scheduled task kinds that error are requeued the same way (`schedule.finished`). One rail row per deferred item
