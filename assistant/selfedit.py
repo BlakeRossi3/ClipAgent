@@ -101,7 +101,8 @@ def _fails_without_change(root: Path, test_id: str, timeout: float) -> bool:
             return False
         code, _ = _pytest(wt, ["-x", test_id], timeout)
         return code != 0
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
     finally:
         git("worktree", "remove", "--force", str(wt))
@@ -769,7 +770,8 @@ def _healthz(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 - loopback only
             return r.status == 200 and b'"status"' in r.read(2000)
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 

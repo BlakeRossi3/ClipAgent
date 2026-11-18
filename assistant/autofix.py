@@ -147,15 +147,11 @@ def tick(now: Any = None) -> dict[str, Any]:
     day_key = KV_DAY.format(day=db.local_today().isoformat())
     if int(db.kv_get(day_key, 0) or 0) >= s.autofix_max_per_day:
         return {"status": "cap", "waiting": len(due)}
-    try:
-        from assistant import usage
+    from assistant import usage
 
-        tight, _until = usage.constrained()
-    except Exception as exc:   # no usage reading: go ahead, the task itself stops on usage
-        log.debug("usage unknown: %s", exc)
-        tight = False
-    if tight:
-        return {"status": "waiting_for_usage", "waiting": len(due)}
+    why = usage.wait_reason()
+    if why:
+        return {"status": "waiting_for_usage", "waiting": len(due), "why": why}
     p = due[0]
     tid = start_repair(p)
     db.kv_incr(day_key)
@@ -167,7 +163,8 @@ def _redact(obj: Any) -> Any:
         from assistant import admin
 
         return admin.redact_obj(obj)
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return obj
 
 
@@ -206,13 +203,16 @@ def start_repair(p: dict[str, Any]) -> str:
     from assistant import tasks
 
     title = f"Fix: {' '.join(p['message'].split())[:120]}"
+    # bookkeeping BEFORE the work starts: a repair that ends at once updates this record in on_finished,
+    # and writing it afterwards would overwrite that outcome (the 1-hour retry became a 12-hour wait)
+    key = KV_SIG.format(sig=p["sig"])
+    db.kv_set(key, {"at": db.now_iso(), "task_id": None, "status": "running", "message": p["message"][:300],
+                    "until": db.to_iso(db.utcnow() + timedelta(hours=COOLDOWN_HOURS))})
     tid = tasks.start(title, brief=brief(p), announce=False, self_edit=True, usage_share=USAGE_SHARE,
                       meta={"kind": "autofix", "label": "Self-repair", "sig": p["sig"], "module": p["module"],
                             "failures": p["count"]},
                       on_finish=on_finished)
-    db.kv_set(KV_SIG.format(sig=p["sig"]), {"at": db.now_iso(), "task_id": tid, "status": "running",
-                                            "message": p["message"][:300],
-                                            "until": db.to_iso(db.utcnow() + timedelta(hours=COOLDOWN_HOURS))})
+    db.kv_update(key, lambda st: {**(st if isinstance(st, dict) else {}), "task_id": tid}, {})
     db.log_event(MODULE, f"repair started: {p['message'][:120]}",
                  data={"autofix": True, "task_id": tid, "sig": p["sig"], "count": p["count"]})
     return tid
@@ -249,9 +249,9 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
     code_changed = bool(edit.get("commits") or edit.get("commit"))
     if status != "ok":   # the repair itself did not finish: try again in an hour
         if sig:
-            st = _state(sig) or {}
-            st.update(status=f"run_{status}", until=db.to_iso(db.utcnow() + timedelta(hours=RETRY_HOURS)))
-            db.kv_set(KV_SIG.format(sig=sig), st)
+            until = db.to_iso(db.utcnow() + timedelta(hours=RETRY_HOURS))
+            db.kv_update(KV_SIG.format(sig=sig), lambda st: {**(st if isinstance(st, dict) else {}),
+                                                              "status": f"run_{status}", "until": until}, {})
         db.log_event(MODULE, "repair did not finish; will try again", level="warning",
                      data={"autofix": True, "task_id": row.get("id"), "status": status})
         _remember({"sig": sig, "status": f"run_{status}", "what": row.get("task", ""), "fix": "", "task_id": row.get("id"),
@@ -259,9 +259,8 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
         return
     res = parse(full)
     if sig:
-        st = _state(sig) or {}
-        st.update(status=res["status"])
-        db.kv_set(KV_SIG.format(sig=sig), st)
+        db.kv_update(KV_SIG.format(sig=sig), lambda st: {**(st if isinstance(st, dict) else {}),
+                                                          "status": res["status"]}, {})
     _remember({"sig": sig, **res, "task_id": row.get("id"), "code_changed": code_changed,
                "commits": edit.get("commits") or []})
     db.log_event(MODULE, f"repair {res['status']}: {res['what'][:160]}",
@@ -288,9 +287,7 @@ def tell(text: str, *, urgent: bool = False) -> None:
 
 def _remember(item: dict[str, Any]) -> None:
     item = {**item, "at": db.now_iso()}
-    rows = db.kv_get(KV_LOG, [])
-    rows = rows if isinstance(rows, list) else []
-    db.kv_set(KV_LOG, (rows + [item])[-LOG_KEEP:])
+    db.kv_append(KV_LOG, item, keep=LOG_KEEP)
 
 
 def history(limit: int = 20) -> list[dict[str, Any]]:

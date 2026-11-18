@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import UTC, date, datetime, time, timedelta
@@ -1798,6 +1798,40 @@ def kv_set(key: str, value: Any, *, conn: sqlite3.Connection | None = None) -> N
         c.execute("INSERT INTO kv (key, value, updated_at) VALUES (?,?,?) "
                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                   (key, _dumps(value), now_iso()))
+
+
+def kv_update(key: str, fn: Callable[[Any], Any], default: Any = None) -> Any:
+    """Atomically replace ``key``'s value with ``fn(current)`` (``default`` when missing) and return it.
+
+    Read and write happen in one ``BEGIN IMMEDIATE`` transaction, so two writers (a background thread
+    and the web server, two processes) can never both read the old value and lose one update - the
+    race a plain ``kv_get`` + ``kv_set`` has. Use this (or :func:`kv_append`) for every kv value that
+    is changed from its previous value; ``kv_set`` is for whole-value replacement only."""
+    c = connect()
+    try:
+        c.isolation_level = None
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            row = c.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            new = fn(default if row is None else _loads(row["value"]))
+            c.execute("INSERT INTO kv (key, value, updated_at) VALUES (?,?,?) "
+                      "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                      (key, _dumps(new), now_iso()))
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+        return new
+    finally:
+        c.close()
+
+
+def kv_append(key: str, item: Any, *, keep: int) -> list[Any]:
+    """Atomically append ``item`` to the list at ``key``, keeping the newest ``keep`` entries."""
+    def add(cur: Any) -> list[Any]:
+        rows = cur if isinstance(cur, list) else []
+        return (rows + [item])[-keep:]
+    return kv_update(key, add, [])
 
 
 def kv_set_if_absent(key: str, value: Any, *, conn: sqlite3.Connection | None = None) -> bool:

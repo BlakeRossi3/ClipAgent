@@ -97,11 +97,14 @@ def get_task(task_id: str) -> dict[str, Any] | None:
 
 def _save(task: dict[str, Any], *, publish: bool = True) -> None:
     """Unfinished rows (running / retrying) are always kept; finished ones are trimmed to ``TASK_KEEP``."""
-    with _lock:
-        rows = [t for t in list_tasks() if t.get("id") != task["id"]]
+    def put(cur: Any) -> list[dict[str, Any]]:
+        rows = [t for t in (cur if isinstance(cur, list) else []) if t.get("id") != task["id"]]
         rows.append(dict(task))
         keep = {r.get("id") for r in [r for r in rows if r.get("status") not in UNFINISHED][-TASK_KEEP:]}
-        db.kv_set(KV_TASKS, [t for t in rows if t.get("status") in UNFINISHED or t.get("id") in keep])
+        return [t for t in rows if t.get("status") in UNFINISHED or t.get("id") in keep]
+
+    with _lock:   # atomic in the DB too: the tool process of a text turn (task_cancel/retry) writes here as well
+        db.kv_update(KV_TASKS, put, [])
     if publish:
         events.publish("task", task=public(task))
 
@@ -336,7 +339,8 @@ def _run(row: dict[str, Any]) -> None:
         from assistant import status
 
         context = {"status": status.turn_context()[:800]}
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         context = {}
     attempt = int(row.get("attempts") or 0) + 1
     row["attempts"] = attempt
@@ -510,7 +514,7 @@ def retry_now(task_id: str) -> dict[str, Any] | None:
             did = usage.defer(row.get("heard") or row.get("task") or "", kind="owner_request",
                               channel=channel if channel in ("sms", "dashboard") else "dashboard",
                               at=db.utcnow(), reason="retry asked for")
-            store.update_deferred(did, meta={"track_id": task_id})
+            store.merge_deferred_meta(did, track_id=task_id)
             meta = {**meta, "deferred_id": did}
         # mark it first: the rerun may finish (and update this row) before retry_deferred returns
         row.update(status="retrying", next_try=db.now_iso(), finished=None, meta=meta, summary="Retrying now")
@@ -579,19 +583,16 @@ def retry_due(now: Any = None, *, limit: int | None = None, force: bool = False)
     once (never "one at a time" and never waiting for unrelated tasks). Skipped while switched off or while
     the plan is limited (``force``: one he asked for goes anyway when the plan is free). Tracked rows (texts,
     deferred items) are re-run by their owner, never here. Returns how many were started."""
-    from assistant import claude_code, runtime, usage
+    from assistant import usage
 
     s = get_assistant_settings()
     if not s.enabled:
         return 0
     now = now or db.utcnow()
     _requeue_orphans(now)
-    if runtime.is_stopped() or claude_code.backoff_until() is not None:
+    if usage.wait_reason(optional=False):     # switched off or at the plan's limit
         return 0
-    try:
-        plan_free = not usage.constrained()[0]
-    except Exception:
-        plan_free = True
+    plan_free = not usage.wait_reason()
     room = MAX_PARALLEL - sum(1 for tid in list(_threads) if _alive(tid))
     if limit is not None:
         room = min(room, limit)

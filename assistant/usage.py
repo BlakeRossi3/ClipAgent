@@ -167,7 +167,8 @@ def extra_usage_active() -> bool:
         return False
     try:
         return (db.utcnow() - db.parse_iso(v["at"])).total_seconds() < 6 * 3600
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -223,8 +224,8 @@ def _sdk_get_usage() -> dict[str, Any]:
         finally:
             try:
                 await asyncio.wait_for(client.disconnect(), 10)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("ignored error (best effort): %r", exc)
 
     return asyncio.run(go())
 
@@ -349,7 +350,6 @@ def usage_status() -> dict[str, Any]:
     inferred from the other general window (:func:`_infer_siblings`)."""
     from assistant import claude_code
 
-    s = get_assistant_settings()
     windows = {}
     for k in WINDOW_KINDS:
         w = _window(k)
@@ -395,9 +395,41 @@ def constrained(threshold: float = DEFER_THRESHOLD) -> tuple[bool, datetime | No
     return False, None
 
 
+def wait_reason(*, optional: bool = True) -> str:
+    """THE gate for work nobody is waiting on right now: "" = go ahead, else why it must wait.
+
+    Every background runner asks this one function (the deferred queue, task retries, the heartbeat,
+    initiative, self-repair, the morning surprise, memory/backlog passes, history import, the Shorts
+    pipeline on the plan) instead of combining ``is_stopped`` / ``backoff_until`` / ``constrained`` its
+    own way - one rule, one wording, no part waiting while another runs. ``optional=False`` (work he asked
+    for) only waits for a real limit or the kill switch, not for high usage. Never raises."""
+    from assistant import claude_code, runtime
+
+    try:
+        if runtime.is_stopped():
+            return "I am switched off"
+        until = claude_code.backoff_until()
+        if until is not None:
+            return f"the Claude plan is at its limit until {claude_code.friendly_time(until)}"
+        if optional:
+            tight, until = constrained()
+            if tight:
+                return "Claude plan usage is high" + (f" until {claude_code.friendly_time(until)}" if until else "")
+    except Exception as exc:   # no reading = no reason to wait
+        log.debug("usage gate unreadable: %s", exc)
+    return ""
+
+
 def should_defer(kind: str, prompt: str, *, agent: str = "main", channel: str = "system") -> int | None:
-    """For non-urgent jobs: if the plan is tight, queue ``prompt`` for after the reset and return the
-    deferred id (the caller then skips the work); else None (go ahead)."""
+    """For a non-urgent *scheduler job* (``kind`` in :data:`JOB_FUNCS`): if the plan is tight, queue it to run
+    its own function after the reset and return the deferred id (the caller then skips the work); else None.
+
+    Deferral reruns the SAME code later; it never turns work into a free-text prompt for a full-power run
+    (that is how the memory and backlog passes ended up "failing after one second"). Work that can simply
+    try again on its next tick should check :func:`wait_reason` and keep its place instead."""
+    if kind not in JOB_FUNCS:
+        raise ValueError(f"should_defer({kind!r}): only scheduler jobs in JOB_FUNCS can be deferred; "
+                         "check usage.wait_reason() and retry on the next tick instead")
     s = get_assistant_settings()
     if s.backend != "claude_code" or s.fake:
         return None
@@ -459,13 +491,22 @@ def set_spawner(fn: Callable[[Callable[[], Any]], None] | None) -> None:
     _spawn = fn or _spawn_thread
 
 
+def reset() -> None:
+    """Tests: forget this process's live rows and start time."""
+    global _boot
+    _live.clear()
+    _boot = None
+
+
 def kick(reason: str = "") -> None:
     """Start whatever is waiting, right now and without blocking: due deferred rows and due task retries.
     Called when plan usage frees up again (:func:`_check_freed`) and when he asks for a retry."""
     from assistant import tasks
 
     def go() -> None:
-        for fn in (run_due, tasks.retry_due):
+        from assistant import auto_memory
+
+        for fn in (run_due, tasks.retry_due, auto_memory.catch_up):
             try:
                 fn()
             except Exception as exc:   # one queue's trouble must not stop the other
@@ -480,7 +521,8 @@ def _check_freed() -> None:
     """Plan usage just went from limited/tight to free: start everything that waited for it at once."""
     try:
         tight = constrained()[0]
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return
     was = bool(db.kv_get(KV_WAS_TIGHT, False))
     if tight != was:
@@ -508,12 +550,12 @@ def retry_later(d: store.Deferred, status: str, error: str, kind: str = "") -> b
     resets, for a plan limit), its real error kept. False when it has used its attempts (then ``failed``)."""
     from assistant import retry, tasks
 
-    meta = _meta(d)
+    meta = _meta(store.get_deferred(d.id) or d)   # the freshest copy: never act on a stale one
     attempts = int(meta.get("attempts") or 0) + 1
     why = error or retry.describe(status, kind)
     meta.update(attempts=attempts, last_error=why[:300], last_status=status)
+    store.merge_deferred_meta(d.id, attempts=attempts, last_error=why[:300], last_status=status)
     if d.kind not in FOREVER_KINDS and status != "budget" and attempts >= MAX_ATTEMPTS:
-        store.update_deferred(d.id, meta=meta)
         store.set_deferred_status(d.id, "failed", result=f"Gave up after {attempts} attempts: {why}"[:500])
         db.log_event("assistant", f"deferred {d.kind} #{d.id} gave up after {attempts} attempts", level="warning",
                      data={"error": why[:300]})
@@ -523,7 +565,7 @@ def retry_later(d: store.Deferred, status: str, error: str, kind: str = "") -> b
         return False
     nxt = retry.next_try(status, attempts, kind)
     plan = status == "budget"
-    store.update_deferred(d.id, meta=meta, run_after=None if plan else db.to_iso(nxt), after_reset=plan)
+    store.update_deferred(d.id, run_after=None if plan else db.to_iso(nxt), after_reset=plan)
     store.requeue_deferred(d.id)
     tasks.track_retrying(meta.get("track_id"), nxt, why)
     db.log_event("assistant", f"deferred {d.kind} #{d.id} will be retried", level="warning",
@@ -552,24 +594,25 @@ def run_due(limit: int = MAX_PER_RUN) -> int:
     """Scheduler job: run due deferred prompts and scheduled tasks, oldest first. Returns how many started.
 
     Also: hands work over to the next usage window when the plan is nearly used up
-    (``assistant.handoff.on_usage_signal``) and fails rows lost to a restart (``schedule.sweep_stale``)."""
-    from assistant import claude_code, runtime, schedule
+    (``assistant.handoff.on_usage_signal``) and requeues rows lost to a restart (:func:`sweep_orphans`)."""
+    from assistant import schedule
 
     s = get_assistant_settings()
-    if not s.enabled or runtime.is_stopped():
+    if not s.enabled or wait_reason(optional=False) == "I am switched off":
         return 0
-    for fn in ("handoff.on_usage_signal", "schedule.sweep_stale"):
+    _note_boot()
+    for fn in ("handoff.on_usage_signal", "usage.sweep_orphans"):
         try:
             mod, name = fn.split(".")
             getattr(__import__(f"assistant.{mod}", fromlist=["x"]), name)()
         except Exception as exc:
             log.warning("%s failed: %s", fn, exc)
-    if claude_code.backoff_until() is not None:
+    if wait_reason(optional=False):           # at the plan's limit: nothing starts
         return 0
     n = 0
     room = MAX_PARALLEL - sum(1 for d in store.list_deferred("running", limit=200) if d.kind not in schedule.TASK_KINDS)
     for d in due()[:limit]:
-        if claude_code.backoff_until() is not None:
+        if wait_reason(optional=False):
             break
         if d.kind in schedule.TASK_KINDS:
             if not schedule.can_start_task():
@@ -583,11 +626,50 @@ def run_due(limit: int = MAX_PER_RUN) -> int:
             run_claimed(d)                 # starts its own background worker and returns at once
         else:
             room -= 1
+            _live.add(d.id)                # live from the moment it is claimed, not when its thread gets going
             _spawn(lambda d=d: _run_safely(d))
     return n
 
 
+_live: set[int] = set()          # deferred rows this process is running right now
+_boot: str | None = None         # when this process first ran the queue (rows "running" from before = orphans)
+
+
+def _note_boot() -> str:
+    global _boot
+    if _boot is None:
+        _boot = db.now_iso()
+    return _boot
+
+
+def sweep_orphans(now: datetime | None = None) -> int:
+    """Rows left ``running`` by a run that no longer exists (the app restarted, a thread died) go back to the
+    queue with that reason - retried, never silently failed - and stale ``running`` staff runs are closed.
+    A row is an orphan when no live thread or background task here owns it and it started before this
+    process did, or longer ago than any run can take. Returns how many rows were requeued."""
+    from assistant import schedule, tasks
+
+    now = now or db.utcnow()
+    boot = _note_boot()
+    limit = timedelta(seconds=get_assistant_settings().cc_task_timeout_sec) + schedule.STALE_AFTER
+    live_tasks = {t["id"] for t in tasks.running_tasks() if tasks._alive(t["id"])}
+    n = 0
+    for d in store.list_deferred("running", limit=500):
+        if d.id in _live or _meta(d).get("task_id") in live_tasks:
+            continue
+        started = d.started_at or d.created_at
+        if started < boot or now - db.parse_iso(started) > limit:
+            retry_later(d, "error", "interrupted: the app restarted (or the run died) while it ran")
+            n += 1
+    try:
+        store.close_stale_runs(db.to_iso(now - limit))
+    except Exception as exc:
+        log.warning("stale staff runs not closed: %s", exc)
+    return n
+
+
 def _run_safely(d: store.Deferred) -> None:
+    _live.add(d.id)
     try:
         run_claimed(d)
     except Exception as exc:   # never leave a row stuck as "running"
@@ -595,6 +677,8 @@ def _run_safely(d: store.Deferred) -> None:
         current = store.get_deferred(d.id) or d
         if current.status == "running":
             retry_later(current, "error", f"{type(exc).__name__}: {exc}"[:300])
+    finally:
+        _live.discard(d.id)
 
 
 def run_claimed(d: store.Deferred) -> str:
@@ -627,8 +711,7 @@ def run_claimed(d: store.Deferred) -> str:
                            deliver=sms, kind="deferred", title=title_of(d), track_meta={"deferred_id": d.id},
                            track_id=meta.get("track_id"))
     if res.track_id and res.track_id != meta.get("track_id"):
-        meta["track_id"] = res.track_id
-        store.update_deferred(d.id, meta=meta)
+        store.merge_deferred_meta(d.id, track_id=res.track_id)
         d = store.get_deferred(d.id) or d
     if res.status == "ok":
         mid = res.message_out_id

@@ -447,3 +447,30 @@ def test_count_notifications_between(clock):
     clock.advance(days=1)
     db.update_notification(a, status="failed")
     assert db.count_notifications_between(s, e, status="sent") == 1
+
+
+def test_kv_update_and_append_are_atomic():
+    import threading
+
+    assert db.kv_append("t:list", 1, keep=3) == [1]
+    db.kv_set("t:list", "not a list")
+    assert db.kv_append("t:list", 2, keep=3) == [2]                   # a corrupt value is replaced, not crashed on
+    for i in range(3, 6):
+        db.kv_append("t:list", i, keep=3)
+    assert db.kv_get("t:list") == [3, 4, 5]
+    assert db.kv_update("t:n", lambda v: v + 1, 0) == 1
+
+    def bump():
+        for _ in range(25):
+            db.kv_update("t:n", lambda v: v + 1, 0)
+
+    threads = [threading.Thread(target=bump) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert db.kv_get("t:n") == 101                                     # no lost updates
+
+    with pytest.raises(ZeroDivisionError):
+        db.kv_update("t:n", lambda v: 1 / 0, 0)
+    assert db.kv_get("t:n") == 101                                     # a failing update changes nothing

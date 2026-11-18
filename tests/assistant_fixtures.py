@@ -56,6 +56,7 @@ def _reset_live() -> None:
     from assistant import usage
 
     usage.set_spawner(lambda f: f())   # the deferred queue runs inline in tests (threads in the app)
+    usage.reset()
     brain.reset()
     events.reset()
     quick.reset()

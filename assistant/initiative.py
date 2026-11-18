@@ -168,7 +168,8 @@ def _talking_now() -> bool:
         from assistant import brain
 
         return brain.running() and brain.get_brain().owner() is not None
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -215,8 +216,8 @@ def runs() -> list[dict[str, Any]]:
 
 
 def _save_run(run: dict[str, Any]) -> None:
-    rows = [r for r in runs() if r.get("id") != run["id"]] + [run]
-    db.kv_set(KV_RUNS, rows[-RUNS_KEEP:])
+    db.kv_update(KV_RUNS, lambda cur: ([r for r in (cur if isinstance(cur, list) else []) if r.get("id") != run["id"]]
+                                       + [run])[-RUNS_KEEP:], [])
 
 
 def windows() -> dict[str, dict[str, Any]]:
@@ -394,8 +395,7 @@ def start_item(item: store.BacklogItem) -> str | None:
     tid = tasks.start(f"Initiative: {item.title}", origin="any", brief=brief(item), announce=False,
                       meta={"initiative_id": item.id, "kind": "initiative"}, self_edit=True,
                       on_finish=lambda row, full, status, iid=item.id, r=rid: on_finished(iid, r, row, full, status))
-    meta = item.meta if isinstance(item.meta, dict) else {}
-    store.update_backlog(item.id, meta={**meta, "task_id": tid, "run_id": rid})
+    store.merge_backlog_meta(item.id, task_id=tid, run_id=rid)   # atomic: on_finished may already have run
     run["task_id"] = tid
     _save_run(run)
     db.log_event(MODULE, f"Working on: {item.title}"[:200], data={"id": item.id, "task_id": tid,
@@ -558,22 +558,16 @@ def _request(convo: str, existing: list[str]) -> Any:
                                 "low")
 
 
-def _deferred_prompt(convo: str) -> str:
-    return ("Background backlog pass (not from him directly; do not message him). Read his messages below and add "
-            "each concrete thing he wants you to do, build or do better with backlog_add (source owner); skip "
-            "one-off requests already answered and anything already on backlog_list.\n\n"
-            f"<messages>\n{convo}\n</messages>")
-
-
 def _from_model(msgs: list[store.Message], result: dict[str, Any]) -> None:
     from assistant import auto_memory, runtime, usage
 
     if not msgs:
         return
     convo = "\n".join(f"- {' '.join(auto_memory._redact(m.body or '').split())[:MAX_LINE_CHARS]}" for m in msgs)
-    if usage.should_defer("initiative_harvest", _deferred_prompt(convo), agent="main") is not None:
-        result["deferred"] = True
-        return
+    why = usage.wait_reason()
+    if why:   # keep the cursor: the next harvest (20-minute tick or 03:20) reads these same messages
+        result["waiting"] = why
+        raise _KeepCursor()
     existing = [it.title for it in store.list_backlog(None)]
     try:
         text, cost = auto_memory._ask_model(_request(convo, existing), agent=AGENT)
@@ -638,7 +632,8 @@ def _from_capabilities(since: str | None, result: dict[str, Any]) -> None:
         from assistant import capabilities
 
         entries = capabilities.log()
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return
     for e in entries:
         if e.get("outcome") in ("failed", "gave_up") and (not since or str(e.get("at") or "") > since):

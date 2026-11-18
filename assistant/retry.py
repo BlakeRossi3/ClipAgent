@@ -69,7 +69,8 @@ def next_try(status: str, attempt: int, kind: str = "", now: datetime | None = N
             from assistant import claude_code, usage
 
             until = claude_code.backoff_until() or (usage.next_reset() if kind in ("limit", "") else None)
-        except Exception:
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
             until = None
         if until is not None and until > now:
             return until + RESET_GRACE

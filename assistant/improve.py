@@ -436,8 +436,7 @@ def submit_proposal(*, path: str, diff: str, title: str, rationale: str = "", ev
          "status": "pending" if g.ok else "rejected_by_gate", "gate": g.reasons, "decision_id": None,
          "before_sha": None if g.before is None else hashlib.sha256(g.before.encode()).hexdigest(),
          "history": [f"{db.now_iso()} submitted; gate {'passed' if g.ok else 'rejected'}"]}
-    ids = list(db.kv_get("improve:proposal_ids", []) or [])
-    db.kv_set("improve:proposal_ids", ids + [pid])
+    db.kv_update("improve:proposal_ids", lambda ids: list(ids or []) + [pid], [])
     p["note"] = _vault_note(p)
     if g.ok and request:
         import notify

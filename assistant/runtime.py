@@ -759,8 +759,8 @@ def _step_watcher(task_id: str) -> Callable[[str], None]:
                         import home
 
                         label = f"Asked {home.agent_display(str(inp['subagent_type']))}: {inp.get('description') or ''}"
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("ignored error (best effort): %r", exc)
                 tasks_mod().track_step(task_id, label)
     return on_line
 
@@ -932,7 +932,8 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
             import home
 
             who = home.agent_display(agent_name)
-        except Exception:
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
             who = agent_name
         title = title or (f"{kind.replace('_', ' ').capitalize()}: {' '.join(task.split())}" if kind != "task" else task)
         track_id = _start_tracking(title, origin="any", heard="",

@@ -389,7 +389,8 @@ def api_has_no_credit() -> bool:
     v = db.kv_get(KV_API_NO_CREDIT)
     try:
         return isinstance(v, str) and db.parse_iso(v) > db.utcnow()
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -495,7 +496,8 @@ def refused_recently() -> bool:
         return False      # set from a usage reading ("five_hour limit"), not by a refusal
     try:
         return db.utcnow() - db.parse_iso(v["set_at"]) < REFUSAL_RECHECK
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -665,7 +667,8 @@ def _api_budget_left() -> float:
 
     try:
         return float(runtime.remaining_today())
-    except Exception:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive
+        log.debug("ignored error (best effort): %r", exc)
         return 0.0
 
 

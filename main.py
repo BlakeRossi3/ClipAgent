@@ -982,7 +982,8 @@ def doctor_checks(*, network: bool = False) -> list[Check]:
             from assistant import claude_code
 
             cli = claude_code.find_claude()
-        except Exception:
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
             cli = None
         checks.append(Check("Shorts model calls", "pass" if cli else "fail",
                             "on your Claude plan through Claude Code (no API bill)" if cli else
@@ -1051,8 +1052,7 @@ def claude_code_checks(*, network: bool = False) -> list[Check]:
         out.append(Check("Claude account", "fail", "the last run was refused: sign-in needs renewing", fix))
     out.append(Check("assistant models", "pass", f"Claude plan: main {st['model_in_use']}, sub-agents "
                      f"{st['sub_model_in_use']}"))
-    used, cap = st["turns_today"], st["turns_cap"]
-    out.append(Check("Claude runs today", "pass", f"{used} (no daily cap)"))
+    out.append(Check("Claude runs today", "pass", f"{st['turns_today']} (no daily cap)"))
     if st.get("backoff_until"):
         out.append(Check("Claude plan limit", "warn", f"reached; assistant back {st['backoff_text']}",
                          "wait for the reset, or use the API key backend (ASSISTANT_BACKEND=api)"))
@@ -1303,8 +1303,8 @@ def schedule(host: str, port: int) -> int:
             from voice import web as voice_web
 
             voice_web.stop_child()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
         try:
             sched.shutdown(wait=False)
             db.log_event(MODULE, "scheduler stopped", data={"pid": os.getpid(), "restart": _control["restart"]})

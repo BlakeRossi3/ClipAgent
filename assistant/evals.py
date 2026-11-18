@@ -932,9 +932,7 @@ def run_evals_isolated(*, filter: str | None = None, defs_root: Path | None = No
 # ---------------------------------------------------------------------------
 
 def save_report(report: EvalReport) -> None:
-    hist = list(db.kv_get("evals:runs", []) or [])
-    hist.append(report.summary())
-    db.kv_set("evals:runs", hist[-HISTORY_KEEP:])
+    db.kv_append("evals:runs", report.summary(), keep=HISTORY_KEEP)
     db.kv_set(f"evals:latest:{report.mode}", report.to_dict())
 
 

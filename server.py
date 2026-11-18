@@ -90,8 +90,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         if brain.running():
             brain.get_brain().stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
 
 
 def create_app() -> FastAPI:

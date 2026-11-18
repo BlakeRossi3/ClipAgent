@@ -30,6 +30,7 @@ from datetime import timedelta
 from typing import Any, Callable
 
 import db
+from assistant.textutil import one_line as _s
 
 log = logging.getLogger(__name__)
 
@@ -41,8 +42,6 @@ MAX_TILES = 12
 TEXT_CHARS = 240
 
 
-def _s(v: Any, n: int) -> str:
-    return " ".join(str(v or "").split())[:n]
 
 
 def _b(v: Any) -> bool:

@@ -31,7 +31,8 @@ def ago(iso: str | None) -> str:
         return ""
     try:
         mins = int((db.utcnow() - db.parse_iso(iso)).total_seconds() // 60)
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return ""
     return "just now" if mins < 1 else (f"{mins} min ago" if mins < 90 else f"{mins // 60} h ago")
 
@@ -39,7 +40,8 @@ def ago(iso: str | None) -> str:
 def local_hm(iso: str | None) -> str:
     try:
         return db.parse_iso(iso).astimezone(db.local_tz()).strftime("%H:%M") if iso else ""
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return ""
 
 
@@ -206,7 +208,8 @@ def due_checkins(window_min: int = CHECKIN_WINDOW_MIN) -> list[str]:
     for c in store.list_checkins("pending", limit=50):
         try:
             when = db.parse_iso(c.scheduled_for)
-        except Exception:
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
             continue
         if now - timedelta(minutes=1) <= when <= now + timedelta(minutes=window_min) and (chk is None or c.id != chk.id):
             out.append(f"Check-in due at {local_hm(c.scheduled_for)}: {c.question[:140]}")

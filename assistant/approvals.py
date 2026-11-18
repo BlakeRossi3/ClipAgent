@@ -21,12 +21,15 @@ admin tools ``approval_rules_list`` / ``approval_rule_revoke`` review and revoke
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import db
+
+log = logging.getLogger(__name__)
 
 MODULE = "approvals"
 KV_RULES = "approvals:rules"
@@ -257,8 +260,8 @@ def auto_approve(decision_id: int) -> bool:
 
         store.add_message("out", "dashboard", line, kind="standing_approval", agent="main",
                           meta={"decision_id": decision_id, "rule_id": rule["id"]})
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
     return True
 
 

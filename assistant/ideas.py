@@ -20,6 +20,7 @@ import re
 from typing import Any, Callable
 
 import db
+from assistant.textutil import paragraphs as _clean
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +43,6 @@ def list_ideas(limit: int = 30) -> list[dict[str, Any]]:
     return list(reversed(rows))[:limit]
 
 
-def _clean(text: Any, limit: int) -> str:
-    s = "\n".join(" ".join(ln.split()) for ln in str(text or "").replace("\r", "").split("\n")).strip()
-    return s[:limit]
 
 
 def save(title: str, idea: str = "", *, why: str = "", day: str | None = None,
@@ -55,12 +53,19 @@ def save(title: str, idea: str = "", *, why: str = "", day: str | None = None,
     if not t:
         t = (body.split("\n")[0] or "Idea")[:TITLE_MAX]
     day = day or db.local_today().isoformat()
-    rows = db.kv_get(KV_IDEAS, [])
-    rows = rows if isinstance(rows, list) else []
-    if any(r.get("day") == day and str(r.get("title", "")).lower() == t.lower() for r in rows):
-        return {"saved": False, "title": t, "day": day, "path": NOTE, "note": "already kept today"}
     item = {"day": day, "title": t, "idea": body, "why": _clean(why, 500), "source": source, "saved_at": db.now_iso()}
-    db.kv_set(KV_IDEAS, (rows + [item])[-KEEP:])
+    dup = {"v": False}
+
+    def add(cur: Any) -> list[Any]:   # check + append in one atomic step: two savers never double up
+        rows = cur if isinstance(cur, list) else []
+        if any(r.get("day") == day and str(r.get("title", "")).lower() == t.lower() for r in rows):
+            dup["v"] = True
+            return rows
+        return (rows + [item])[-KEEP:]
+
+    db.kv_update(KV_IDEAS, add, [])
+    if dup["v"]:
+        return {"saved": False, "title": t, "day": day, "path": NOTE, "note": "already kept today"}
     try:
         from assistant import vault
 

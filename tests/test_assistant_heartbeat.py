@@ -113,14 +113,10 @@ def test_task_delegated_one_at_a_time_and_capped(hb, monkeypatch):
 def test_usage_deferral(hb, monkeypatch):
     monkeypatch.setattr(usage, "constrained", lambda threshold=0.8: (True, None))
     assert heartbeat.tick()["status"] == "deferred" and not hb_requests(hb)
-    monkeypatch.setattr(usage, "constrained", lambda threshold=0.8: (False, None))
-    queued = []
-    monkeypatch.setattr(usage, "should_defer", lambda kind, prompt, **k: queued.append((kind, prompt)) or 7)
-    tasks.set_task_runner(lambda b, c: ("x", "ok"))
-    hb.queue_for(heartbeat.AGENT, reply(tasks=[{"task": "Deep research on niches", "why": "weekly"}]))
-    r = heartbeat.tick()
-    assert r["tasks"] == 0 and queued and queued[0][0] == "heartbeat"
-    assert db.kv_get(heartbeat.KV_TASK) is None and heartbeat.tasks_today() == 0
+    # the next tick (usage free) does the work itself: nothing is turned into a queued prompt run
+    from assistant import store
+
+    assert store.list_deferred("queued") == []
 
 
 def test_quiet_hours_only_urgent_then_morning_catch_up(hb, clock):

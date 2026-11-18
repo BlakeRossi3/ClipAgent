@@ -130,3 +130,15 @@ def test_agent_runs_and_assistant_spend(clock):
     db.insert_llm_usage(model="claude-haiku-5-5", purpose="pick.score_window", tier="haiku", input_tokens=1,
                         output_tokens=1, cost_usd=0.05)
     assert store.assistant_spent_today() == pytest.approx(0.30)
+
+
+def test_meta_merges_are_atomic_and_keep_other_keys():
+    did = store.add_deferred("x", meta={"by": "Cecil", "attempts": 2})
+    assert store.merge_deferred_meta(did, task_id="t1")
+    assert store.get_deferred(did).meta == {"by": "Cecil", "attempts": 2, "task_id": "t1"}
+    plain = store.add_deferred("y")
+    assert store.merge_deferred_meta(plain, attempts=1) and store.get_deferred(plain).meta == {"attempts": 1}
+    assert not store.merge_deferred_meta(999999, x=1)
+    iid = store.add_backlog("Build a thing", detail="d", source="owner")
+    store.merge_backlog_meta(iid, task_id="t9", run_id=3)
+    assert store.get_backlog(iid).meta["task_id"] == "t9"

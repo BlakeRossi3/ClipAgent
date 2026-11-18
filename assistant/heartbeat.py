@@ -359,10 +359,11 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     if not s.enabled:
         result["status"] = "disabled"
         return result
-    if runtime.is_stopped():
+    why = usage.wait_reason()
+    if why == "I am switched off":
         return done("stopped")
-    tight, until = usage.constrained()
-    if tight and not force:
+    if why and not force:
+        _tight, until = usage.constrained()
         return done("deferred", until=db.to_iso(until) if until else None)
 
     checklist, items = read_checklist()
@@ -442,7 +443,7 @@ HEARTBEAT_TASK_USAGE_SHARE = 0.10
 
 def _start_task(t: dict[str, str], s: Any) -> str | None:
     """Start one background task (assistant.tasks). None = not started (busy, cap, deferred)."""
-    from assistant import tasks, usage
+    from assistant import tasks
 
     if current_task() is not None:
         db.log_event(AGENT, "heartbeat task skipped: one already running", data={"task": t["task"][:200]})
@@ -454,9 +455,6 @@ def _start_task(t: dict[str, str], s: Any) -> str | None:
     brief = (f"{t['task']}\n\n(This came from your heartbeat, not from him directly. Checklist item: "
              f"{t['why'] or 'n/a'}. Anything outward-facing, destructive, or a change to Agent/Heartbeat.md "
              f"needs request_approval first.)")
-    if usage.should_defer("heartbeat", brief) is not None:
-        db.log_event(AGENT, "heartbeat task deferred until the plan resets", data={"task": t["task"][:200]})
-        return None
     db.kv_incr(KV_TASKS_DAY.format(day=db.local_today().isoformat()))
     # A check-up, not a project: the cheaper model, low effort, 10 minutes and 10% of the 5-hour window at most.
     tid = tasks.start(brief, heard=f"Heartbeat check: {t['why'] or t['task']}"[:300], origin="any",

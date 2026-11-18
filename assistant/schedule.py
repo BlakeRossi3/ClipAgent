@@ -243,14 +243,13 @@ def start_row(d: store.Deferred) -> str:
     from assistant.settings import get_assistant_settings
 
     s = get_assistant_settings()
-    meta = d.meta if isinstance(d.meta, dict) else {}
     cheap = d.kind == "surprise"
     tid = tasks.start(d.title or d.prompt[:120], heard="", origin="any", brief=brief_for(d),
                       model=s.cc_subagent_model if cheap else None, effort="medium" if cheap else None,
                       announce=d.kind != "surprise",
                       meta={"scheduled_id": d.id, "kind": d.kind},
                       on_finish=lambda row, full, status, did=d.id: finished(did, row, full, status))
-    store.update_deferred(d.id, meta={**meta, "task_id": tid})
+    store.merge_deferred_meta(d.id, task_id=tid)   # atomic: a run that already ended keeps what it recorded
     return tid
 
 
@@ -298,24 +297,6 @@ def book_next(d: store.Deferred) -> int | None:
     return nid
 
 
-def sweep_stale(now: datetime | None = None) -> int:
-    """Rows stuck in ``running`` (the app restarted mid-task) -> failed, so they stop blocking."""
-    from assistant import tasks
-    from assistant.settings import get_assistant_settings
-
-    now = now or db.utcnow()
-    limit = timedelta(seconds=get_assistant_settings().cc_task_timeout_sec) + STALE_AFTER
-    live = {t["id"] for t in tasks.running_tasks()}
-    n = 0
-    for d in store.list_deferred("running"):
-        tid = (d.meta or {}).get("task_id") if isinstance(d.meta, dict) else None
-        if d.started_at and now - db.parse_iso(d.started_at) > limit and tid not in live:
-            store.set_deferred_status(d.id, "failed", result="Interrupted (the app restarted while it ran).")
-            book_next(d)
-            n += 1
-    return n
-
-
 # ---------------------------------------------------------------------------
 # the page / tool data
 # ---------------------------------------------------------------------------
@@ -357,7 +338,8 @@ def _job_items(now: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]
         if spec.trigger == "cron":
             try:
                 nxt = CronTrigger(timezone=tz, **spec.args).get_next_fire_time(None, now.astimezone(tz))
-            except Exception:
+            except Exception as exc:
+                log.debug("ignored error (best effort): %r", exc)
                 continue
             if nxt is None or nxt.astimezone(UTC) > horizon:
                 continue
@@ -442,7 +424,8 @@ def _usage_line() -> str:
             return (f"Claude plan: {min(left)}% left in the tightest window"
                     + (f", resets {when_words(until)}" if tight and until else "") + ".")
         return "Claude plan usage: not reported yet."
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return ""
 
 

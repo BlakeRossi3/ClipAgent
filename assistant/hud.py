@@ -44,6 +44,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlencode, urlsplit
 
 import db
+from assistant.textutil import one_line as _clean
 
 USER_AGENT = "ClipAgent/1.0 (personal assistant)"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -347,8 +348,6 @@ def _current_turn() -> str | None:
         return None
 
 
-def _clean(text: Any, n: int) -> str:
-    return " ".join(str(text or "").split())[:n]
 
 
 def make_panel(kind: str, title: str, body: dict[str, Any], *, accent: str = "default", hold: str = "turn",

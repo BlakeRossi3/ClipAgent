@@ -901,13 +901,10 @@ def _turn_room() -> str:
     s = get_assistant_settings()
     if s.backend == "claude_code":
         # no daily run cap any more: leave room for his own conversations by waiting while usage is tight
-        try:
-            from assistant import usage
+        from assistant import usage
 
-            if usage.constrained()[0]:
-                return "reserve"
-        except Exception:  # pragma: no cover - backend module broken
-            return "disabled"
+        if usage.wait_reason():
+            return "reserve"
     else:
         from assistant import runtime
 

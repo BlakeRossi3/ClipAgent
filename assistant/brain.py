@@ -518,7 +518,8 @@ def fast_search_ready() -> bool:
         from assistant import fast_search
 
         return fast_search.provider() != "none"
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -586,8 +587,8 @@ class Brain:
         finally:
             try:
                 self.loop.run_until_complete(self._disconnect())
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("ignored error (best effort): %r", exc)
             self.loop.close()
 
     async def _main(self) -> None:
@@ -1886,14 +1887,14 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         opts = helper.options(mode=mode, resume=None, worker=True, table=table)
         try:   # background work: many cheap steps are fine; usage, not step count, decides when to pause
             opts.max_turns = s.task_max_turns
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
         for key, val in (("model", model), ("effort", effort)):
             if val:
                 try:
                     setattr(opts, key, val)
-                except Exception:   # an options object that will not take it: keep the defaults
-                    pass
+                except Exception as exc:   # an options object that will not take it: keep the defaults
+                    log.debug("ignored error (best effort): %r", exc)
         client = _make_client(opts, table)
         await client.connect()
         text, seen = "", set()
@@ -1960,8 +1961,8 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
             tracker.close()
             try:
                 await client.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("ignored error (best effort): %r", exc)
         if r is None and guard["why"] == "stopped":
             return "Stopped at your request.", "stopped", "stopped"
         if r is None and guard["why"] == "usage":

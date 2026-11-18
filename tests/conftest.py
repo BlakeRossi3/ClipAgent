@@ -96,7 +96,9 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     llm.reset()
     config.get_settings().ensure_dirs()
     yield
-    selfedit.set_app_dir(None)
+    # NOT None: None means "the real checkout", and a background thread that outlives its test (a worker
+    # with the self-edit guard) would then commit to / switch branches in the real repo. It did once.
+    selfedit.set_app_dir(tmp_path / "no-repo-after-test")
     claude_code.set_claude_json(None)
     hud.reset()
     auto_memory.reset()

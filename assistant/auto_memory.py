@@ -99,8 +99,8 @@ def reset() -> None:
             if callable(cancel):
                 try:
                     cancel()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("ignored error (best effort): %r", exc)
         _pending.clear()
     _scheduler = None
 
@@ -113,7 +113,8 @@ def pending() -> list[str]:
 def enabled() -> bool:
     try:
         return bool(get_assistant_settings().auto_memory)
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return False
 
 
@@ -121,7 +122,8 @@ def _since_last(channel: str) -> float | None:
     v = db.kv_get(KV_LAST.format(channel=channel))
     try:
         return (db.utcnow() - db.parse_iso(str(v))).total_seconds() if v else None
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return None
 
 
@@ -176,7 +178,8 @@ def _redact(text: str) -> str:
         from assistant import admin
 
         return admin.redact(text)
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return text
 
 
@@ -222,11 +225,13 @@ def build_request(convo: str) -> Any:
                                 MAX_TOKENS, "low")
 
 
-def _deferred_prompt(channel: str, convo: str) -> str:
-    return ("Background memory pass (not from him directly; do not message him). Read the conversation below and "
-            "save each lasting fact about him with memory_remember (confidence stated or inferred). Nothing "
-            "trivial, never secrets; most conversations have nothing worth keeping.\n\n"
-            f"<conversation channel=\"{channel}\">\n{convo}\n</conversation>")
+def catch_up() -> dict[str, str]:
+    """Run the pass now for every channel with unread exchanges (plan usage just freed up)."""
+    out = {}
+    for ch in CHANNELS:
+        if new_messages(ch):
+            out[ch] = extract(ch).get("status", "")
+    return out
 
 
 def parse_facts(text: str) -> list[dict[str, str]]:
@@ -276,7 +281,8 @@ def _ask_model(req: Any, *, agent: str = AGENT) -> tuple[str, float]:
 def extract(channel: str) -> dict[str, Any]:
     """One pass over ``channel``'s new exchanges. Returns {status, added, duplicates, dropped, cost_usd}.
 
-    status: off | nothing | stopped | deferred | budget | error | ok.
+    status: off | nothing | stopped | waiting | budget | error | ok. ``waiting`` (plan usage high): the
+    cursor stays, so the same messages are read by the next pass (:func:`catch_up` runs when usage frees).
     """
     from assistant import runtime, usage, vault
 
@@ -299,10 +305,10 @@ def extract(channel: str) -> dict[str, Any]:
     if runtime.is_stopped():
         return {**result, "status": "stopped"}
     convo = transcript(msgs)
-    if usage.should_defer("auto_memory", _deferred_prompt(channel, convo), agent="main") is not None:
-        advance()
-        db.log_event(MODULE, "memory pass deferred until the plan resets", data={"channel": channel})
-        return {**result, "status": "deferred"}
+    why = usage.wait_reason()
+    if why:   # keep our place; catch_up() reads these same messages once usage frees up
+        db.log_event(MODULE, f"memory pass waiting: {why}", data={"channel": channel})
+        return {**result, "status": "waiting", "reason": why}
     try:
         text, cost = _ask_model(build_request(convo))
     except runtime.AssistantBudgetExceeded as exc:

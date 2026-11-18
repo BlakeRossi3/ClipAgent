@@ -154,7 +154,7 @@ def run_morning() -> str:
     kind = pick_kind(day)
     theme = pick_theme(day)
     text = brief(day, kind, theme)
-    tight, _until = usage.constrained()
+    tight = bool(usage.wait_reason())
     meta = {"day": day.isoformat(), "surprise_kind": kind, "surprise_theme": theme}
     if tight:   # cheap, but optional: wait for the window to reset rather than eat what is left
         from assistant import handoff
@@ -209,7 +209,7 @@ def on_finished(d: store.Deferred, row: dict[str, Any], full: str, status: str) 
     has_html = html.is_file() and 0 < html.stat().st_size <= MAX_HTML_BYTES
     item = {"day": day, "kind": kind, "theme": str(meta.get("surprise_theme") or ""), "title": title, "path": rel, "summary": (row.get("summary") or "")[:300],
             "html_url": f"/dashboard/surprises/{day}.html" if has_html else None, "made_at": db.now_iso()}
-    db.kv_set(KV_HISTORY, (history() + [item])[-HISTORY_KEEP:])
+    db.kv_append(KV_HISTORY, item, keep=HISTORY_KEEP)
     db.kv_set(KV_LATEST, item)
     db.log_event("assistant", f"morning surprise ready: {title}", data={"kind": kind, "html": has_html})
 

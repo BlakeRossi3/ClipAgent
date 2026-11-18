@@ -176,7 +176,8 @@ def _head_or_blank() -> str:
         from assistant import selfedit
 
         return _out("rev-parse", "HEAD") if selfedit.is_repo() else ""
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return ""
 
 
@@ -209,8 +210,8 @@ def busy() -> str:
 
         if brain.running() and brain.get_brain().owner() is not None:
             return "Cecil is answering you right now"
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
     return ""
 
 

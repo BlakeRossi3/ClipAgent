@@ -306,12 +306,12 @@ def log_turn(turn_id: str, heard: str, *, kind: str, duration_ms: float, updates
     """One voice request's evidence (never fatal)."""
     try:
         with _lock:
-            rows = [r for r in _turns() if r.get("turn") != turn_id]
-            rows.append({"turn": turn_id, "ts": db.now_iso(), "heard": _clean(heard, 160), "kind": kind,
-                         "duration_ms": int(duration_ms), "updates": int(updates), "sentences": int(sentences),
-                         "tools": sorted({str(t).split("__")[-1] for t in tools})[:12], "origin": origin,
-                         "feedback": "", "rating": None})
-            db.kv_set(TURNS_KEY, rows[-KEEP_TURNS:])
+            row = {"turn": turn_id, "ts": db.now_iso(), "heard": _clean(heard, 160), "kind": kind,
+                   "duration_ms": int(duration_ms), "updates": int(updates), "sentences": int(sentences),
+                   "tools": sorted({str(t).split("__")[-1] for t in tools})[:12], "origin": origin,
+                   "feedback": "", "rating": None}
+            db.kv_update(TURNS_KEY, lambda cur: ([r for r in (cur if isinstance(cur, list) else [])
+                                                  if r.get("turn") != turn_id] + [row])[-KEEP_TURNS:], [])
     except Exception as exc:
         db.log_event("assistant", "speaking style turn log failed", level="warning", data={"error": repr(exc)[:200]})
 

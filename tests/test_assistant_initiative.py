@@ -267,7 +267,7 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(selfedit, "schedule_restart", lambda delay=0: restarts.append(1))
     yield r, restarts
     selfedit.set_runners()
-    selfedit.set_app_dir(None)
+    selfedit.set_app_dir(r.parent / "no-repo-after-test")   # never None (= the real checkout)
 
 
 def test_background_self_edit_is_committed_and_undoable_per_item(on, clock, repo, monkeypatch):

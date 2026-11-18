@@ -16,6 +16,7 @@ update conflict). ``GIT_TERMINAL_PROMPT=0``: a missing GitHub sign-in fails fast
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -24,6 +25,8 @@ from typing import Any, Callable
 
 import db
 from assistant.settings import get_assistant_settings
+
+log = logging.getLogger(__name__)
 
 KV_STATUS = "publish:status"
 _lock = threading.Lock()
@@ -52,7 +55,8 @@ def _secret_values() -> list[str]:
         from assistant import admin
 
         vals = config_store.read_values()
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return []
     return [v.strip() for k, v in vals.items() if admin.is_secret_key(k) and len((v or "").strip()) >= 8]
 

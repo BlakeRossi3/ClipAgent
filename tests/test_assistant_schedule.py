@@ -128,11 +128,21 @@ def test_list_and_cancel_tools(on, clock):
     assert schedule.snapshot()["recent"][0]["outcome"] == "cancelled"
 
 
-def test_stale_running_rows_fail(on, clock):
+def test_rows_orphaned_by_a_restart_are_retried_not_failed(on, clock):
+    from assistant import usage
+
     did = schedule.schedule("long job", when=db.utcnow())
     assert store.set_deferred_status(did, "running")
+    assert usage.sweep_orphans() == 0                    # this process started after it: still could be live...
+    usage._boot = None
+    clock.advance(minutes=1)
+    assert usage.sweep_orphans() == 1                    # ...a fresh process (restart) knows it is an orphan
+    d = store.get_deferred(did)
+    assert d.status == "queued" and "restarted" in d.meta["last_error"] and d.meta["attempts"] == 1
+    run = store.record_agent_run("researcher", "look it up", model="m", duration_ms=0, cost_usd=0, status="running")
     clock.advance(hours=2)
-    assert schedule.sweep_stale() == 1 and store.get_deferred(did).status == "failed"
+    usage.sweep_orphans()
+    assert store.get_agent_run(run).status == "error"
 
 
 def _csrf(c):

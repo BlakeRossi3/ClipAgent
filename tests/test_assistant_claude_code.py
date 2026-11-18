@@ -194,8 +194,11 @@ def test_rate_limit_events_feed_usage_status_and_deferral(cc):
     assert u["known"] and u["windows"]["five_hour"]["left_pct"] == 15 and u["windows"]["seven_day"]["left_pct"] == 60
     assert u["runs_today"] == 1 and u["windows"]["five_hour"]["resets_text"]
     assert usage.constrained()[0] is True
-    did = usage.should_defer("reel", "Deep-dive the latest reel.")
+    did = usage.should_defer("improve", "Run the weekly self-improvement review.")
     assert did and store.get_deferred(did).after_reset
+    with pytest.raises(ValueError):                  # deferral reruns the same job; never a free-text prompt run
+        usage.should_defer("reel", "Deep-dive the latest reel.")
+    assert usage.wait_reason().startswith("Claude plan usage is high")
     tools.load_extensions()
     res = tools.dispatch("usage_status", {}, tools.ToolContext(agent="main"), allowed={"usage_status"})
     assert res.ok and "five_hour" in res.content

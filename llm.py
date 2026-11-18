@@ -540,15 +540,9 @@ def _call_plan(req: LLMRequest) -> _Raw:
         return budget.BudgetExceeded(f"Claude plan unavailable for {req.purpose}: {why}",
                                      spent=budget.spent_today(), cap=budget.daily_cap_usd())
 
-    until = claude_code.backoff_until()
-    if until is not None:
-        raise stop(f"plan limit, back {claude_code.friendly_time(until)}")
-    try:
-        tight, _ = usage.constrained()
-    except Exception:  # no usage reading: go ahead
-        tight = False
-    if tight:
-        raise stop("plan usage is tight")
+    why = usage.wait_reason()
+    if why:
+        raise stop(why)
     user = req.user
     if req.json_schema is not None:
         user += PLAN_JSON_NOTE + json.dumps(req.json_schema, separators=(",", ":"))

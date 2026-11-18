@@ -105,12 +105,18 @@ def test_off_switch_and_deferral(model, clock, monkeypatch):
     assert auto_memory.after_turn("dashboard") is False and auto_memory.extract("dashboard")["status"] == "off"
     monkeypatch.setenv("ASSISTANT_AUTO_MEMORY", "true")
     asettings.reset_assistant_settings()
-    deferred: list[tuple[str, str]] = []
-    monkeypatch.setattr(usage, "should_defer", lambda kind, prompt, **kw: deferred.append((kind, prompt)) or 7)
+    monkeypatch.setattr(usage, "wait_reason", lambda **kw: "Claude plan usage is high")
     n = len(model.requests)
-    assert auto_memory.extract("dashboard")["status"] == "deferred" and len(model.requests) == n
-    assert deferred[0][0] == "auto_memory" and "window seats" in deferred[0][1] and "memory_remember" in deferred[0][1]
-    assert auto_memory.extract("dashboard")["status"] == "nothing"   # the deferred job owns those messages
+    out = auto_memory.extract("dashboard")
+    assert out["status"] == "waiting" and "usage is high" in out["reason"] and len(model.requests) == n
+    from assistant import store
+
+    assert store.list_deferred("queued") == []                    # no prompt run is queued in its place
+    assert auto_memory.new_messages("dashboard")                  # ... and the messages keep their place
+    monkeypatch.setattr(usage, "wait_reason", lambda **kw: "")
+    out = auto_memory.catch_up()                                  # usage freed: the same pass reads them now
+    assert set(out) == {"dashboard"} and out["dashboard"] != "waiting" and len(model.requests) == n + 1
+    assert auto_memory.new_messages("dashboard") == []
 
 
 def test_turn_and_rollover_hooks_queue_a_pass(model, clock):

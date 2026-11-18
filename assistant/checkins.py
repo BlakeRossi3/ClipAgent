@@ -31,6 +31,7 @@ or answered is also written to the day's journal note.
 
 from __future__ import annotations
 
+import logging
 import hashlib
 import re
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ from typing import Any, Callable
 import db
 from assistant import store
 from assistant.settings import get_assistant_settings
+
+log = logging.getLogger(__name__)
 
 MODULE = "assistant"
 ROUTINE_NOTE = "Agent/Routine.md"
@@ -214,7 +217,8 @@ def _open_questions() -> list[Gap]:
 
         rel = vault.AREAS["open_questions"][0]
         facts = vault.facts_in(vault.read_note(rel).body) if vault.note_exists(rel) else []
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         return []
     out = []
     for f in facts:
@@ -233,7 +237,8 @@ def next_gap() -> Gap | None:
         try:
             if g.open():
                 return g
-        except Exception:
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
             continue
     return None
 
@@ -355,8 +360,8 @@ def _agenda(today: date) -> list[str]:
             sec = re.search(r"^## Agenda\s*$(.*?)(?=^## |\Z)", body, re.M | re.S)
             if sec:
                 out += [ln.strip("-* ").strip() for ln in sec.group(1).splitlines() if ln.strip().startswith(("-", "*"))][:2]
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
     return out
 
 
@@ -373,7 +378,8 @@ def compose_morning_brief(h: str) -> str:
     parts.append(ledger.brief_line())
     try:
         idea = meals.suggest(today, slots=("breakfast",))
-    except Exception:
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
         idea = []
     if idea:
         parts.append(f"Breakfast idea: {idea[0]['suggestion']}.")
@@ -399,8 +405,8 @@ def compose_evening_wrap(h: str) -> str:
     text = _fit(parts)
     try:
         vault.append_journal(f"Evening wrap: {text}", source="checkins")
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("ignored error (best effort): %r", exc)
     return text
 
 
@@ -503,8 +509,6 @@ def _deliver(chk: store.Checkin, text: str, *, reask: bool = False) -> str:
 
 def send_due(now: datetime | None = None) -> dict[str, int]:
     """Send due check-ins (run every few minutes). Returns counts by outcome."""
-    from assistant import tools
-
     out: dict[str, int] = {"sent": 0, "skipped": 0, "expired": 0, "reasked": 0, "waiting": 0}
     s = get_assistant_settings()
     if not s.enabled or _stopped():
@@ -748,8 +752,8 @@ def _answer_onboarding(chk: store.Checkin, key: str, text: str, h: str) -> str |
         vault.remember(f"{q.rstrip('?')}: {' '.join(text.split())}", area="about", source="sms")
         try:
             vault.forget(q.rstrip("?"), area="open_questions")
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("ignored error (best effort): %r", exc)
         reply, parsed = f"Thank you, {h}. Noted.", {"remembered": True}
     else:
         return None

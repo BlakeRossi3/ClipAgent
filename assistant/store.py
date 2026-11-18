@@ -832,6 +832,16 @@ def finish_agent_run(run_id: int, *, status: str, duration_ms: int, cost_usd: fl
             {"status", "duration_ms", "cost_usd", "summary", "tool_calls"}, touch=False)
 
 
+def close_stale_runs(before_iso: str, *, conn: sqlite3.Connection | None = None) -> int:
+    """Runs still ``running`` that started before ``before_iso`` (cut off by a restart or crash) -> ``error``,
+    so the Staff page never shows a dead run as working. Returns how many."""
+    with transaction(conn) as c:
+        cur = c.execute("UPDATE as_agent_runs SET status = 'error', summary = COALESCE(summary, "
+                        "'Interrupted: the app restarted or the run was cut off') "
+                        "WHERE status = 'running' AND ts < ?", (before_iso,))
+        return cur.rowcount
+
+
 def get_agent_run(run_id: int, *, conn: sqlite3.Connection | None = None) -> AgentRun | None:
     with transaction(conn) as c:
         return _one(c, AgentRun, "SELECT * FROM as_agent_runs WHERE id = ?", (run_id,))
@@ -1157,6 +1167,25 @@ def list_backlog_finished(since_iso: str | None = None, *, status: str | Sequenc
     with transaction(conn) as c:
         return _many(c, BacklogItem, f"SELECT * FROM as_backlog WHERE {where} ORDER BY finished_at DESC, id DESC "
                      "LIMIT ?", (*params, limit))
+
+
+def _merge_meta(table: str, row_id: int, fields: dict[str, Any], conn: sqlite3.Connection | None) -> bool:
+    """Merge ``fields`` into a row's JSON ``meta`` in ONE statement (``json_patch``), so a concurrent writer
+    (e.g. a task that already finished and recorded its outcome) is never overwritten by a stale copy."""
+    with transaction(conn) as c:
+        cur = c.execute(f"UPDATE {table} SET meta = json_patch(COALESCE(meta, '{{}}'), ?) WHERE id = ?",
+                        (json.dumps(fields, sort_keys=True), row_id))
+        return cur.rowcount > 0
+
+
+def merge_deferred_meta(did: int, *, conn: sqlite3.Connection | None = None, **fields: Any) -> bool:
+    """Set these keys in a deferred row's ``meta`` (other keys untouched, atomically)."""
+    return _merge_meta("as_deferred", did, fields, conn)
+
+
+def merge_backlog_meta(item_id: int, *, conn: sqlite3.Connection | None = None, **fields: Any) -> bool:
+    """Set these keys in a backlog item's ``meta`` (other keys untouched, atomically)."""
+    return _merge_meta("as_backlog", item_id, fields, conn)
 
 
 def update_backlog(item_id: int, *, conn: sqlite3.Connection | None = None, **cols: Any) -> None:
