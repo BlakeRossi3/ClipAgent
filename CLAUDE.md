@@ -652,6 +652,9 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   `rate_limit_info.unifiedWindows` (both windows per event, CLI 2.1.3xx), plus `usage.poll_plan_usage()` (jobs
   `assistant_usage_poll` 5 min + startup; zero tokens): SDK control request `get_usage` (`skip_behaviors`) ->
   `rate_limits.{five_hour,seven_day,...}.{utilization 0-100, resets_at ISO}`; kv `assistant:usage:poll`; tests `usage.set_poller`.
+  Every answered message also calls `usage.poll_after_turn()` (brain `_on_message` on ResultMessage; daemon thread,
+  max once per `AFTER_TURN_GAP` 60 s) so the tile follows his messages. `status.plan_line()` gives Cecil the same two
+  meters in words (no run count) for the status snapshot.
 - `assistant/tiles.py` (store v8 `as_tiles`): short-lived tiles on the Jarvis stage (`tile_show|remove|list`, default
   60 min, `key` replaces, max 6), `POST /dashboard/tiles/{id}/dismiss`, home part `dyn_tiles`, `static/home.js` drops expired ones.
   Store v9 adds `as_tiles.rows` (JSON `{text, note, mark}` list, `tiles.show(rows=)`) = a wide scoreboard tile.

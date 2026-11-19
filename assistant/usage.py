@@ -63,6 +63,7 @@ JOB_FUNCS = {"improve": "assistant.improve:weekly_improvement"}
 NON_URGENT = ("history", "reflection", "evals", "reel", "improve", "distill", "prompt")
 KV_POLL = "assistant:usage:poll"   # last get_usage poll: {at, ok, error, available, subscription}
 POLL_MIN_GAP = timedelta(minutes=4)
+AFTER_TURN_GAP = timedelta(seconds=60)   # poll_after_turn: at most one re-read a minute while he talks
 POLL_TIMEOUT_SEC = 45.0
 Poller = Callable[[], dict[str, Any]]
 _poller: Poller | None = None
@@ -281,6 +282,28 @@ def poll_plan_usage(*, force: bool = False) -> dict[str, Any]:
     db.kv_set(KV_POLL, {"at": db.now_iso(), "ok": True, "error": None, "available": available, "windows": n,
                         "subscription": (resp or {}).get("subscription_type")})
     return {"status": "ok" if available else "unavailable", "windows": n}
+
+
+def poll_after_turn(*, background: bool = True) -> dict[str, Any]:
+    """After each answered message: re-read both windows (zero tokens) so the home tile moves while he
+    talks ("updating live as I send messages"). At most once per :data:`AFTER_TURN_GAP`; by default in a
+    daemon thread so the turn never waits on the CLI."""
+    last = db.kv_get(KV_POLL)
+    if isinstance(last, dict) and last.get("ok") and last.get("at") \
+            and db.utcnow() - db.parse_iso(last["at"]) < AFTER_TURN_GAP:
+        return {"status": "skipped", "reason": "polled recently"}
+    if not background:
+        return poll_plan_usage(force=True)
+    import threading
+
+    def go() -> None:
+        try:
+            poll_plan_usage(force=True)
+        except Exception as exc:
+            log.debug("usage poll after turn failed: %s", exc)
+
+    threading.Thread(target=go, name="usage-poll-after-turn", daemon=True).start()
+    return {"status": "started"}
 
 
 def _infer_siblings(kind: str, status: str, util: float | None) -> None:

@@ -89,6 +89,33 @@ def test_poll_fills_both_meters_from_get_usage_percentages(plan, clock):
     assert m["five_hour"]["left_pct"] == 100 and m["seven_day"]["left_pct"] == 38
 
 
+def test_poll_after_turn_refreshes_meters_as_he_sends_messages(plan, clock):
+    """Each answered message re-reads both windows (zero tokens), at most once a minute, so the tile
+    moves while he talks instead of waiting for the 5-minute job."""
+    plan.append(_answer({"utilization": 10.0, "resets_at": _iso_in(hours=2)},
+                        {"utilization": 40.0, "resets_at": _iso_in(days=4)}))
+    assert usage.poll_after_turn(background=False)["status"] == "ok"
+    clock.advance(seconds=20)
+    assert usage.poll_after_turn(background=False)["status"] == "skipped"     # too soon after the last
+    clock.advance(seconds=50)
+    plan.append(_answer({"utilization": 14.0, "resets_at": _iso_in(hours=2)},
+                        {"utilization": 41.0, "resets_at": _iso_in(days=4)}))
+    assert usage.poll_after_turn(background=False)["status"] == "ok"
+    m = {x["key"]: x for x in home_live.plan_meters()["meters"]}
+    assert m["five_hour"]["left_pct"] == 86 and m["seven_day"]["left_pct"] == 59
+
+
+def test_status_plan_line_has_both_windows_and_no_run_count(plan, clock):
+    from assistant import status
+
+    plan.append(_answer({"utilization": 25.0, "resets_at": _iso_in(hours=2)},
+                        {"utilization": 60.0, "resets_at": _iso_in(days=4)}))
+    usage.poll_plan_usage(force=True)
+    line = status.plan_line()
+    assert "5-hour 75% left" in line and "weekly 40% left" in line
+    assert "runs" not in line
+
+
 def test_poll_replaces_a_reset_window_and_an_inferred_bound(plan, clock):
     now = int(db.utcnow().timestamp())
     usage.record_window({"status": "allowed", "rateLimitType": "five_hour", "utilization": 0.9, "resetsAt": now + 600})

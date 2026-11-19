@@ -45,6 +45,24 @@ def local_hm(iso: str | None) -> str:
         return ""
 
 
+def plan_line() -> str:
+    """The Claude plan as he thinks of it: the 5-hour and weekly windows (the same two meters as the home
+    tile, ``home_live.plan_meters``), plus a hit limit. No daily run count (he asked for it gone)."""
+    import home_live
+
+    p = home_live.plan_meters()
+    bits = []
+    for m in p["meters"]:
+        if m["left_pct"] is not None:
+            fig = f"{m['left_pct']}% left" + (f", resets {m['resets_text']}" if m["resets_text"] else "")
+        else:
+            fig = m["note"] or "unknown"
+        bits.append(f"{m['label'].lower()} {fig}")
+    if p["limited"]:
+        bits.append(f"plan limited until {p['limited_text']}")
+    return "Claude plan " + "; ".join(bits)
+
+
 def _parts(fns: list[Callable[[], list[str]]]) -> list[str]:
     out: list[str] = []
     for fn in fns:
@@ -100,15 +118,8 @@ def status_snapshot() -> str:
         return [line]
 
     def plan() -> list[str]:
-        from assistant import usage
-
-        u = usage.usage_status()
-        bits = [f"{k} window {w['left_pct']}% left" for k, w in u["windows"].items() if w.get("left_pct") is not None]
-        if u["limited"]:
-            bits.append(f"plan limited until {u['limited_text']}")
-        bits.append(f"{u['runs_today']} of {u['runs_cap']} Claude runs used today")
-        bits.append(f"assistant API spend today ${store.assistant_spent_today():.2f} of ${s.daily_budget_usd:.2f}")
-        return ["Usage: " + "; ".join(bits)]
+        return ["Usage: " + plan_line()
+                + f"; assistant API spend today ${store.assistant_spent_today():.2f} of ${s.daily_budget_usd:.2f}"]
 
     def events() -> list[str]:
         evs = db.list_events(limit=4)

@@ -1355,6 +1355,12 @@ class Brain:
             elif not msg.is_error and not turn.fed and msg.result:
                 self._feed(turn, msg.result)
             self._settle(turn)
+            try:   # the home tile's 5-hour + weekly meters follow his messages (zero tokens, max once a minute)
+                from assistant import usage
+
+                usage.poll_after_turn()
+            except Exception as exc:
+                log.debug("usage poll after turn not started: %s", exc)
             return
         if turn is None:
             if time.monotonic() - self._last_abandon_at < UNASKED_GUARD_SEC:
