@@ -733,6 +733,11 @@ def working_dirs() -> list[Path]:
 # -- his own Claude Code MCP servers (adewaskar/jarvis bridge/server.mjs configuredServers/allowedServers) --
 
 _claude_json: Path | None = None
+# remote MCP servers the app ships with (OAuth, no secrets here; he signs in once: :func:`mcp_signin`).
+# Filtered by ASSISTANT_MCP_SERVERS like his own; an entry of the same name in ~/.claude.json wins.
+BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {
+    "higgsfield": {"type": "http", "url": "https://mcp.higgsfield.ai/mcp"},   # images and video generation
+}
 _SERVER_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
@@ -780,10 +785,10 @@ def user_mcp_servers() -> dict[str, dict[str, Any]]:
     try:
         cfg = json.loads(claude_json_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        cfg = {}
     if not isinstance(cfg, dict):
-        return {}
-    merged: dict[str, Any] = {}
+        cfg = {}
+    merged: dict[str, Any] = dict(BUILTIN_MCP_SERVERS)      # his own entry of the same name wins
     if isinstance(cfg.get("mcpServers"), dict):
         merged.update(cfg["mcpServers"])
     projects = cfg.get("projects") if isinstance(cfg.get("projects"), dict) else {}
@@ -805,6 +810,25 @@ def user_mcp_servers() -> dict[str, dict[str, Any]]:
 
 def mcp_server_names() -> list[str]:
     return sorted(user_mcp_servers())
+
+
+def mcp_signin(name: str) -> dict[str, Any]:
+    """How he signs a built-in remote MCP server in (OAuth) inside Cecil's own Claude Code profile.
+
+    Writes ``<CLAUDE_CONFIG_DIR>/mcp-signin/<name>.json`` holding exactly the entry the brain passes (same
+    name + url, so Claude Code files the token under the same server key) and returns the command he runs
+    once in a terminal; inside it he types /mcp, picks the server and signs in with his own account."""
+    spec = BUILTIN_MCP_SERVERS.get(name)
+    if spec is None:
+        return {"ok": False, "error": f"unknown built-in server {name!r}", "known": sorted(BUILTIN_MCP_SERVERS)}
+    folder = home_dir() / "mcp-signin"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.json"
+    path.write_text(json.dumps({"mcpServers": {name: spec}}, indent=2), encoding="utf-8")
+    command = (f"$env:CLAUDE_CONFIG_DIR='{home_dir()}'; claude --strict-mcp-config --mcp-config '{path}'")
+    return {"ok": True, "server": name, "config": str(path), "command": command,
+            "steps": ["Open PowerShell and run the command.", "Type /mcp, pick " + name + ", choose Authenticate.",
+                      "Sign in in the browser, then close that Claude window."]}
 
 
 def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = None,

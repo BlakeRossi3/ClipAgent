@@ -321,17 +321,54 @@ def _claude_json(tmp_path, monkeypatch):
 def test_user_mcp_servers_reads_global_and_home_scope_with_an_allowlist(tmp_path, monkeypatch):
     _claude_json(tmp_path, monkeypatch)
     servers = claude_code.user_mcp_servers()
-    assert sorted(servers) == ["gmail", "homeassistant", "notion"]
+    assert sorted(servers) == ["gmail", "higgsfield", "homeassistant", "notion"]
     assert servers["gmail"] == {"type": "stdio", "command": "npx", "args": ["-y", "gmail-mcp"],
                                 "env": {"GMAIL_TOKEN": servers["gmail"]["env"]["GMAIL_TOKEN"]}}
     assert servers["homeassistant"]["type"] == "stdio" and servers["notion"]["type"] == "http"
-    for raw, want in (("gmail, notion", ["gmail", "notion"]), ("none", []), ("all", ["gmail", "homeassistant", "notion"]),
+    assert servers["higgsfield"] == {"type": "http", "url": "https://mcp.higgsfield.ai/mcp"}   # built in
+    for raw, want in (("gmail, notion", ["gmail", "notion"]), ("none", []),
+                      ("all", ["gmail", "higgsfield", "homeassistant", "notion"]),
                       ("homeassistant", ["homeassistant"])):
         monkeypatch.setenv("ASSISTANT_MCP_SERVERS", raw)
         asettings.reset_assistant_settings()
         assert claude_code.mcp_server_names() == want, raw
+    monkeypatch.setenv("ASSISTANT_MCP_SERVERS", "all")
+    asettings.reset_assistant_settings()
     claude_code.set_claude_json(tmp_path / "missing.json")
-    assert claude_code.user_mcp_servers() == {}
+    assert claude_code.mcp_server_names() == ["higgsfield"]          # built-ins need no ~/.claude.json
+
+
+def test_his_own_higgsfield_entry_wins_over_the_built_in(tmp_path, monkeypatch):
+    import json as _json
+
+    p = tmp_path / "claude.json"
+    p.write_text(_json.dumps({"mcpServers": {"higgsfield": {"type": "sse", "url": "https://h.example/sse"}}}),
+                 encoding="utf-8")
+    claude_code.set_claude_json(p)
+    assert claude_code.user_mcp_servers()["higgsfield"] == {"type": "sse", "url": "https://h.example/sse"}
+
+
+def test_mcp_signin_writes_the_same_entry_into_cecils_profile(tmp_path):
+    import json as _json
+
+    claude_code.set_home(tmp_path / "cc")
+    try:
+        out = claude_code.mcp_signin("higgsfield")
+        assert out["ok"] and "/mcp" in " ".join(out["steps"])
+        cfg = _json.loads(open(out["config"], encoding="utf-8").read())
+        assert cfg == {"mcpServers": {"higgsfield": claude_code.BUILTIN_MCP_SERVERS["higgsfield"]}}
+        assert str(tmp_path / "cc") in out["command"] and "--mcp-config" in out["command"]
+        assert claude_code.mcp_signin("nope")["ok"] is False
+    finally:
+        claude_code.set_home(None)
+
+
+def test_servers_note_explains_higgsfield_signin():
+    from assistant import brain
+
+    assert "sign" in brain._servers_note(["higgsfield"]).lower()
+    assert "Higgsfield" not in brain._servers_note(["gmail"])
+    assert brain._servers_note([]) == ""
 
 
 def test_permission_rules_allow_each_passed_server():

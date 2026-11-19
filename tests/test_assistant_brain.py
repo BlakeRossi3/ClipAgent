@@ -594,18 +594,18 @@ def test_his_mcp_servers_join_the_brain_and_their_keys_never_leak(env, tmp_path,
     assert "gmail" not in (b.options(mode="plan", resume=None).mcp_servers or {})
     asettings.set_assistant_settings(s.replace(fake=False))
     opts = b.options(mode="plan", resume=None)
-    assert set(opts.mcp_servers) == {"gmail", "notion", "clipagent"}
+    assert set(opts.mcp_servers) == {"gmail", "higgsfield", "notion", "clipagent"}   # + built-in Higgsfield
     assert opts.mcp_servers["gmail"]["env"]["GMAIL_TOKEN"] == secret       # the server needs it to start...
     rules = _json.loads(open(opts.settings, encoding="utf-8").read())
     assert {"mcp__gmail__*", "mcp__notion__*"} <= set(rules["permissions"]["allow"])
-    assert "gmail, notion" in _appended(opts)
+    assert "gmail, higgsfield, notion" in _appended(opts)
     # ...but it is never shown: not in the prompt, the settings file, diagnostics or the event log
     assert secret not in _appended(opts) and secret not in open(opts.settings, encoding="utf-8").read()
     import server
 
     c = TestClient(server.create_app(), base_url="http://127.0.0.1:8000")
     d = c.get("/voice/api/diagnostics")
-    assert d.json()["mcp_servers"] == ["gmail", "notion"] and secret not in d.text
+    assert d.json()["mcp_servers"] == ["gmail", "higgsfield", "notion"] and secret not in d.text
     monkeypatch.setenv("ASSISTANT_MCP_SERVERS", "notion")
     asettings.reset_assistant_settings()
     asettings.set_assistant_settings(asettings.get_assistant_settings().replace(fake=False))

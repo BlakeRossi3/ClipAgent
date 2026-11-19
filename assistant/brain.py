@@ -527,6 +527,16 @@ def _servers_note(names: list[str], *, lean: bool = False) -> str:
     """Names only: his own MCP servers are in this session too (their settings are never shown)."""
     if not names:
         return ""
+    if "higgsfield" in names:   # built in (claude_code.BUILTIN_MCP_SERVERS): his Higgsfield account, sign-in once
+        signin = ("\n\nHiggsfield (mcp__higgsfield__*) generates images and video on his Higgsfield account. If its "
+                  "tools are missing it isn't signed in yet: say so once and put the one-off sign-in on his screen "
+                  "(assistant.claude_code.mcp_signin('higgsfield') gives the command and steps).")
+    else:
+        signin = ""
+    return _servers_body(names, lean=lean) + signin
+
+
+def _servers_body(names: list[str], *, lean: bool) -> str:
     if lean:
         return ("\n\nHis own Claude Code MCP servers (" + ", ".join(names) + ") are switched off to keep you quick: when "
                 "a request needs one, call need_tools with kind=my_servers, then use them as mcp__<server>__<tool>. "
