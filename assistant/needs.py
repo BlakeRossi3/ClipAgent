@@ -103,6 +103,19 @@ def items(d: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return out
 
 
+def pill_lines(limit: int = 4) -> list[str]:
+    """Per-turn context: what the 'N need(s) you' pill under the orb is counting, so Cecil can say what it is
+    the moment he asks, and clear it when he says he has seen it. Empty when the pill is hidden."""
+    its = items()
+    if not its:
+        return []
+    n = len(its)
+    out = [f"The '{n} need{'s' if n == 1 else ''} you' pill under the orb counts these (needs_list for detail; "
+           "when he says he has seen one, needs_dismiss it):"]
+    out += [f"  {i}. {it['text'][:160]}" for i, it in enumerate(its[:limit], 1)]
+    return out
+
+
 def _n(n: int) -> str:
     return _WORDS[n] if 0 <= n < len(_WORDS) else str(n)
 
@@ -166,7 +179,10 @@ def register_tools(register: Callable[..., None]) -> None:
 
     def _dismiss(ctx: Any, a: dict[str, Any]) -> Any:
         kind = str(a.get("kind") or "")
-        if not acknowledge(kind):
+        if kind == "all":
+            for k in ACK_KINDS:
+                acknowledge(k)
+        elif not acknowledge(kind):
             raise ToolError(f"kind must be one of {ACK_KINDS}; approvals and questions clear when answered")
         return {"dismissed": kind, "remaining": len(items())}
 
@@ -185,7 +201,8 @@ def register_tools(register: Callable[..., None]) -> None:
     register(Tool("needs_list", "Everything that needs the owner right now - the same list and count as the "
                   "'need you' badge (approvals, unanswered questions, failures, failed staff tasks).",
                   _obj({}, []), _list, owner="assistant.needs"), replace=True)
-    register(Tool("needs_dismiss", "Mark the failures (kind=failures) or failed staff tasks (kind=run_errors) as "
-                  "seen so they stop counting; new ones count again.",
-                  _obj({"kind": {"type": "string", "enum": list(ACK_KINDS)}}, ["kind"]), _dismiss,
+    register(Tool("needs_dismiss", "He has seen it: clear the failures (kind=failures), failed staff tasks "
+                  "(kind=run_errors) or both (kind=all) off the 'need you' pill under the orb; new ones count again. "
+                  "Approvals and questions clear when answered.",
+                  _obj({"kind": {"type": "string", "enum": [*ACK_KINDS, "all"]}}, ["kind"]), _dismiss,
                   owner="assistant.needs", side_effects=True), replace=True)

@@ -47,6 +47,26 @@ def test_looking_at_failures_clears_them_until_new_ones(clock):
     assert needs.data()["failures_24h"] == 1
 
 
+def test_every_turn_knows_what_the_pill_is(clock):
+    from assistant import status
+
+    assert "need you" not in status.turn_context()     # nothing pending: no line, no tokens
+    db.log_event("notify", "call to owner failed (daily_summary)", level="error",
+                 data={"error": "HTTP 400 error: Url is not a valid URL: http://localhost:8000/twilio/say/22"})
+    ctx = status.turn_context()
+    assert "'1 needs you' pill" in ctx and "call to owner failed" in ctx and "needs_dismiss" in ctx
+
+
+def test_saying_he_has_seen_it_clears_the_pill(clock):
+    db.log_event("notify", "call to owner failed (approval)", level="error")
+    store.record_agent_run("sentinel", "check", model="m", duration_ms=1, cost_usd=0.0, status="error",
+                           summary="it broke")
+    assert needs.data()["count"] == 2
+    clock.advance(seconds=5)
+    out = _call("needs_dismiss", kind="all")
+    assert out["remaining"] == 0 and needs.data()["count"] == 0
+
+
 def test_meal_answer_by_voice_is_saved_and_never_asked_again(clock):
     cid = meals.request_preferences()
     assert any(i["kind"] == "checkin" for i in needs.items())

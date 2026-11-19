@@ -231,8 +231,9 @@ def turn_context() -> str:
         return out
 
     def approvals() -> list[str]:
-        n = len(db.list_decisions("pending", limit=20))
-        return [f"Approvals waiting for him: {n}"] if n else []
+        from assistant import needs        # the pill under the orb (approvals, questions, failures)
+
+        return needs.pill_lines()
 
     def on_screen() -> list[str]:
         from assistant import screen

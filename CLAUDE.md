@@ -595,9 +595,10 @@ the brain (`ASSISTANT_MCP_SERVERS`; names only anywhere visible; tests: `claude_
 selfcheck`, Settings button, tool `selfcheck_run`): real tool calls, every change undone via `admin.app_undo`.
 
 ### Needs, usage, cooperative self-edits
-`assistant/needs.py` is the ONE "needs you" list (badge, home section, Cecil's glance, tool `needs_list`, boot
-briefing spoken by the voice page from `/voice/api/activity` `briefing`). Failures / failed staff runs clear once
-seen (`needs.acknowledge`, kv `needs:seen:<kind>`, link `/dashboard/needs/seen/<kind>`, tool `needs_dismiss`).
+`assistant/needs.py` is the ONE "needs you" list (badge/pill under the orb, home section, Cecil's glance, every
+turn's context via `needs.pill_lines` in `status.turn_context`, tool `needs_list`, boot briefing spoken by the voice
+page from `/voice/api/activity` `briefing`). Failures / failed staff runs clear once seen (`needs.acknowledge`, kv
+`needs:seen:<kind>`, link `/dashboard/needs/seen/<kind>`, tool `needs_dismiss` with kind failures/run_errors/all).
 Check-in answers from any channel go through `needs.answer_checkin` (tool `checkin_answer`); meal preferences
 via `meals_set_preferences`. `assistant/usage_report.py` (`main.py assistant usage-report`, tool `usage_breakdown`)
 prices every `llm_usage` row at API rates to show what eats the plan allowance. Self-edits merge updates into
