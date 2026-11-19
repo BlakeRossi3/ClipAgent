@@ -73,6 +73,54 @@ def test_a_pass_that_keeps_failing_stops_but_his_requests_never_do(on, clock, fa
     assert store.get_deferred(req).status == "queued"                      # still going
 
 
+def _blocked(req):
+    from assistant import claude_code
+    raise claude_code.ClaudeCodeError("blocked", "could not start Claude Code: [WinError 206] The filename "
+                                                 "or extension is too long")
+
+
+def test_a_pass_that_could_not_even_start_never_gives_up(on, fake_model):
+    """Backlog #61: both passes died in a second (WinError 206), burned their six tries in three hours and sat
+    failed after the fix landed. A launch failure did no work, so it keeps its place in the queue."""
+    did = _memory_pass()
+    for _ in range(usage.MAX_ATTEMPTS + 2):
+        fake_model.queue(_blocked)
+        usage.retry_deferred(did)
+    d = store.get_deferred(did)
+    assert d.status == "queued" and "WinError 206" in d.meta["last_error"]
+    fake_model.queue("Remembered.")
+    usage.retry_deferred(did)
+    assert store.get_deferred(did).status == "done"
+
+
+def test_a_new_run_of_the_app_revives_background_passes_that_gave_up(on, clock, fake_model):
+    """A fix lands, the app restarts: what gave up recently gets one fresh set of tries, at once."""
+    did = _memory_pass()
+    for _ in range(usage.MAX_ATTEMPTS):
+        fake_model.queue(_boom("model unavailable"))
+        usage.retry_deferred(did)
+    assert store.get_deferred(did).status == "failed"
+    old = usage.defer("Old pass", kind="auto_memory", at=db.utcnow())
+    store.set_deferred_status(old, "running")
+    store.set_deferred_status(old, "failed", result="Gave up after 6 attempts: boom")
+    with store.transaction() as c:
+        c.execute("UPDATE as_deferred SET finished_at = ? WHERE id = ?",
+                  (db.to_iso(db.utcnow() - timedelta(days=3)), old))
+    clock.advance(minutes=1)
+    usage.reset()                                                          # a new process
+    fake_model.queue("Remembered.")
+    assert usage.run_due() == 1
+    assert store.get_deferred(did).status == "done"
+    assert store.get_deferred(old).status == "failed"                      # too old: left alone
+    assert any("revived" in e.message for e in db.list_events(limit=20))
+    # revived once only: if it gives up again in the same run, it stays down
+    did2 = _memory_pass()
+    for _ in range(usage.MAX_ATTEMPTS):
+        fake_model.queue(_boom("model unavailable"))
+        usage.retry_deferred(did2)
+    assert usage.run_due() == 0 and store.get_deferred(did2).status == "failed"
+
+
 def test_deferred_rows_run_in_parallel(on, fake_model, monkeypatch):
     started = []
     monkeypatch.setattr(usage, "_spawn", lambda fn: started.append(fn))   # capture instead of running

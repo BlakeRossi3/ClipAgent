@@ -52,6 +52,8 @@ MAX_PER_RUN = 8               # deferred rows claimed per tick
 MAX_PARALLEL = 4              # deferred prompts running at once, each in its own thread (never one after another)
 MAX_ATTEMPTS = 6              # a background pass that keeps failing stops after this many tries ...
 FOREVER_KINDS = ("owner_request",)   # ... but his own requests are retried until they are done
+LAUNCH_FAILURES = ("blocked", "auth", "not_installed")   # Claude Code never started: no work done, never give up
+REVIVE_WITHIN = timedelta(hours=24)  # a new run of the app (a fix landed) retries passes that gave up this recently
 KV_WAS_TIGHT = "assistant:usage:was_tight"
 KIND_TITLES = {"auto_memory": "Memory pass", "initiative_harvest": "Backlog pass", "owner_request": "Your request",
                "prompt": "Queued prompt", "reel": "Reel", "history": "History import", "evals": "Evals",
@@ -493,9 +495,10 @@ def set_spawner(fn: Callable[[Callable[[], Any]], None] | None) -> None:
 
 def reset() -> None:
     """Tests: forget this process's live rows and start time."""
-    global _boot
+    global _boot, _revived
     _live.clear()
     _boot = None
+    _revived = False
 
 
 def kick(reason: str = "") -> None:
@@ -555,7 +558,8 @@ def retry_later(d: store.Deferred, status: str, error: str, kind: str = "") -> b
     why = error or retry.describe(status, kind)
     meta.update(attempts=attempts, last_error=why[:300], last_status=status)
     store.merge_deferred_meta(d.id, attempts=attempts, last_error=why[:300], last_status=status)
-    if d.kind not in FOREVER_KINDS and status != "budget" and attempts >= MAX_ATTEMPTS:
+    if (d.kind not in FOREVER_KINDS and status != "budget" and kind not in LAUNCH_FAILURES
+            and attempts >= MAX_ATTEMPTS):
         store.set_deferred_status(d.id, "failed", result=f"Gave up after {attempts} attempts: {why}"[:500])
         db.log_event("assistant", f"deferred {d.kind} #{d.id} gave up after {attempts} attempts", level="warning",
                      data={"error": why[:300]})
@@ -601,7 +605,7 @@ def run_due(limit: int = MAX_PER_RUN) -> int:
     if not s.enabled or wait_reason(optional=False) == "I am switched off":
         return 0
     _note_boot()
-    for fn in ("handoff.on_usage_signal", "usage.sweep_orphans"):
+    for fn in ("handoff.on_usage_signal", "usage.sweep_orphans", "usage.revive_given_up"):
         try:
             mod, name = fn.split(".")
             getattr(__import__(f"assistant.{mod}", fromlist=["x"]), name)()
@@ -665,6 +669,34 @@ def sweep_orphans(now: datetime | None = None) -> int:
         store.close_stale_runs(db.to_iso(now - limit))
     except Exception as exc:
         log.warning("stale staff runs not closed: %s", exc)
+    return n
+
+
+_revived = False                 # this process has already given recently failed passes their fresh start
+
+
+def revive_given_up(now: datetime | None = None) -> int:
+    """Once per run of the app: background passes that gave up in the last :data:`REVIVE_WITHIN` go back
+    in the queue, due now, with a fresh set of attempts. The app restarts when a fix lands, so what failed
+    for a reason since fixed (backlog #61: WinError 206) runs again instead of sitting failed. Only rows
+    that used their attempts (``Gave up after``), never ones he cancelled or a refusal. Returns how many."""
+    global _revived
+    if _revived:
+        return 0
+    _revived = True
+    since = db.to_iso((now or db.utcnow()) - REVIVE_WITHIN)
+    n = 0
+    for d in store.list_deferred("failed", limit=500):
+        if d.kind in FOREVER_KINDS or not (d.result or "").startswith("Gave up after") or (d.finished_at or "") < since:
+            continue
+        if not store.reopen_deferred(d.id):
+            continue
+        store.merge_deferred_meta(d.id, attempts=0, revived_at=db.now_iso())
+        store.update_deferred(d.id, run_after=db.now_iso(), after_reset=False)
+        n += 1
+    if n:
+        db.log_event("assistant", f"revived {n} background pass{'es' if n != 1 else ''} that had given up",
+                     data={"within_hours": REVIVE_WITHIN.total_seconds() / 3600})
     return n
 
 
