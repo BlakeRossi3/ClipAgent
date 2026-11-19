@@ -271,3 +271,26 @@ def test_no_api_credit_switches_back_to_the_plan(monkeypatch):
     assert claude_code.classify_error("Credit balance is too low to access the Anthropic API") == "credit"
     assert claude_code.backoff_until() is None and claude_code.api_has_no_credit()
     assert not claude_code.api_fallback_active()
+
+
+def test_background_tasks_have_no_step_limit():
+    asettings.set_assistant_settings(asettings.get_assistant_settings().replace(enabled=True))
+    t = brain._sdk()
+    seen = {}
+
+    def events():
+        yield t.AssistantMessage(content=[t.TextBlock(text="done")], model="m")
+        yield t.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+                              session_id="s", result="done")
+
+    Client = _worker_client(t, events)
+
+    def factory(options, tools):
+        seen["max_turns"] = options.max_turns
+        return Client()
+    brain.set_client_factory(factory)
+    try:
+        text, status, kind = brain.run_worker("x", with_kind=True)
+    finally:
+        brain.set_client_factory(None)
+    assert status == "ok" and seen["max_turns"] is None

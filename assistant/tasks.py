@@ -425,6 +425,7 @@ def _run(row: dict[str, Any]) -> None:
     if row.get("retry") and st in RETRY_STATUSES:
         _schedule_retry(row, full, st, kind)
         return
+    row["stop_kind"] = kind or None   # e.g. usage_cap: it alone used too much of the 5-hour window
     finish(row, full, st)
     if restart:
         from assistant import selfedit

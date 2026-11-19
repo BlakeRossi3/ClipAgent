@@ -70,7 +70,7 @@ class AssistantSettings:
     mcp_servers: tuple[str, ...] | None = None   # his ~/.claude.json MCP servers for the brain (None = all)
     cc_task_timeout_sec: int = 900           # one full-power run (long tasks, test runs)
     cc_max_turns: int = 40                   # tool round trips per full-power run
-    task_max_turns: int = 400                # background tasks: a runaway backstop only (cheap steps are fine)
+    task_max_turns: int = 400                # unused: background tasks have no step limit (usage cap instead)
     task_usage_share: float = 0.5            # pause a background task once IT used this share of the 5-hour window
     session_max_turns: int = 30              # resume one session per channel; roll over after this many
     session_max_tokens: int = 150_000        # ... or once a run's context passes this many input tokens

@@ -112,3 +112,17 @@ def test_task_stopped_by_the_limit_is_handed_over_once(on, clock):
     assert pend is not None and "analytics" in vault.read_note(pend.meta["notes"][0]).body
     assert db.parse_iso(pend.run_after) == claude_code.backoff_until() + usage.RESET_GRACE
     assert handoff.on_task_stopped(tasks.get_task(tid)) is None   # once per task
+
+
+def test_task_paused_for_using_too_much_resumes_after_the_5_hour_reset_with_a_note(on, clock):
+    reset = _signal(util=0.62, status="allowed", in_hours=3)   # window not nearly out: only this task was greedy
+    tasks.set_runner(lambda brief, context: ("I paused this one: it alone used 50% of your 5-hour Claude window.",
+                                             "budget", "usage_cap"))
+    tid = tasks.start("Re-render every Short in the backlog")
+    tasks.wait(tid)
+    pend = handoff.pending_resume()
+    assert pend is not None
+    assert db.parse_iso(pend.run_after) == reset + usage.RESET_GRACE
+    body = vault.read_note(pend.meta["notes"][0]).body
+    assert "using too much" in body and "Re-render every Short" in body
+    assert tasks.get_task(tid)["stop_kind"] == "usage_cap"

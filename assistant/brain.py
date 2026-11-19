@@ -1890,8 +1890,9 @@ def run_worker(brief: str, *, on_step: Callable[[str], None] | None = None,
         mode = billing()
         table = helper.tool_table(worker=True)
         opts = helper.options(mode=mode, resume=None, worker=True, table=table)
-        try:   # background work: many cheap steps are fine; usage, not step count, decides when to pause
-            opts.max_turns = s.task_max_turns
+        try:   # background work has NO step limit (he asked for this): only usage decides when to pause,
+            # i.e. the per-task cap below (this task alone used task_usage_share of the 5-hour window)
+            opts.max_turns = None
         except Exception as exc:
             log.debug("ignored error (best effort): %r", exc)
         for key, val in (("model", model), ("effort", effort)):

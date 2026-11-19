@@ -216,9 +216,18 @@ def on_task_stopped(row: dict[str, Any]) -> str | None:
     if not db.kv_set_if_absent(KV_TASK.format(id=row.get("id")), db.now_iso()):
         return None
     _tight, reset, why = signal()
+    head = "Background task stopped by the plan limit"
+    if row.get("stop_kind") == "usage_cap":   # this task alone used over its share: wait for the 5-hour reset
+        from assistant import usage
+
+        w = usage._window("five_hour") or {}
+        if w.get("resets_at") and not w.get("stale"):
+            reset = db.parse_iso(w["resets_at"])
+        head = "Background task paused because it was using too much"
+        why = "it alone used over half of the 5-hour window, so it was using too much"
     steps = [s.get("label", "") for s in (row.get("steps") or [])]
     try:
-        return write(f"Background task stopped by the plan limit: {row.get('task')}",
+        return write(f"{head}: {row.get('task')}",
                      [f"Do this task again, picking up after the steps already done: {row.get('brief') or row.get('task')}"
                       [:1500]], done=steps[-10:], why=why or "the Claude plan limit stopped a task",
                      by="ClipAgent (automatic)", reset=reset)["path"]
