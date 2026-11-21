@@ -99,6 +99,7 @@ WhatsApp state, and explains each problem with the exact fix. Common codes:
 | 21211 | Your number is not valid | Re-enter it as +1XXXXXXXXXX |
 | 20003 | Wrong Account SID / Auth Token | Copy them again from the console |
 | 11200 | Twilio could not reach the public address | Check the tunnel / Public web address |
+| 11210 | The public address's host name no longer exists (quick tunnel restarted) | ClipAgent restarts a dead `trycloudflare.com` tunnel by itself and re-points the SMS webhook; paste the new `/twilio/whatsapp` URL into the WhatsApp sandbox settings |
 | 63015 | Not joined to the sandbox (or the 3 days ran out) | WhatsApp `join <code>` again |
 | 63016 | Outside WhatsApp's 24-hour window | Send any WhatsApp message |
 | 63007 | Wrong WhatsApp From number | Use the number on the sandbox page |

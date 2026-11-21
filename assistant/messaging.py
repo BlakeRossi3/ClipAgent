@@ -142,6 +142,9 @@ def _ts(key: str) -> datetime | None:
 def record_inbound_whatsapp(body: str = "") -> None:
     """The owner messaged us on WhatsApp: the 24-hour window is (re)opened."""
     db.kv_set(K_WA_LAST_IN, db.now_iso())
+    from assistant import tunnel
+
+    tunnel.whatsapp_url_updated()  # it reached us, so the sandbox points at the current address
     if (body or "").strip().lower().startswith("join "):
         db.kv_set(K_WA_JOINED, db.now_iso())
     err = _jget(K_WA_ERROR)

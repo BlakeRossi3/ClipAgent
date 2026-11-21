@@ -56,6 +56,11 @@ ERROR_CODES: dict[int, tuple[str, str]] = {
             "PUBLIC_BASE_URL must be a public https address that reaches this PC (e.g. your tunnel). Check the tunnel "
             "is running, then press Fix it to point the number's SMS webhook at {base}/twilio/sms."),
     11205: ("Twilio could not connect to ClipAgent's webhook.", "Same as 11200: make PUBLIC_BASE_URL reachable from the internet."),
+    11210: ("Twilio could not find ClipAgent's web address (the host name does not exist - usually a quick "
+            "tunnel that restarted at a new address).",
+            "Texts: press Fix it to point the number at {base}/twilio/sms. WhatsApp: in Console > Messaging > Try it "
+            "out > Send a WhatsApp message > Sandbox settings, set 'When a message comes in' to "
+            "{base}/twilio/whatsapp (POST) and save."),
     11750: ("ClipAgent's webhook answered with too large a response.", "Report this as a bug; it should not happen."),
     12300: ("ClipAgent's webhook answered with the wrong content type.", "Report this as a bug; update ClipAgent."),
     13224: ("Twilio cannot call that number (invalid or unsupported).", "Check OWNER_PHONE is your mobile in +1XXXXXXXXXX form."),
@@ -434,7 +439,8 @@ def _history(client: Any, s: config.Settings, d: Diagnosis) -> None:
             e = explain(code)
             assert e is not None
             d.checks.append(Check(f"err_{code}", STATUS_FAIL, f"Recent texts failed with error {code} ({n}x)",
-                                  e["cause"], e["fix"], "set_sms_webhook" if code in (11200, 11205) else None, e["docs"]))
+                                  e["cause"], e["fix"], "set_sms_webhook" if code in (11200, 11205, 11210) else None,
+                                  e["docs"]))
     elif msgs:
         d.checks.append(Check("recent", STATUS_PASS, "Recent texts delivered without errors"))
     failed_calls = [c for c in d.calls if c["status"] in ("failed", "busy", "no-answer")]
@@ -496,9 +502,42 @@ def _whatsapp(client: Any, s: config.Settings, d: Diagnosis) -> None:
         messaging.set_a2p_status("NO_CAMPAIGN" if d.a2p.get("service") else "NO_SERVICE")
 
 
+def expected_whatsapp_url() -> str:
+    return f"{_base()}/twilio/whatsapp"
+
+
+def follow_base_change(old_base: str, *, client: Any = None) -> str | None:
+    """The public address moved (quick tunnel restarted): re-point the number's SMS webhook if - and only
+    if - it pointed at ``old_base``. Returns what changed, or None when there was nothing to change."""
+    s = config.get_settings()
+    if not (s.twilio_account_sid and s.twilio_auth_token and s.twilio_from_number):
+        return None
+    client = client or _get_client()
+    num = normalise(s.twilio_from_number) or s.twilio_from_number
+    found = client.incoming_phone_numbers.list(phone_number=num, limit=1)
+    if not found:
+        return None
+    n = found[0]
+    if not str(getattr(n, "sms_url", "") or "").startswith(old_base.rstrip("/") + "/"):
+        return None
+    _remember_prev("sms_webhook", {"sms_url": getattr(n, "sms_url", None), "sms_method": getattr(n, "sms_method", None),
+                                   "sms_application_sid": getattr(n, "sms_application_sid", None)})
+    client.incoming_phone_numbers(n.sid).update(sms_url=expected_sms_url(), sms_method="POST")
+    db.log_event("assistant", "twilio: SMS webhook followed the new public address", data={"url": expected_sms_url()})
+    return f"Incoming texts to {num} now go to {expected_sms_url()}."
+
+
 def _texting_checks(s: config.Settings, d: Diagnosis) -> None:
     """Which channel texts take now, and what to do so at least one works."""
-    from assistant import messaging
+    from assistant import messaging, tunnel
+
+    if s.whatsapp_from and tunnel.whatsapp_url_stale():
+        d.checks.append(Check("wa_webhook", STATUS_WARN, "WhatsApp replies go to an old address",
+                              "The public address changed when the tunnel restarted; Twilio's API cannot update "
+                              "the WhatsApp sandbox, so it still sends your replies to the old one.",
+                              "Console > Messaging > Try it out > Send a WhatsApp message > Sandbox settings: set "
+                              f"'When a message comes in' to {expected_whatsapp_url()} (POST) and save.",
+                              docs=f"{DOCS}11210"))
 
     wa = messaging.whatsapp_state()
     sms = messaging.sms_state()

@@ -481,6 +481,11 @@ Claude history / Twilio check (`assistant/toolkit_web.py`, `templates/toolkit.ht
   distillation (15 per run, newest first, `HISTORY_IMPORT_RESERVE_TURNS` left for him) through the
   archivist, facts filed with `vault.remember` and provenance. Export links are never fetched or logged.
   Any number of zips, any category, any order, re-uploadable; unknown JSON shapes are logged.
+* **Tunnel watcher** (`assistant/tunnel.py`, jobs `assistant_tunnel` 5 min + startup; zero tokens): when
+  `PUBLIC_BASE_URL` is a Cloudflare quick tunnel and `/healthz` fails twice, starts `cloudflared tunnel --url`,
+  saves the new address, re-points the number's SMS webhook if it pointed at the old one
+  (`twilio_doctor.follow_base_change`) and flags the WhatsApp sandbox URL (check `wa_webhook`) until a
+  WhatsApp message arrives. kv `tunnel:state`.
 * **Twilio doctor** (`assistant/twilio_doctor.py`, skill `twilio-doctor`): read-only diagnosis
   (config, account type, caller-ID verification on trial, number capabilities and SMS webhook,
   Messaging Service override, A2P 10DLC brand/campaign status, recent error codes mapped to cause +
