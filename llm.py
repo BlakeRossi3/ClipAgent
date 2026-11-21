@@ -369,11 +369,86 @@ def parse_json_text(text: str) -> Any:
         t = m.group(1)
     try:
         return json.loads(t)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as first:
         m = re.search(r"```(?:json)?\s*(.*?)\s*```", t, re.S) or re.search(r"(\{.*\}|\[.*\])", t, re.S)
         if m is None:
             raise
-        return json.loads(m.group(1))
+        candidate = m.group(1)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        # Plan answers have no structured-output mode; repair the near-misses seen live: a stray
+        # ``,"`` or trailing comma before the closing brace, a missing closing brace, and a quoted
+        # line of transcript left unescaped ("hook": "he yells "liftoff" and...").
+        fixed = _close_brackets(_strip_trailing_junk(candidate))
+        for attempt in (fixed, _close_brackets(_escape_stray_quotes(_strip_trailing_junk(candidate)))):
+            try:
+                return json.loads(attempt, strict=False)
+            except json.JSONDecodeError:
+                continue
+        raise first from None
+
+
+def _strip_trailing_junk(text: str) -> str:
+    """Drop a dangling ``,"`` / ``,`` right before a closing ``}`` or ``]`` (or at the very end)."""
+    return re.sub(r',\s*(?:"\s*)?(?=[}\]]|\s*$)', "", text.strip())
+
+
+def _close_brackets(text: str) -> str:
+    """Append the closing braces/brackets (and quote) a cut-short JSON value is missing."""
+    stack: list[str] = []
+    in_str = esc = False
+    for c in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c in "{[":
+            stack.append("}" if c == "{" else "]")
+        elif c in "}]" and stack and stack[-1] == c:
+            stack.pop()
+    return text + ('"' if in_str else "") + "".join(reversed(stack))
+
+
+def _escape_stray_quotes(text: str) -> str:
+    """Escape double quotes inside JSON strings that the model forgot to escape.
+
+    A quote inside a string only closes it when the next non-space character is
+    one JSON allows after a string (``, } ] :``) or the end; otherwise it is
+    treated as part of the text and escaped.
+    """
+    out: list[str] = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if not in_str:
+            if c == '"':
+                in_str = True
+            out.append(c)
+        elif c == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] in ",}]:":
+                in_str = False
+                out.append(c)
+            else:
+                out.append('\\"')
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def approx_tokens(*texts: str) -> int:
@@ -464,7 +539,8 @@ def complete(
         truncated = raw.stop_reason == "max_tokens"
         db.log_event("llm", f"{purpose}: structured output rejected (attempt {attempt}/{attempts})",
                      level="warning", data={"problems": problems[:5], "stop_reason": raw.stop_reason,
-                                            "max_tokens": req.max_tokens, "cost_usd": total_cost})
+                                            "max_tokens": req.max_tokens, "cost_usd": total_cost,
+                                            "text_head": (raw.text or "")[:400]})
         if attempt == attempts:
             raise LLMOutputError(f"{purpose}: invalid structured output: {problems[:3]}", text=raw.text,
                                  cost_usd=total_cost, attempts=attempt, truncated=truncated)
@@ -522,8 +598,49 @@ def coerce_to_schema(value: Any, schema: dict[str, Any]) -> Any:
 
 
 PLAN_MODELS = {"haiku": "haiku", "sonnet": "sonnet"}   # Claude Code aliases (the plan's current models)
-PLAN_JSON_NOTE = ("\n\nAnswer with ONLY one JSON value that matches this JSON schema - the answer itself, not the "
-                  "schema; only the keys it lists; no prose, no markdown fences, nothing before or after it:\n")
+# The plan path has no structured-output mode. A raw JSON schema in the prompt gets echoed back by
+# Haiku (or half-echoed: the answer wrapped in {"type":"object","properties":...}), so the prompt
+# carries a fill-in template instead: every <...> is a slot for the answer, the rest is literal.
+PLAN_JSON_NOTE = ("\n\nAnswer with ONLY one JSON value in exactly this shape. Replace every <...> with your "
+                  "value (valid JSON: strings in double quotes, inner quotes escaped as \\\"), keep the keys "
+                  "as they are, add no others, no trailing commas, no prose, no markdown fences, nothing "
+                  "before or after it:\n")
+
+
+def answer_template(schema: dict[str, Any]) -> str:
+    """Render a JSON schema as a fill-in answer template, e.g. ``{"score": <integer 1-10>}``."""
+    t = schema.get("type")
+    if "enum" in schema:
+        return "<one of " + " | ".join(json.dumps(v) for v in schema["enum"]) + ">"
+    if t == "object" and isinstance(schema.get("properties"), dict):
+        req = set(schema.get("required") or schema["properties"])
+        parts = []
+        for k, sub in schema["properties"].items():
+            v = answer_template(sub if isinstance(sub, dict) else {})
+            if k not in req:
+                v = v[:-1] + ", optional>" if v.endswith(">") else v
+            parts.append(f"{json.dumps(k)}: {v}")
+        return "{" + ", ".join(parts) + "}"
+    if t == "array":
+        raw_items = schema.get("items")
+        items: dict[str, Any] = raw_items if isinstance(raw_items, dict) else {}
+        lim = []
+        if "minItems" in schema:
+            lim.append(f"at least {schema['minItems']}")
+        if "maxItems" in schema:
+            lim.append(f"at most {schema['maxItems']}")
+        note = f" <{' and '.join(lim)} items>" if lim else ""
+        return f"[{answer_template(items)}, ...]{note}"
+    if t in ("integer", "number"):
+        lo, hi = schema.get("minimum"), schema.get("maximum")
+        rng = f" {lo}-{hi}" if lo is not None and hi is not None else (
+            f" >= {lo}" if lo is not None else (f" <= {hi}" if hi is not None else ""))
+        return f"<{t}{rng}>"
+    if t == "boolean":
+        return "<true or false>"
+    if t == "string":
+        return f"<text, at most {schema['maxLength']} characters>" if "maxLength" in schema else "<text>"
+    return "<any JSON value>"
 
 
 def _call_plan(req: LLMRequest) -> _Raw:
@@ -545,7 +662,7 @@ def _call_plan(req: LLMRequest) -> _Raw:
         raise stop(why)
     user = req.user
     if req.json_schema is not None:
-        user += PLAN_JSON_NOTE + json.dumps(req.json_schema, separators=(",", ":"))
+        user += PLAN_JSON_NOTE + answer_template(req.json_schema)
     try:
         res = claude_code.run_prompt(user, system="\n\n".join(req.system), role="sub", max_turns=1,
                                      effort=req.effort, model=PLAN_MODELS[req.tier], count_turn=True,

@@ -68,6 +68,46 @@ def test_fenced_json_is_accepted(fake_llm):
     assert llm.complete("haiku", system="s", user="u", purpose="p", json_schema=SCORE_SCHEMA).data["score"] == 3
 
 
+def test_unescaped_quotes_inside_strings_are_repaired(fake_llm):
+    # Seen live on the plan backend: the model quoted the transcript without escaping it.
+    fake_llm.queue('{"score": 7, "reason": "crowd screams "go go go" at liftoff", "tags": ["a"], '
+                   '"kind": "awe"}')
+    res = llm.complete("haiku", system="s", user="u", purpose="p", json_schema=SCORE_SCHEMA)
+    assert res.data["reason"] == 'crowd screams "go go go" at liftoff' and res.attempts == 1
+
+
+@pytest.mark.parametrize("text", [
+    # all seen live from Haiku on the plan backend (2026-11-21, pick.score_window)
+    '{"score":4,"reason":"rambling crew answer","hook":"Yes, we live in harmony as a crew.","}',
+    '{"type":"object","properties":{"score":4,"reason":"rambling crew answer","hook":"Yes, we live in harmony as a crew."}',
+    '{"score":4,"reason":"rambling crew answer","hook":"Yes, we live in harmony as a crew.",}',
+])
+def test_plan_near_miss_json_is_repaired(monkeypatch, clock, _cc_reset, text):
+    schema = {"type": "object", "properties": {"score": {"type": "integer"}, "reason": {"type": "string"},
+                                               "hook": {"type": "string"}}, "required": ["score", "reason", "hook"]}
+    _plan(monkeypatch, text)
+    res = llm.complete("haiku", system="s", user="u", purpose="pick.score_window", json_schema=schema)
+    assert res.data == {"score": 4, "reason": "rambling crew answer",
+                        "hook": "Yes, we live in harmony as a crew."} and res.attempts == 1
+
+
+def test_answer_template_renders_nested_schemas():
+    schema = {"type": "object", "properties": {
+        "ok": {"type": "boolean"}, "n": {"type": "number", "minimum": 0},
+        "clips": {"type": "array", "maxItems": 2, "items": {"type": "object", "properties": {
+            "title": {"type": "string", "maxLength": 60}}, "required": ["title"]}}}, "required": ["ok", "clips"]}
+    assert llm.answer_template(schema) == (
+        '{"ok": <true or false>, "n": <number >= 0, optional>, '
+        '"clips": [{"title": <text, at most 60 characters>}, ...] <at most 2 items>}')
+
+
+def test_escape_stray_quotes_leaves_valid_json_alone():
+    good = '{"a": "x \\"y\\"", "b": ["c", "d"], "e": {"f": 1}}'
+    assert json.loads(llm._escape_stray_quotes(good)) == json.loads(good)
+    with pytest.raises(json.JSONDecodeError):
+        llm.parse_json_text('{"a": nope}')
+
+
 def test_refusal_raises(fake_llm):
     fake_llm.queue(llm.FakeReply(text="", stop_reason="refusal"))
     with pytest.raises(llm.LLMRefusal):
@@ -293,7 +333,9 @@ def test_plan_backend_is_the_default_and_costs_nothing(monkeypatch, clock, _cc_r
     argv = call["argv"]
     assert argv[argv.index("--model") + 1] == "haiku" and call["system"] == "Score it."
     assert argv[argv.index("--max-turns") + 1] == "1" and "window text" in call["input"]
-    assert '"enum":["funny","awe","drama"]' in call["input"]           # the schema travels in the prompt
+    # a fill-in template travels in the prompt, not the raw schema (Haiku echoed that back)
+    assert '"kind": <one of "funny" | "awe" | "drama">' in call["input"]
+    assert '"score": <integer 1-10>' in call["input"] and '"properties"' not in call["input"]
     row = db.list_llm_usage(1)[0]
     assert row.purpose == "pick.score_window" and row.cost_usd == 0.0 and row.input_tokens == 120
     assert budget.spent_today() == 0.0
