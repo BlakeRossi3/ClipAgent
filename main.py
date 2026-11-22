@@ -1274,6 +1274,23 @@ def _relaunch() -> None:
     os.execv(sys.executable, argv)
 
 
+GRACEFUL_SHUTDOWN_SEC = 15   # an open page or stream must not hold a Restart/Stop forever
+
+
+def server_config(app: Any, host: str, port: int) -> Any:
+    """uvicorn settings for :func:`schedule`.
+
+    Without ``timeout_graceful_shutdown`` uvicorn waits for every open connection to close; a
+    dashboard tab's keep-alive or a long request once left the server half shut for a day (no
+    web pages, no restart after a self-edit) while the scheduler kept running on old code.
+    """
+    import uvicorn
+
+    return uvicorn.Config(app, host=host, port=port, proxy_headers=True, forwarded_allow_ips="127.0.0.1",
+                          log_level=get_settings().log_level.lower(),
+                          timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SEC)
+
+
 def schedule(host: str, port: int) -> int:
     """Scheduler + web server in one process until Ctrl+C / SIGTERM / window close / Stop button."""
     import uvicorn
@@ -1289,9 +1306,7 @@ def schedule(host: str, port: int) -> int:
     sched = build_scheduler()
     sched.start()
     db.log_event(MODULE, "scheduler started", data={"jobs": [j.id for j in sched.get_jobs()], "pid": os.getpid()})
-    srv = uvicorn.Server(uvicorn.Config(server.create_app(), host=host, port=port, proxy_headers=True,
-                                        forwarded_allow_ips="127.0.0.1",
-                                        log_level=get_settings().log_level.lower()))
+    srv = uvicorn.Server(server_config(server.create_app(), host, port))
     _install_stop_signals()
     _control.update(server=srv, restart=False)
     _start_selfedit_check(port)

@@ -578,6 +578,13 @@ def test_stop_signals_include_sigbreak_where_it_exists(monkeypatch):
     assert all(h is signal.default_int_handler for h in installed.values())
 
 
+def test_server_config_caps_graceful_shutdown():
+    # An open connection once held a self-edit restart for a day: shutdown must give up waiting.
+    cfg = main.server_config(object(), "127.0.0.1", 8000)
+    assert cfg.timeout_graceful_shutdown == main.GRACEFUL_SHUTDOWN_SEC and 0 < cfg.timeout_graceful_shutdown <= 30
+    assert (cfg.host, cfg.port, cfg.proxy_headers) == ("127.0.0.1", 8000, True)
+
+
 def test_request_shutdown_and_relaunch(monkeypatch):
     import subprocess
     import sys
