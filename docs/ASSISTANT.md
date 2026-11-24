@@ -422,7 +422,9 @@ is built yet. Model ids are settings, so newer models drop in without code chang
   `{"notify": [{"text", "urgency"}], "tasks": [{"task", "why"}], "nothing"}`.
 - **Notes** go through `tools.send_to_owner(kind="heartbeat")` (daily SMS cap), are not repeated
   within 12 h (exact or near-identical), and are spoken by the voice process and the Jarvis page
-  (`task_done` voice message, origin `any`). Quiet hours: urgent notes are texted at once, the rest
+  (`task_done` voice message, origin `any`). Urgent notes phone him, day or night (notify kind
+  `assistant_urgent`, one call per `URGENT_CALL_DEDUP_HOURS`, repeats and unanswered calls become
+  texts). Quiet hours: urgent notes go out at once, the rest
   (and tasks) are held and re-asked on the first tick after quiet hours; timed items wait too.
 - **Tasks** run like the brain's `start_task` (`assistant/tasks.py`, origin `any`): one at a time, at most
   `HEARTBEAT_MAX_TASKS_PER_DAY` (default 6); `usage.should_defer("heartbeat", ...)` queues them when

@@ -20,6 +20,7 @@ or start a background task. Most ticks cost nothing.
    the answer short (it is spoken and texted). Anything outward-facing, destructive, or costly still
    needs `request_approval` first, exactly as when he asks directly.
 4. **Limits:** one heartbeat task at a time, `HEARTBEAT_MAX_TASKS_PER_DAY` (default 6) per day; texts
-   count against the daily SMS cap; quiet hours let only urgent notes through; the same point is not
+   count against the daily SMS cap; quiet hours let only urgent notes through; an urgent note is a phone call (at most one per
+   de-dup window, repeats are texted), so mark "urgent" only what truly cannot wait; the same point is not
    repeated within 12 hours; when the Claude plan is near its limit the heartbeat pauses.
 5. `heartbeat_status` shows when it last ran, what it did, and what it told him recently.
