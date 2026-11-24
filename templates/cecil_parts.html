@@ -110,6 +110,38 @@
     {% else %}<div class="cc-svg cc-flat" aria-hidden="true"></div>{% endif %}
     <p class="cc-sub"><a href="/dashboard/studio">14 days · open the Studio</a></p>
   </figure>
+  {# 4. Shorts uploads per day #}
+  {% set up = k.uploads %}
+  <figure class="cc-chart">
+    <figcaption class="hud-label">Uploads</figcaption>
+    <p class="cc-big">{{ up.week }}<small> this week · {{ up.today }} today</small></p>
+    <svg class="cc-svg cc-uploads" viewBox="0 0 120 34" preserveAspectRatio="none" role="img" aria-label="Shorts posted per day, last 14 days">
+      {% for b in up.bars %}<rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="1.5" class="{{ 'is-now' if loop.last else '' }}"/>{% endfor %}
+    </svg>
+    <p class="cc-sub">14 days of posts</p>
+  </figure>
+  {# 5. reels net this month: revenue minus AI cost #}
+  {% set rn = k.reels %}
+  <figure class="cc-chart cc-net{% if rn.has_data and rn.net < 0 %} is-neg{% endif %}">
+    <figcaption class="hud-label">Reels this month</figcaption>
+    <p class="cc-big">{% if rn.has_data %}{{ rn.net | usd }}<small> net</small>{% else %}—<small> no revenue yet</small>{% endif %}</p>
+    <p class="cc-sub">{% if rn.revenue is not none %}{{ rn.revenue | usd }} in{% if rn.source == "youtube" %} (YouTube est.){% endif %}{% else %}no revenue logged{% endif %} · {{ rn.costs | usd }} AI</p>
+    <p class="cc-sub"><a href="/dashboard/costs">Costs</a></p>
+  </figure>
+  {# 6. goals #}
+  {% set gl = k.goals %}
+  <figure class="cc-chart cc-goals">
+    <figcaption class="hud-label">Goals</figcaption>
+    {% for g in gl["items"] %}
+    <div class="cc-meter">
+      <p class="cc-meter-head"><span>{{ g.title | truncate(32) }}</span><b>{% if g.pct is not none %}{{ g.pct | round | int }}%{% else %}&mdash;{% endif %}</b></p>
+      {% if g.pct is not none %}<div class="cc-meter-bar" role="img" aria-label="{{ g.title }}: {{ g.pct | round | int }}% done"><i style="width: {{ g.pct }}%"></i></div>{% endif %}
+    </div>
+    {% else %}
+    <p class="cc-sub">No goals yet. Tell me one.</p>
+    {% endfor %}
+    {% if gl.total > gl["items"] | length %}<p class="cc-sub">+{{ gl.total - gl["items"] | length }} more</p>{% endif %}
+  </figure>
 </div>
 {% endif %}
 {% endmacro %}

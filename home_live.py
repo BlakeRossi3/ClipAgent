@@ -356,9 +356,39 @@ def plan_meters() -> dict[str, Any]:
             "queued": int(u.get("queued") or 0)}
 
 
+GOALS_SHOWN = 3
+
+
+def uploads_chart(today: date) -> dict[str, Any]:
+    """Shorts posted per local day, last 14 days (what the upload cap counts): {today, week, bars}."""
+    d = _d()
+    with d._conn() as c:
+        per_day = d.daily_uploads(c, today - timedelta(days=13), today)
+    n = [float((per_day.get(today - timedelta(days=13 - i)) or {}).get("n", 0)) for i in range(14)]
+    return {"today": int(n[-1]), "week": int(sum(n[-7:])), "bars": bars(n)}
+
+
+def reels_net(money: dict[str, Any] | None) -> dict[str, Any]:
+    """Reels this month: revenue (ledger, else YouTube's estimate) minus the pipeline's AI spend."""
+    m = money or {}
+    revenue, costs = m.get("reels_revenue"), float(m.get("reels_costs") or 0.0)
+    return {"revenue": revenue, "costs": round(costs, 2),
+            "net": round((revenue or 0.0) - costs, 2), "has_data": revenue is not None or costs > 0,
+            "source": m.get("reels_revenue_source")}
+
+
+def goals_chart(today: date) -> dict[str, Any]:
+    """The first few active goals with a progress bar where there is a target: {items, total}."""
+    g = _home().goals_data(today)["goals"]
+    items = [{"title": x["title"], "pct": None if x["pct"] is None else round(x["pct"], 1),
+              "current": x["current"], "target": x["target"], "due": x["due"]} for x in g[:GOALS_SHOWN]]
+    return {"items": items, "total": len(g)}
+
+
 def charts(today: date | None = None) -> dict[str, Any]:
-    """The HUD charts: Claude plan (5-hour + weekly), money this week, Shorts views (he asked for the
-    assistant spend and voice latency charts to go: the plan, not the API, pays for nearly everything)."""
+    """The HUD charts: Claude plan (5-hour + weekly), money this week, Shorts views, uploads per day, reels
+    net this month and goals (he asked for the assistant spend and voice latency charts to go: the plan,
+    not the API, pays for nearly everything)."""
     h = _home()
     today = today or db.local_today()
     # 1. Claude plan: the 5-hour and weekly windows only (he asked for the daily run count gone)
@@ -374,6 +404,9 @@ def charts(today: date | None = None) -> dict[str, Any]:
         "money": {"week": money["week_pay"] if money else None, "hours": money["week_hours"] if money else None,
                   "has_job": bool(money and money["has_job"]), "bars": bars(pay)},
         "views": {"week": week, "spark": spark(v14) if any(v14) else None},
+        "uploads": _safe(lambda: uploads_chart(today), {"today": 0, "week": 0, "bars": []}, "uploads"),
+        "reels": reels_net(money),
+        "goals": _safe(lambda: goals_chart(today), {"items": [], "total": 0}, "goals"),
     }
 
 

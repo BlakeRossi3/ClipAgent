@@ -195,8 +195,43 @@ def test_charts_and_geometry():
     b = home_live.bars([0, 2, 4])
     assert b[2]["h"] > b[1]["h"] > b[0]["h"] >= 1
     c = home_live.charts()
-    assert set(c) == {"claude", "money", "views"}
+    assert set(c) == {"claude", "money", "views", "uploads", "reels", "goals"}
     assert [m["key"] for m in c["claude"]["meters"]] == ["five_hour", "seven_day"]
+
+
+def test_uploads_tile_counts_posts_per_day(make_upload, clock):
+    make_upload()
+    make_upload()
+    make_upload(succeeded=False)                                # a failed upload is not a post
+    u = home_live.charts()["uploads"]
+    assert u["today"] == 2 and u["week"] == 2 and len(u["bars"]) == 14
+    assert u["bars"][-1]["h"] > u["bars"][0]["h"]
+
+
+def test_reels_net_tile_is_revenue_minus_ai_cost(clock):
+    store.add_income(120.0, source="reels", note="adsense", day=db.local_today())
+    r = home_live.charts()["reels"]
+    assert r["revenue"] == 120.0 and r["net"] == 120.0 - r["costs"] and r["has_data"]
+
+
+def test_goals_tile_shows_top_active_goals_with_progress():
+    store.add_goal("Save for a car", metric="usd", target=5000, current=1250)
+    store.add_goal("Read more", metric=None, target=None)
+    for i in range(5):
+        store.add_goal(f"Goal {i}", target=10, current=i)
+    g = home_live.charts()["goals"]
+    assert g["total"] == 7 and len(g["items"]) == home_live.GOALS_SHOWN
+    car = g["items"][0]
+    assert car["title"] == "Save for a car" and car["pct"] == 25.0
+    assert g["items"][1]["pct"] is None
+
+
+def test_home_shows_new_widgets(client):
+    store.add_goal("Save " + EVIL, target=10, current=5)
+    html = client.get("/dashboard/").text
+    for label in ("Uploads", "Reels this month", "Goals"):
+        assert label in html, label
+    assert "<script>alert(1)" not in html
 
 
 def test_shorts_views_tile_counts_live_views_younger_than_analytics(make_upload, clock):

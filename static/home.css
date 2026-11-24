@@ -732,6 +732,11 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .cc-line path { fill: none; stroke: var(--s1); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
 .cc-line path.cc-area { fill: rgba(34, 216, 240, 0.12); stroke: none; }
 .cc-line circle { fill: #fff; stroke: var(--s1); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.cc-uploads rect { fill: color-mix(in srgb, var(--s3) 38%, transparent); }
+.cc-uploads rect.is-now { fill: var(--s3); filter: drop-shadow(0 0 4px rgba(182, 148, 255, 0.7)); }
+.cc-net.is-neg .cc-big { color: var(--amber); }
+.cc-goals { gap: 6px; }
+.cc-goals .cc-meter-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-views path { stroke: var(--s3); } .cc-views path.cc-area { fill: rgba(182, 148, 255, 0.13); } .cc-views circle { stroke: var(--s3); }
 /* Claude plan tile: 5-hour and weekly bars (fill = used) */
 .cc-plan { gap: 6px; }
