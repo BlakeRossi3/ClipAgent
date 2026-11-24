@@ -533,6 +533,12 @@ def _servers_note(names: list[str], *, lean: bool = False) -> str:
                   "(assistant.claude_code.mcp_signin('higgsfield') gives the command and steps).")
     else:
         signin = ""
+    google = [n for n in ("gmail", "google-calendar") if n in names]
+    if google:   # built in once ASSISTANT_GOOGLE_CLIENT_ID is set (claude_code.GOOGLE_MCP_SERVERS)
+        signin += ("\n\nGoogle (" + ", ".join(f"mcp__{n}__*" for n in google) + ") reads his Gmail and Calendar. "
+                   "Read freely; sending mail, replying or changing his calendar is outward-facing, so ask him first. "
+                   "If the tools are missing he hasn't signed in: say so once and put the sign-in on his screen "
+                   f"(assistant.claude_code.mcp_signin('{google[0]}') gives the command and steps).")
     return _servers_body(names, lean=lean) + signin
 
 

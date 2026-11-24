@@ -738,6 +738,16 @@ _claude_json: Path | None = None
 BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {
     "higgsfield": {"type": "http", "url": "https://mcp.higgsfield.ai/mcp"},   # images and video generation
 }
+# Google's own remote Workspace MCP servers (developers.google.com/workspace/guides/configure-mcp-servers).
+# They need his own OAuth client (Google has no dynamic registration), so they join only once
+# ASSISTANT_GOOGLE_CLIENT_ID is set; the client secret goes straight into Claude Code at sign-in, never here.
+GOOGLE_MCP_SERVERS: dict[str, str] = {
+    "gmail": "https://gmailmcp.googleapis.com/mcp/v1",
+    "google-calendar": "https://calendarmcp.googleapis.com/mcp/v1",
+}
+GOOGLE_CALLBACK_PORT = 8765          # redirect URI on his client: http://localhost:8765/callback
+GOOGLE_SETUP_URL = ("https://console.cloud.google.com/auth/overview/personal?apis=ws,wsmcp,tasksmcp"
+                    "&clientType=web&isAgent=true")
 _SERVER_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
@@ -767,8 +777,24 @@ def _server_spec(spec: Any) -> dict[str, Any] | None:
         out = {"type": kind, "url": spec["url"]}
         if isinstance(spec.get("headers"), dict):
             out["headers"] = {str(k): str(v) for k, v in spec["headers"].items()}
+        oauth = spec.get("oauth")
+        if isinstance(oauth, dict) and isinstance(oauth.get("clientId"), str):   # never a client secret
+            out["oauth"] = {"clientId": oauth["clientId"]}
+            if isinstance(oauth.get("callbackPort"), int):
+                out["oauth"]["callbackPort"] = oauth["callbackPort"]
         return out
     return None
+
+
+def builtin_mcp_servers() -> dict[str, dict[str, Any]]:
+    """The servers the app ships with: Higgsfield always, Gmail + Calendar once his Google client is set."""
+    out = dict(BUILTIN_MCP_SERVERS)
+    client = get_assistant_settings().google_client_id
+    if client:
+        for name, url in GOOGLE_MCP_SERVERS.items():
+            out[name] = {"type": "http", "url": url,
+                         "oauth": {"clientId": client, "callbackPort": GOOGLE_CALLBACK_PORT}}
+    return out
 
 
 def user_mcp_servers() -> dict[str, dict[str, Any]]:
@@ -788,7 +814,7 @@ def user_mcp_servers() -> dict[str, dict[str, Any]]:
         cfg = {}
     if not isinstance(cfg, dict):
         cfg = {}
-    merged: dict[str, Any] = dict(BUILTIN_MCP_SERVERS)      # his own entry of the same name wins
+    merged: dict[str, Any] = builtin_mcp_servers()          # his own entry of the same name wins
     if isinstance(cfg.get("mcpServers"), dict):
         merged.update(cfg["mcpServers"])
     projects = cfg.get("projects") if isinstance(cfg.get("projects"), dict) else {}
@@ -818,9 +844,12 @@ def mcp_signin(name: str) -> dict[str, Any]:
     Writes ``<CLAUDE_CONFIG_DIR>/mcp-signin/<name>.json`` holding exactly the entry the brain passes (same
     name + url, so Claude Code files the token under the same server key) and returns the command he runs
     once in a terminal; inside it he types /mcp, picks the server and signs in with his own account."""
+    if name in GOOGLE_MCP_SERVERS:
+        return _google_signin(name)
     spec = BUILTIN_MCP_SERVERS.get(name)
     if spec is None:
-        return {"ok": False, "error": f"unknown built-in server {name!r}", "known": sorted(BUILTIN_MCP_SERVERS)}
+        return {"ok": False, "error": f"unknown built-in server {name!r}",
+                "known": sorted([*BUILTIN_MCP_SERVERS, *GOOGLE_MCP_SERVERS])}
     folder = home_dir() / "mcp-signin"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{name}.json"
@@ -829,6 +858,31 @@ def mcp_signin(name: str) -> dict[str, Any]:
     return {"ok": True, "server": name, "config": str(path), "command": command,
             "steps": ["Open PowerShell and run the command.", "Type /mcp, pick " + name + ", choose Authenticate.",
                       "Sign in in the browser, then close that Claude window."]}
+
+
+def _google_signin(name: str) -> dict[str, Any]:
+    """Gmail / Calendar: Google needs his own OAuth client. Without ASSISTANT_GOOGLE_CLIENT_ID, the one-off
+    Google Cloud setup; with it, a command that adds the server to Cecil's profile and prompts HIM for the
+    client secret (Claude Code keeps it; it never passes through the app), then the /mcp sign-in."""
+    redirect = f"http://localhost:{GOOGLE_CALLBACK_PORT}/callback"
+    spec = builtin_mcp_servers().get(name)
+    if spec is None:
+        return {"ok": False, "server": name,
+                "error": "no Google OAuth client yet: set ASSISTANT_GOOGLE_CLIENT_ID first",
+                "steps": ["Join the Google Workspace Developer Preview (the MCP servers are in preview).",
+                          f"Open {GOOGLE_SETUP_URL} , pick or create a project; it enables Gmail, Calendar "
+                          "and their MCP services and creates a Web client for an AI agent.",
+                          f"Add the redirect URI {redirect} to that client.",
+                          "Copy the Client ID into Settings as ASSISTANT_GOOGLE_CLIENT_ID; keep the secret "
+                          "for the sign-in step."]}
+    entry = json.dumps(spec).replace("'", "''")      # PowerShell single-quoted string
+    command = (f"$env:CLAUDE_CONFIG_DIR='{home_dir()}'; "
+               f"claude mcp add-json --scope user {name} '{entry}' --client-secret; claude")
+    return {"ok": True, "server": name, "command": command, "redirect_uri": redirect,
+            "steps": [f"Check the Google client lists the redirect URI {redirect}.",
+                      "Open PowerShell and run the command; paste the client secret when it asks.",
+                      f"In the Claude window that opens, type /mcp, pick {name}, choose Authenticate.",
+                      "Sign in with Google in the browser, then close that Claude window."]}
 
 
 def permission_settings(*, chrome: bool = False, mcp_tools: list[str] | None = None,

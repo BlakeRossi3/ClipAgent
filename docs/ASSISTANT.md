@@ -200,6 +200,11 @@ drives a model SDK. Modelled on adewaskar/jarvis `bridge/server.mjs` (MIT).
   Built-in remote servers (`claude_code.BUILTIN_MCP_SERVERS`, currently `higgsfield` for image/video
   generation) are added too unless his own config has the same name; they use OAuth, signed in once
   inside Cecil's profile via the command from `claude_code.mcp_signin(name)` (then `/mcp` → Authenticate).
+  Gmail and Google Calendar (`claude_code.GOOGLE_MCP_SERVERS`, Google's own Workspace MCP servers, in
+  developer preview) join only once `ASSISTANT_GOOGLE_CLIENT_ID` holds his Google OAuth client ID (Google
+  has no dynamic client registration); `mcp_signin('gmail')` gives the Cloud setup steps until then, and
+  afterwards a `claude mcp add-json ... --client-secret` command so the secret goes straight to Claude Code.
+  Redirect URI on the client: `http://localhost:8765/callback` (`GOOGLE_CALLBACK_PORT`).
 SMS and typed dashboard chat still use `runtime.run_turn`.
 
 ### The HUD (assistant/hud.py): things Cecil can throw on the Jarvis screen

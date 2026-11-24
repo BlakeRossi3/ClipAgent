@@ -68,6 +68,7 @@ class AssistantSettings:
     user_dirs: tuple[str, ...] = ()          # extra folders it may read/edit (empty = Desktop, Documents...)
     chrome: bool = False                     # pass --chrome (Claude in Chrome extension; one-time setup)
     mcp_servers: tuple[str, ...] | None = None   # his ~/.claude.json MCP servers for the brain (None = all)
+    google_client_id: str = ""               # his Google OAuth client ID (not secret): turns on Gmail + Calendar
     cc_task_timeout_sec: int = 900           # one full-power run (long tasks, test runs)
     cc_max_turns: int = 40                   # tool round trips per full-power run
     task_max_turns: int = 400                # unused: background tasks have no step limit (usage cap instead)
@@ -153,6 +154,7 @@ def load_assistant_settings(environ: Mapping[str, str] | None = None) -> Assista
         user_dirs=tuple(d.strip() for d in s("ASSISTANT_USER_DIRS", "").split(";") if d.strip()),
         chrome=config._bool(env.get("ASSISTANT_CHROME"), False),
         mcp_servers=_server_list(s("ASSISTANT_MCP_SERVERS", "all")),
+        google_client_id=s("ASSISTANT_GOOGLE_CLIENT_ID", ""),
         cc_task_timeout_sec=max(60, int(s("ASSISTANT_CC_TASK_TIMEOUT_SEC", "900"))),
         cc_max_turns=max(2, int(s("ASSISTANT_CC_MAX_TURNS", "40"))),
         task_max_turns=max(10, int(s("ASSISTANT_TASK_MAX_TURNS", "400"))),

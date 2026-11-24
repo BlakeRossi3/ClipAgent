@@ -375,12 +375,48 @@ def test_mcp_signin_writes_the_same_entry_into_cecils_profile(tmp_path):
         claude_code.set_home(None)
 
 
+def test_google_servers_join_only_once_he_has_an_oauth_client(tmp_path, monkeypatch):
+    claude_code.set_claude_json(tmp_path / "missing.json")
+    monkeypatch.delenv("ASSISTANT_GOOGLE_CLIENT_ID", raising=False)
+    asettings.reset_assistant_settings()
+    assert claude_code.mcp_server_names() == ["higgsfield"]              # no client yet: nothing half-working
+    out = claude_code.mcp_signin("google-calendar")
+    assert out["ok"] is False and "ASSISTANT_GOOGLE_CLIENT_ID" in out["error"] and out["steps"]
+    monkeypatch.setenv("ASSISTANT_GOOGLE_CLIENT_ID", "123-abc.apps.googleusercontent.com")
+    asettings.reset_assistant_settings()
+    servers = claude_code.user_mcp_servers()
+    assert sorted(servers) == ["gmail", "google-calendar", "higgsfield"]
+    assert servers["gmail"] == {"type": "http", "url": "https://gmailmcp.googleapis.com/mcp/v1",
+                                "oauth": {"clientId": "123-abc.apps.googleusercontent.com",
+                                          "callbackPort": claude_code.GOOGLE_CALLBACK_PORT}}
+    assert servers["google-calendar"]["url"] == "https://calendarmcp.googleapis.com/mcp/v1"
+    claude_code.set_home(tmp_path / "cc")
+    try:
+        out = claude_code.mcp_signin("gmail")
+        assert out["ok"] and "--client-secret" in out["command"] and "add-json" in out["command"]
+        assert str(tmp_path / "cc") in out["command"] and "/mcp" in " ".join(out["steps"])
+        assert f"localhost:{claude_code.GOOGLE_CALLBACK_PORT}/callback" in " ".join(out["steps"])
+    finally:
+        claude_code.set_home(None)
+        monkeypatch.delenv("ASSISTANT_GOOGLE_CLIENT_ID")
+        asettings.reset_assistant_settings()
+
+
+def test_server_spec_keeps_only_safe_oauth_fields():
+    spec = claude_code._server_spec({"type": "http", "url": "https://x.example/mcp",
+                                     "oauth": {"clientId": "id", "callbackPort": 9000, "clientSecret": "nope"}})
+    assert spec["oauth"] == {"clientId": "id", "callbackPort": 9000}
+
+
 def test_servers_note_explains_higgsfield_signin():
     from assistant import brain
 
     assert "sign" in brain._servers_note(["higgsfield"]).lower()
     assert "Higgsfield" not in brain._servers_note(["gmail"])
     assert brain._servers_note([]) == ""
+    note = brain._servers_note(["gmail", "google-calendar"])
+    assert "mcp__google-calendar__" in note and "mcp_signin('gmail')" in note
+    assert "send" in note.lower()            # sending mail is outward-facing: ask first
 
 
 def test_permission_rules_allow_each_passed_server():
