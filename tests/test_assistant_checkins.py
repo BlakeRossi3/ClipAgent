@@ -57,3 +57,39 @@ def test_wellbeing_and_unrelated_reply(clock, enabled):
     assert checkins.handle_reply("pretty stressed honestly") is True
     assert db.kv_get(f"checkins:gentle:{date(2026, 11, 14).isoformat()}")
     assert "stressed" in vault.read_note(vault.journal_path()).body
+
+
+def test_hours_question_not_sent_when_already_logged_by_voice(clock, enabled):
+    from assistant import ledger
+
+    clock.set(datetime(2026, 11, 13, 23, 45, tzinfo=UTC))   # 18:45 Friday local
+    ledger.set_job(hourly_rate=20)
+    ledger.log_hours(38, week=date(2026, 11, 13), source="voice")
+    q = store.add_checkin("weekly_hours", "How many hours did you work this week, sir?", "2026-11-13T23:40:00Z")
+    checkins.send_due()
+    assert store.get_checkin(q).status == "skipped" and not store.get_checkin(q).sent_at
+
+
+def test_hours_reask_dropped_once_logged_by_voice(clock, enabled):
+    from assistant import ledger
+
+    clock.set(datetime(2026, 11, 13, 23, 45, tzinfo=UTC))
+    ledger.set_job(hourly_rate=20)
+    q = store.add_checkin("weekly_hours", "How many hours did you work this week, sir?", "2026-11-13T23:40:00Z")
+    checkins.send_due()
+    assert store.get_checkin(q).sent_at
+    ledger.log_hours(40, week=date(2026, 11, 13), source="voice")   # told Cecil by voice instead
+    clock.advance(hours=16)
+    out = checkins.send_due()
+    assert out["reasked"] == 0 and store.get_checkin(q).status == "answered"
+
+
+def test_pay_answers_given_by_voice_are_not_asked_again(clock):
+    from assistant import ledger
+
+    ledger.set_job(hourly_rate=25)
+    assert checkins.next_gap().key == "tax"
+    ledger.set_job(est_tax_rate=0)                  # "no tax set-aside" is still an answer
+    assert checkins.next_gap().key == "pay_schedule"
+    ledger.set_job(pay_schedule="weekly")
+    assert checkins.next_gap() is None or checkins.next_gap().key not in ("pay_rate", "tax", "pay_schedule")

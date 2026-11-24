@@ -87,6 +87,11 @@ def set_job(name: str = DEFAULT_JOB_NAME, *, hourly_rate: float | None = None, p
     assert job is not None
     if hourly_rate is not None and (cur is None or cur.hourly_rate != job.hourly_rate):
         sync_job_income()          # weeks logged before the rate was known (or at the old rate)
+    # an answer given anywhere (voice, SMS, the page) closes the matching onboarding question for good
+    if pay_schedule:
+        db.kv_set("checkins:onboard_done:pay_schedule", db.now_iso())
+    if est_tax_rate is not None:
+        db.kv_set("checkins:onboard_done:tax", db.now_iso())
     db.log_event("assistant", f"ledger: job {job.name} set", data={"hourly_rate": job.hourly_rate,
                                                                    "pay_schedule": job.pay_schedule})
     return job

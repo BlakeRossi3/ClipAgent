@@ -259,6 +259,12 @@ def _local_dt(day: date, at: dtime) -> datetime:
     return datetime.combine(day, at, tzinfo=db.local_tz())
 
 
+def hours_known(day: date | str) -> bool:
+    """True when every active job already has hours for ``day``'s week (logged by voice, SMS or the page)."""
+    jobs = store.list_jobs()
+    return bool(jobs) and all(store.get_work_log(j.id, day) or store.list_work_days(j.id, day) for j in jobs)
+
+
 def _hours_question(h: str) -> str:
     jobs = store.list_jobs()
     if len(jobs) > 1:
@@ -447,6 +453,8 @@ def compose_meal_idea(slot: str, h: str) -> str | None:
 def compose(chk: store.Checkin) -> str | None:
     h = get_assistant_settings().owner_honorific
     base = chk.kind.split(":", 1)[0]
+    if base == "weekly_hours" and hours_known(db.local_date_of(chk.scheduled_for)):
+        return None        # he already told us this week's hours: do not ask again
     if base == "morning_brief":
         return compose_morning_brief(h)
     if base == "evening_wrap":
@@ -530,6 +538,9 @@ def send_due(now: datetime | None = None) -> dict[str, int]:
             out["expired"] += 1
             if spec.type != "nudge":
                 _journal(f"No answer to: {chk.question}")
+            continue
+        if chk.kind == "weekly_hours" and hours_known(db.local_date_of(chk.scheduled_for)):
+            store.answer_checkin(chk.id, "", {"logged_elsewhere": True})   # answered by voice or the page
             continue
         if spec.type != "nudge":
             open_questions.append(chk)
