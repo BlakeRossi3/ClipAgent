@@ -200,6 +200,35 @@ def test_data_and_list_panels_are_trimmed_and_markup_panels_keep_their_kind():
     assert p["kind"] == "markup" and p["size"] == "blade"
 
 
+def test_show_chart_builds_a_clean_bar_or_line_chart():
+    r = call("show_chart", title="Hours by week", type="bar", labels=["W1", "W2", "W3"],
+             series=[{"name": "Hours", "values": [38, "40.5", None]}], unit="h", note="Steady.")
+    assert r.ok
+    p = last_panel()
+    assert p["kind"] == "chart" and p["chart"]["type"] == "bar" and p["chart"]["unit"] == "h"
+    assert p["chart"]["labels"] == ["W1", "W2", "W3"]
+    assert p["chart"]["series"] == [{"name": "Hours", "values": [38.0, 40.5, None]}]
+    # line with several series; extra points and series are trimmed, short series padded
+    assert call("show_chart", title="Views", type="line", labels=[str(i) for i in range(40)],
+                series=[{"name": f"s{i}", "values": list(range(40))} for i in range(6)] + [{"name": "x", "values": [1]}]).ok
+    c = last_panel()["chart"]
+    assert c["type"] == "line" and len(c["labels"]) == hud.CHART_MAX_POINTS
+    assert len(c["series"]) == hud.CHART_MAX_SERIES and all(len(s["values"]) == hud.CHART_MAX_POINTS for s in c["series"])
+    # a bare list of numbers is one unnamed series
+    assert call("show_chart", title="Rev", labels=["a", "b"], values=[1, 2]).ok
+    c = last_panel()["chart"]
+    assert c["type"] == "bar" and c["series"] == [{"name": "", "values": [1.0, 2.0]}]
+    for bad in ({"title": "x"}, {"title": "x", "labels": ["a"], "values": ["nope"]},
+                {"title": "x", "labels": ["a"], "values": [1], "type": "pie"},
+                {"title": "x", "labels": ["a"], "values": [float("inf")]}):
+        assert not call("show_chart", **bad).ok, bad
+
+
+def test_browser_renders_charts_as_svg_without_markup():
+    assert "k === 'chart'" in JS and "function chartView(" in JS
+    assert "createElementNS(SVG_NS" in JS
+
+
 def test_browser_renderer_validates_every_kind():
     """static/jarvis.js renders kinds with its own code and re-checks each value (no model markup for them)."""
     assert "YT_ID = /^[A-Za-z0-9_-]{11}$/" in JS and "youtube-nocookie.com/embed/" in JS

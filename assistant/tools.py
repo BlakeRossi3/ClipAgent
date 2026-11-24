@@ -147,7 +147,7 @@ PLANNED_TOOLS: dict[str, str] = {
         "app_delete", "app_undo", "app_changes")},
     # the Jarvis screen: maps, media, data panels and the ui_* restyling tools (assistant/hud.py)
     **{name: "assistant.hud" for name in (
-        "show_map", "show_media", "show_data", "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset")},
+        "show_map", "show_media", "show_data", "show_chart", "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset")},
     "selfcheck_run": "assistant.selfcheck",
     "speaking_style_note": "assistant.speaking_style",
     "self_edits_set_aside": "assistant.selfedit",

@@ -207,7 +207,8 @@ SMS and typed dashboard chat still use `runtime.run_turn`.
   "ClipAgent/1.0 (personal assistant)", one request a second, answers cached in kv; OpenStreetMap tiles
   drawn as a mosaic with pins, no map library), `show_media` (image or video URL from a tool result, a
   YouTube link played through youtube-nocookie, or `clip_id` = one of his rendered Shorts), `show_data`
-  (figures or a short list). Panels stack in the rail; any one expands to a large blade over the ring
+  (figures or a short list), `show_chart` (a bar or line chart: labels plus values or up to four series,
+  drawn by the page as SVG from numbers only, no chart library). Panels stack in the rail; any one expands to a large blade over the ring
   (`size: "blade"` opens it at once).
 - Remote images and video go only through `GET /voice/api/img?u=` / `/voice/api/media?u=`: an SSRF gate
   (http(s), default ports, no credentials, every DNS answer and IP literal must be public, redirects

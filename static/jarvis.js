@@ -1165,10 +1165,75 @@
     requestAnimationFrame(function () { drawMap(box, m, zoom); });
     return wrap;
   }
+  /* Charts (assistant/hud.py chart_panel): bar or line, drawn here as SVG nodes from numbers only. */
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs, text) {
+    var n = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (a) { n.setAttribute(a, String(attrs[a])); });
+    if (text != null) n.textContent = String(text);
+    return n;
+  }
+  function chartNum(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+  function chartFmt(v, unit) {
+    var a = Math.abs(v), s = a >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : a >= 1e4 ? Math.round(v / 1e3) + 'k' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(Math.round(v * 10) / 10);
+    return unit === '$' ? '$' + s : unit ? s + unit : s;
+  }
+  function chartView(p, big) {
+    var c = p.chart || {}, labels = (c.labels || []).slice(0, 24).map(String), unit = String(c.unit || '').slice(0, 8);
+    var series = (c.series || []).slice(0, 4).map(function (s) { return { name: String(s.name || ''), values: (s.values || []).slice(0, labels.length).map(chartNum) }; });
+    var all = []; series.forEach(function (s) { s.values.forEach(function (v) { if (v !== null) all.push(v); }); });
+    var wrap = el('div', 'hud-chart');
+    if (!labels.length || !all.length) { wrap.appendChild(el('p', 'hud-note hud-dim', 'Nothing to chart.')); return wrap; }
+    var W = big ? 640 : 320, H = big ? 300 : 170, L = 40, R = 8, T = 10, B = 22, iw = W - L - R, ih = H - T - B;
+    var lo = Math.min(0, Math.min.apply(null, all)), hi = Math.max(0, Math.max.apply(null, all));
+    if (hi === lo) hi = lo + 1;
+    var y = function (v) { return T + ih - (v - lo) / (hi - lo) * ih; };
+    var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, 'class': 'hud-chart-svg', role: 'img', 'aria-label': p.title || 'Chart' });
+    [lo, (lo + hi) / 2, hi].forEach(function (g) {
+      svg.appendChild(svgEl('line', { x1: L, x2: W - R, y1: y(g), y2: y(g), 'class': 'hud-chart-grid' }));
+      svg.appendChild(svgEl('text', { x: L - 4, y: y(g) + 3, 'text-anchor': 'end', 'class': 'hud-chart-axis' }, chartFmt(g, unit)));
+    });
+    if (lo < 0) svg.appendChild(svgEl('line', { x1: L, x2: W - R, y1: y(0), y2: y(0), 'class': 'hud-chart-grid hud-chart-zero' }));
+    var n = labels.length, step = iw / n, every = Math.max(1, Math.ceil(n / (big ? 12 : 6)));
+    labels.forEach(function (lab, i) {
+      if (i % every === 0) svg.appendChild(svgEl('text', { x: L + step * (i + 0.5), y: H - 6, 'text-anchor': 'middle', 'class': 'hud-chart-axis' }, lab.slice(0, 8)));
+    });
+    var isLine = c.type === 'line';
+    series.forEach(function (s, si) {
+      var cls = 'hud-chart-s' + si;
+      if (isLine) {
+        var d = '', pen = false, dots = [];
+        s.values.forEach(function (v, i) {
+          if (v === null) { pen = false; return; }
+          var px = L + step * (i + 0.5), py = y(v); d += (pen ? 'L' : 'M') + px.toFixed(1) + ' ' + py.toFixed(1); pen = true;
+          var dot = svgEl('circle', { cx: px, cy: py, r: 2.5, 'class': 'hud-chart-dot ' + cls });
+          dot.appendChild(svgEl('title', {}, labels[i] + ': ' + chartFmt(v, unit))); dots.push(dot);
+        });
+        if (d) svg.appendChild(svgEl('path', { d: d, 'class': 'hud-chart-line ' + cls }));
+        dots.forEach(function (dot) { svg.appendChild(dot); });
+      } else {
+        var bw = step * 0.8 / series.length;
+        s.values.forEach(function (v, i) {
+          if (v === null) return;
+          var bx = L + step * i + step * 0.1 + bw * si, top = y(Math.max(v, 0)), h = Math.max(1, Math.abs(y(v) - y(0)));
+          var bar = svgEl('rect', { x: bx, y: top, width: Math.max(1, bw - 1), height: h, rx: 1.5, 'class': 'hud-chart-bar ' + cls });
+          bar.appendChild(svgEl('title', {}, labels[i] + ': ' + chartFmt(v, unit))); svg.appendChild(bar);
+        });
+      }
+    });
+    wrap.appendChild(svg);
+    if (series.length > 1 || series[0].name) {
+      var key = el('div', 'hud-chart-key');
+      series.forEach(function (s, si) { var k = el('span', 'hud-chart-k hud-chart-s' + si, s.name || 'Series ' + (si + 1)); key.appendChild(k); });
+      wrap.appendChild(key);
+    }
+    return wrap;
+  }
   function panelBody(p, big) {
     var body = el('div', 'hud-body'), k = p.kind || 'markup';
     if (k === 'markup') body.appendChild(sanitizePanel(p.html));
     else if (k === 'map') body.appendChild(mapView(p, big));
+    else if (k === 'chart') body.appendChild(chartView(p, big));
     else if (k === 'image' && LOCAL_MEDIA.test(p.src || '')) {
       var im = el('img', 'hud-img'); im.referrerPolicy = 'no-referrer'; im.alt = p.caption || p.title || ''; im.src = p.src;
       body.appendChild(im);

@@ -529,6 +529,17 @@ html.jv-on.jv-drawer-open .jv-drawer { transform: none; }
 .hud-kv { border-collapse: collapse; width: 100%; }
 .hud-kv th { font-weight: 400; color: var(--jv-dim); text-align: left; padding: 3px 8px 3px 0; }
 .hud-kv td { text-align: right; font: 600 0.86rem var(--mono); color: var(--jv-ink); }
+/* charts (show_chart): series 0 follows the accent, the rest are fixed, distinguishable hues */
+.hud-chart-svg { display: block; width: 100%; height: auto; }
+.hud-chart-grid { stroke: var(--jv-dim); stroke-opacity: 0.25; stroke-width: 1; }
+.hud-chart-zero { stroke-opacity: 0.6; }
+.hud-chart-axis { fill: var(--jv-dim); font: 400 9px var(--mono); }
+.hud-chart-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.hud-chart-s0 { --c: var(--jv); } .hud-chart-s1 { --c: #e8b054; } .hud-chart-s2 { --c: #a78bfa; } .hud-chart-s3 { --c: #3ddc84; }
+.hud-chart-bar, .hud-chart-dot { fill: var(--c); }
+.hud-chart-line { stroke: var(--c); }
+.hud-chart-key { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; font: 400 0.72rem var(--mono); color: var(--jv-dim); }
+.hud-chart-k::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; background: var(--c); }
 /* the blade: one panel, large, over the ring */
 .jv-stage { position: relative; }
 .jv-blade { position: absolute; z-index: 6; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6px;

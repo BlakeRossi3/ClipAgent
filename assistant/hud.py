@@ -16,6 +16,7 @@ its own code, never as model markup, except ``markup`` which ``assistant.panels`
     map      {map: {lat, lon, zoom, label, markers}}  OpenStreetMap tiles through /voice/api/img
     data     {rows: [[label, value], ...], note}      key figures
     list     {items: [{label, sub, tag}], note}       a short list
+    chart    {chart: {type, labels, series, unit}}    bar or line, drawn as SVG by the page (no markup)
 
 Every panel has ``id, kind, title, accent, hold (turn|sticky), size (card|blade), turn``.
 
@@ -50,7 +51,7 @@ USER_AGENT = "ClipAgent/1.0 (personal assistant)"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 TILE_HOST = "tile.openstreetmap.org"
 PROXY_HOSTS = frozenset({TILE_HOST, "i.ytimg.com", "upload.wikimedia.org"})
-KINDS = ("markup", "image", "video", "youtube", "map", "data", "list")
+KINDS = ("markup", "image", "video", "youtube", "map", "data", "list", "chart")
 SIZES = ("card", "blade")
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_MEDIA_BYTES = 40 * 1024 * 1024
@@ -512,6 +513,56 @@ def data_panel(args: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("show_data needs pairs ([{label, value}]) or items ([{label, sub, tag}]).")
 
 
+CHART_TYPES = ("bar", "line")
+CHART_MAX_POINTS = 24
+CHART_MAX_SERIES = 4
+
+
+def _chart_value(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):
+        raise ValueError("chart values are numbers.")
+    try:
+        f = float(str(v).replace(",", "").replace("$", "").strip()) if isinstance(v, str) else float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"chart value {v!r} is not a number.") from None
+    if f != f or f in (float("inf"), float("-inf")):
+        raise ValueError("chart values must be finite.")
+    return f
+
+
+def chart_panel(args: dict[str, Any]) -> dict[str, Any]:
+    """show_chart arguments -> a ``chart`` panel (bar or line, up to 4 series of 24 points). Raises ValueError."""
+    title = _clean(args.get("title"), 40) or "CHART"
+    kind = str(args.get("type") or "bar").strip().lower()
+    if kind not in CHART_TYPES:
+        raise ValueError("type is bar or line.")
+    labels = [_clean(x, 16) for x in (args.get("labels") or [])][:CHART_MAX_POINTS]
+    raw = args.get("series")
+    if not raw and args.get("values") is not None:
+        raw = [{"name": "", "values": args.get("values")}]
+    if not isinstance(raw, list) or not raw or not labels:
+        raise ValueError("show_chart needs labels and values (or series: [{name, values}]).")
+    series = []
+    for s in raw[:CHART_MAX_SERIES]:
+        if isinstance(s, dict):
+            name, vals = _clean(s.get("name"), 24), s.get("values")
+        else:
+            name, vals = "", s
+        if not isinstance(vals, list):
+            raise ValueError("each series needs a values list.")
+        nums = [_chart_value(v) for v in vals[:len(labels)]]
+        nums += [None] * (len(labels) - len(nums))
+        series.append({"name": name, "values": nums})
+    if not any(v is not None for s in series for v in s["values"]):
+        raise ValueError("show_chart has no numbers to draw.")
+    chart = {"type": kind, "labels": labels, "series": series, "unit": _clean(args.get("unit"), 8)}
+    return make_panel("chart", title, {"chart": chart, "note": _clean(args.get("note"), 200)},
+                      accent=str(args.get("accent") or "default"), hold=str(args.get("hold") or "turn"),
+                      size=str(args.get("size") or "card"))
+
+
 # ---------------------------------------------------------------------------
 # ui_*: the interface restyled (persisted in kv; effects are one-off)
 # ---------------------------------------------------------------------------
@@ -679,6 +730,13 @@ def register_tools(register: Callable[..., None]) -> None:
       "them all out.",
       {"title": S, "pairs": {"type": "array"}, "items": {"type": "array"}, "note": S, "accent": _ACCENT,
        "hold": _HOLD, "size": _SIZE}, ["title"], _show(data_panel))
+    t("show_chart", "Draw a bar or line chart on his Jarvis screen: a trend or comparison he asked to see (hours by "
+      "week, views per day, income by month). labels = the x-axis (up to 24), values = one list of numbers, or "
+      "series = up to four [{name, values}]; optional unit (e.g. $, h) and a one-line note. Real figures from a "
+      "tool result only. Say the takeaway in one sentence, not the numbers.",
+      {"title": S, "type": {"type": "string", "enum": list(CHART_TYPES)}, "labels": {"type": "array"},
+       "values": {"type": "array"}, "series": {"type": "array", "items": {"type": "object"}}, "unit": S, "note": S,
+       "accent": _ACCENT, "hold": _HOLD, "size": _SIZE}, ["title"], _show(chart_panel))
     t("ui_theme", "Retint the whole Jarvis screen: one accent colour (a name like red, teal, gold, or #rrggbb; "
       "'auto' hands it back). Persisted until changed. Use when he asks, or red just before reporting a failure, "
       "then put it back. Never mention it.",

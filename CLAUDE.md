@@ -586,8 +586,8 @@ file (`claude_code.write_system_prompt` -> `--system-prompt-file` / `--append-sy
 Agent SDK via `extra_args` in `brain.options`); `run_prompt` refuses an over-limit argv with a named error.
 
 ### Jarvis HUD, hearing, self-check
-`assistant/hud.py`: panel kinds (markup/image/video/youtube/map/data/list), tools `show_map` (Nominatim, kv cache,
-1 req/s), `show_media`, `show_data`, `ui_theme|ui_ring|ui_rails|ui_effect|ui_reset` (kv `hud:ui`, `ui` events),
+`assistant/hud.py`: panel kinds (markup/image/video/youtube/map/data/list/chart), tools `show_map` (Nominatim, kv cache,
+1 req/s), `show_media`, `show_data`, `show_chart` (bar/line, ≤4 series × 24 points, drawn as SVG nodes by `static/jarvis.js` `chartView`), `ui_theme|ui_ring|ui_rails|ui_effect|ui_reset` (kv `hud:ui`, `ui` events),
 `fetch_remote` = the SSRF-guarded proxy behind `/voice/api/img` and `/voice/api/media` (tests: `hud.set_http`,
 `hud.set_resolver`; conftest resets). `claude_code.user_mcp_servers()` passes his `~/.claude.json` MCP servers into
 the brain (`ASSISTANT_MCP_SERVERS`; names only anywhere visible; tests: `claude_code.set_claude_json`).

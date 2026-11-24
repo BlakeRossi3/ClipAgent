@@ -53,7 +53,7 @@ TASK_KINDS: dict[str, str] = {
 _LABEL_TO_KIND = {v.lower(): k for k, v in TASK_KINDS.items()}
 
 LOOKUP_TOOLS = frozenset({"WebSearch", "WebFetch", "fast_search", "web_search"})
-ACTION_TOOLS = frozenset({"open_url", "settings_set", "desktop_mode_run", "show_map", "show_media", "show_data",
+ACTION_TOOLS = frozenset({"open_url", "settings_set", "desktop_mode_run", "show_map", "show_media", "show_data", "show_chart",
                           "ui_theme", "ui_ring", "ui_rails", "ui_effect", "ui_reset"})
 CODE_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit", "app_update"})
 LONG_TOOLS = frozenset({"start_task", "Agent", "Task", "delegate"})
