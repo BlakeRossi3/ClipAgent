@@ -145,6 +145,24 @@ def test_distil_newest_first_with_provenance_and_resume(tmp_path, fake_model):
     assert hi.progress()["pct"] == 100
 
 
+def test_distil_runs_cheap_and_bare(tmp_path, fake_model):
+    """Distillation was half his plan usage: it must use the quick (Haiku) model and send no tools."""
+    hi.import_files(export(tmp_path))
+    fake_model.queue_for("archivist", '{"facts": []}')
+    hi.distil_pending(limit=1)
+    req = [r for r in fake_model.requests if r.agent == "archivist"][-1]
+    assert req.model == hi.distil_model() and "haiku" in req.model
+    assert req.tools == [] and not req.server_tools
+
+
+def test_run_task_without_override_keeps_agent_model_and_tools(fake_model):
+    from assistant import runtime
+
+    runtime.run_task("archivist", "Weekly tidy.")
+    req = [r for r in fake_model.requests if r.agent == "archivist"][-1]
+    assert "haiku" not in req.model and req.tools
+
+
 def test_distil_stops_on_budget(tmp_path, fake_model, monkeypatch):
     hi.import_files(export(tmp_path))
     monkeypatch.setattr(hi, "_turn_room", lambda: "reserve")

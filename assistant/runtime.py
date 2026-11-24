@@ -454,6 +454,8 @@ class _Run:
     run_ids: list[int] = field(default_factory=list)
     depth: int = 0
     control: Any = None   # claude_code.RunControl of the top-level run: live steps, cancel
+    model: str | None = None   # top-level agent's model override (cheap bulk jobs); None = the agent's own
+    bare: bool = False         # top-level agent gets no tools (pure text-in, JSON-out jobs: far fewer tokens)
 
 
 def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, parent_id: int | None,
@@ -464,16 +466,17 @@ def _run_agent(r: _Run, agent_name: str, user_content: str, *, channel: str, par
                                 profile_context=profile_context)
     s = r.settings
     spec = r.agents[agent_name]
-    model = spec.resolved_model(s)
+    top = r.depth == 0
+    model = (r.model if top and r.model else None) or spec.resolved_model(s)
     is_main = agent_name == "main"
-    offered = tools.available(spec.tools)
+    offered = [] if top and r.bare else tools.available(spec.tools)
     tool_defs = [t.definition() for t in offered]
     allowed = {t.name for t in offered}
-    if is_main and "delegate" in spec.tools and r.depth == 0:
+    if is_main and "delegate" in spec.tools and r.depth == 0 and not r.bare:
         tool_defs.append(_delegate_definition(r.agents))
         allowed.add("delegate")
     server_tools = []
-    if s.web_search and "web_search" in spec.tools:
+    if s.web_search and "web_search" in spec.tools and not (top and r.bare):
         server_tools.append({"type": "web_search_20260209", "name": "web_search", "max_uses": 3})
     top_level = r.depth == 0  # main, or the agent a scheduled task runs directly
     system = persona.system_blocks(channel if top_level else "system", agent=spec, settings=s,
@@ -551,8 +554,11 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
     spec = r.agents[agent_name]
     is_main = agent_name == "main"
     top_level = r.depth == 0
-    full = top_level and claude_code.full_mode(agent_name)
-    if full:
+    bare = top_level and r.bare
+    full = top_level and not bare and claude_code.full_mode(agent_name)
+    if bare:
+        allowed = []
+    elif full:
         # Claude Code's own sub-agents (the Agent tool, from agents/*.md) replace ``delegate``; they
         # share this run's MCP server, so it serves every agent's tools (each sub-agent's own list is
         # enforced by Claude Code from its definition).
@@ -564,30 +570,32 @@ def _run_agent_whole(r: _Run, agent_name: str, user_content: str, *, channel: st
         allowed = [t.name for t in tools.available(spec.tools)]
         if is_main and "delegate" in spec.tools and r.depth == 0:
             allowed.append("delegate")
-    web = s.web_search and "web_search" in spec.tools
+    web = s.web_search and "web_search" in spec.tools and not bare
     system = persona.system_blocks(channel if top_level else "system", agent=spec, settings=s,
                                    agents=r.agents, skills=r.skills, profile_context=profile_context)
     role = "main" if is_main else "sub"
-    run_id = store.record_agent_run(agent_name, user_content[-2000:], model=claude_code.model_in_use(role),
+    override = r.model if top_level and r.model else None
+    model = override or claude_code.model_in_use(role)
+    run_id = store.record_agent_run(agent_name, user_content[-2000:], model=model,
                                     duration_ms=0, cost_usd=0, status="running", parent_id=parent_id, fake=False)
     r.run_ids.append(run_id)
     started, status, text = time.monotonic(), "ok", ""
     calls: list[tools.ToolCall] = []
-    model = claude_code.model_in_use(role)
     if hasattr(r.backend, "requests"):
         r.backend.requests.append(ModelRequest(agent_name, model, system, [{"role": "user", "content": user_content}],
                                                [{"name": n} for n in allowed], 0,
                                                s.effort if is_main else s.subagent_effort))
     try:
         check_budget(0.0, r.turn, s)   # PAUSE and the dollar caps still apply (subscription runs record $0)
-        mcp = claude_code.McpSpec(agent_name, allowed, channel=r.ctx.channel, source=r.ctx.source,
-                                  message_id=r.ctx.message_id, run_id=run_id)
+        mcp = None if bare else claude_code.McpSpec(agent_name, allowed, channel=r.ctx.channel, source=r.ctx.source,
+                                                    message_id=r.ctx.message_id, run_id=run_id)
         snap = selfedit.begin() if full else None
         try:
             res = claude_code.run_prompt(user_content, system="\n\n".join(b for b in system if b), role=role,
                                          mcp=mcp, effort=s.effort if is_main else s.subagent_effort,
                                          web_search=web, alert_channel=r.ctx.channel, full=full,
-                                         channel=r.ctx.channel, control=r.control if top_level else None)
+                                         channel=r.ctx.channel, control=r.control if top_level else None,
+                                         model=override)
         except claude_code.ClaudeCodeError as exc:
             calls = list(exc.calls)
             if snap is not None:
@@ -903,8 +911,11 @@ def run_turn(message: str, *, channel: str, context: dict[str, Any] | None = Non
 def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bool = False,
              kind: str = "task", context: dict[str, Any] | None = None, track: bool = True,
              track_meta: dict[str, Any] | None = None, track_id: str | None = None,
-             title: str | None = None) -> TurnResult:
+             title: str | None = None, model: str | None = None, bare: bool = False) -> TurnResult:
     """Run ``agent_name`` on a task (scheduled briefs, tidy-ups, reviews).
+
+    ``model`` overrides the agent's model for this run; ``bare=True`` sends no tools at all (for
+    text-in, JSON-out bulk jobs such as history distillation, where tool definitions are pure waste).
 
     ``deliver=True`` texts the polished result to the owner (``kind`` e.g. ``morning_brief``;
     daily cap and quiet hours apply). Otherwise the text is returned (and logged as a system message).
@@ -919,6 +930,7 @@ def run_task(agent_name: str, task: str, *, channel: str = "system", deliver: bo
     r = _new_run(s, ctx)
     if agent_name not in r.agents:
         raise KeyError(f"unknown agent {agent_name!r}")
+    r.model, r.bare = model, bare
     out_channel = "sms" if deliver else channel
     user_content = _local_context(out_channel, context) + f"\n\n<task from=\"scheduler\">\n{task}\n</task>"
     reuse_id, track_id = track_id, None

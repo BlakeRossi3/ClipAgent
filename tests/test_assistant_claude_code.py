@@ -112,6 +112,18 @@ def test_long_system_prompt_goes_in_a_file_not_the_command_line(cc, full):
     assert not Path(call["argv"][call["argv"].index(flag) + 1]).exists()      # cleaned up after the run
 
 
+def test_bare_task_on_haiku_sends_no_tools_or_mcp(cc):
+    """History distillation: Haiku, no MCP server, no tools (it was half the plan usage on Sonnet)."""
+    from assistant import runtime
+
+    runtime.run_task("archivist", "Distil this.", kind="history_distil", model="haiku", bare=True)
+    (call,) = cc.calls
+    argv = call["argv"]
+    assert argv[argv.index("--model") + 1] == "haiku"
+    assert "--mcp-config" not in argv and "--allowedTools" not in argv
+    assert argv[argv.index("--tools") + 1] == ""
+
+
 def test_oversized_command_line_is_named_not_a_bare_winerror(cc, monkeypatch):
     monkeypatch.setattr(claude_code, "WINDOWS_CMDLINE_MAX", 10)
     with pytest.raises(claude_code.ClaudeCodeError, match="Windows limit"):

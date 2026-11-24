@@ -913,6 +913,15 @@ def _turn_room() -> str:
     return ""
 
 
+def distil_model() -> str:
+    """The cheapest model for distillation (plain extraction, no tools): Haiku, not the archivist's Sonnet.
+    It was the largest single user of his plan (about half of all usage in a week of importing)."""
+    from assistant.settings import get_assistant_settings
+
+    s = get_assistant_settings()
+    return "haiku" if s.backend == "claude_code" else s.quick_model
+
+
 def conversation_text(uuid: str, limit: int = TASK_CHARS) -> str:
     with _tx() as c:
         rows = c.execute("SELECT sender, text FROM as_import_messages WHERE conv_uuid=? ORDER BY idx", (uuid,)).fetchall()
@@ -1006,7 +1015,8 @@ def distil_pending(limit: int | None = None) -> DistilResult:
             res.stopped = why
             break
         try:
-            tr = runtime.run_task("archivist", _task(conv, conversation_text(conv["uuid"])), kind="history_distil")
+            tr = runtime.run_task("archivist", _task(conv, conversation_text(conv["uuid"])), kind="history_distil",
+                                  model=distil_model(), bare=True)
         except Exception as exc:  # noqa: BLE001
             tr = None
             err = f"{type(exc).__name__}: {str(exc)[:200]}"
