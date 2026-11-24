@@ -406,7 +406,8 @@ def tick(*, force: bool = False) -> dict[str, Any]:
         from assistant import tools
 
         try:
-            tools.send_to_owner(n["text"], kind="heartbeat", agent=AGENT, urgent=urgent)
+            # urgent news phones him (one call per de-dup window, text fallback); the rest is texted
+            tools.send_to_owner(n["text"], kind="heartbeat", agent=AGENT, urgent=urgent, call=urgent)
         except tools.ToolError as exc:
             db.log_event(AGENT, "heartbeat note not sent", level="warning", data={"error": str(exc)[:200]})
             continue

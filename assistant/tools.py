@@ -550,11 +550,14 @@ def outbound_sms_today() -> int:
 
 
 def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply_to: int | None = None,
-                  cost_usd: float = 0.0, urgent: bool = False) -> dict[str, Any]:
+                  cost_usd: float = 0.0, urgent: bool = False, call: bool = False) -> dict[str, Any]:
     """The single outbound path: the owner's own number only, quiet hours, DRY_RUN. No daily cap.
 
     ``kind="reply"`` (a direct answer to an inbound message) is sent at once, even in quiet hours.
-    ``urgent=True`` (plain code only, e.g. the heartbeat) texts now even in quiet hours.
+    ``urgent=True`` (plain code only, e.g. autofix "needs you") texts now even in quiet hours.
+    ``urgent=True, call=True`` (the heartbeat's "urgent" news) phones him, even in quiet hours, as kind
+    ``assistant_urgent``: one call per URGENT_CALL_DEDUP_HOURS, a failed/unanswered call falls back to a
+    text, and repeats inside the window become texts (held in quiet hours).
     Goes through ``notify.notify`` (quiet hours queue it; DRY_RUN records without sending).
     """
     from assistant import persona
@@ -568,10 +571,18 @@ def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply
     nkind = kind if kind.startswith("assistant") else f"assistant_{kind}"
     # A reply answers a text he just sent: deliver now, even in quiet hours. Anything else goes
     # through the policy layer (quiet hours queue it, DRY_RUN records it).
-    nid = notify.sms(body, kind=nkind) if kind == "reply" or urgent else notify.notify(nkind, body)
-    mid = store.add_message("out", "sms", body, kind=kind, agent=agent, cost_usd=cost_usd, reply_to=reply_to,
-                            meta={"notification_id": nid})
+    if kind == "reply":
+        nid = notify.sms(body, kind=nkind)
+    elif urgent and call:
+        nid = notify.notify("assistant_urgent", body, urgent=True)
+    elif urgent:
+        nid = notify.sms(body, kind=nkind)
+    else:
+        nid = notify.notify(nkind, body)
     n = db.get_notification(nid)
+    channel = "call" if n is not None and n.channel == "call" else "sms"
+    mid = store.add_message("out", channel, body, kind=kind, agent=agent, cost_usd=cost_usd, reply_to=reply_to,
+                            meta={"notification_id": nid})
     return {"message_id": mid, "notification_id": nid, "status": n.status if n else "unknown"}
 
 

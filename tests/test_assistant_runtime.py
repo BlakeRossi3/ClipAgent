@@ -245,6 +245,22 @@ def test_message_owner_respects_quiet_hours(fake_model, clock):
     assert reply["status"] == "dry_run"
 
 
+def test_urgent_news_phones_him_even_at_night_then_texts_repeats(fake_model, clock):
+    clock.set(db.parse_iso("2026-11-14T08:00:00Z"))  # 03:00 in New York: quiet hours
+    out = tools.send_to_owner("Your Claude plan is locked out.", kind="heartbeat", urgent=True, call=True)
+    first = db.get_notification(out["notification_id"])
+    assert first.channel == "call" and first.kind == "assistant_urgent" and out["status"] == "dry_run"
+    assert store.get_message(out["message_id"]).channel == "call"
+    # a second urgent item inside the de-dup window does not ring again: it waits as a text
+    again = tools.send_to_owner("Upload 4 failed too.", kind="heartbeat", urgent=True, call=True)
+    second = db.get_notification(again["notification_id"])
+    assert second.channel == "sms" and again["status"] == "queued"
+    assert store.get_message(again["message_id"]).channel == "sms"
+    # urgent without call= (autofix "needs you") still texts at once, never rings
+    fix = tools.send_to_owner("Verify your number in the Twilio console.", kind="autofix", urgent=True)
+    assert db.get_notification(fix["notification_id"]).channel == "sms" and fix["status"] == "dry_run"
+
+
 def test_inbound_sms_hand_off(fake_model, clock):
     assert runtime.handle_inbound_sms("hello") is None  # disabled by default
     _settings(enabled=True)

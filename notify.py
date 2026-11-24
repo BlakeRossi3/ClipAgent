@@ -49,8 +49,10 @@ MODULE = "notify"
 # Problem kinds whose *calls* ring even during quiet hours (de-duplicated). Producers:
 # budget.py budget_cap, youtube_auth.py youtube_auth, analytics.py youtube_claim (all queued as
 # calls). SMS kinds (youtube_quota, youtube_private_lock, job_error, weekly_report, ...) wait
-# for the morning.
-URGENT_KINDS = frozenset({"budget_cap", "youtube_auth", "youtube_claim"})
+# for the morning. ``assistant_urgent`` is Cecil's own urgent news (assistant/tools.send_to_owner
+# with urgent=True: the heartbeat's "urgent" items, autofix "needs you"): one call per de-dup window,
+# repeats inside it become texts.
+URGENT_KINDS = frozenset({"budget_cap", "youtube_auth", "youtube_claim", "assistant_urgent"})
 GATHER_TIMEOUT_SEC = 8
 GATHER_MAX_ATTEMPTS = 3             # prompts per approval call before falling back to SMS
 RING_TIMEOUT_SEC = 25               # how long the phone rings before "no-answer"

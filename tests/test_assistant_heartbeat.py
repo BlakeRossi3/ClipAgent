@@ -126,7 +126,9 @@ def test_quiet_hours_only_urgent_then_morning_catch_up(hb, clock):
                                         [{"task": "Retry the upload", "why": "failed upload"}]))
     r = heartbeat.tick()
     assert r["status"] == "acted" and r["notified"] == 1 and r["tasks"] == 0 and r["due"] == 0
-    assert [m.body for m in sms_sent()] == ["Your Claude plan is locked out."]
+    assert sms_sent() == []                               # urgent news phones him instead of texting
+    calls = [m for m in store.list_messages(50, channel="call", direction="out") if m.kind == "heartbeat"]
+    assert [m.body for m in calls] == ["Your Claude plan is locked out."]
     assert "quiet hours" in hb_requests(hb)[0].system[0]
     clock.advance(minutes=30)
     assert heartbeat.tick()["status"] == "unchanged"     # nothing new: no call in the night
