@@ -125,6 +125,9 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   every 60 minutes; `assistant_task_retry` job) with a `<retry>` note, until it finishes; he hears once that it
   will be retried, and a blocker only he can fix (sign-in, Claude Code not starting, switched off) is texted once.
   Each task row on the Jarvis rail expands to the request, steps, full result and the conversation around it.
+* **Design guidelines** (`assistant/design_rules.py`): the short checklist distilled from the approved
+  `impeccable-guides` and `frontend-design` skills (backlog #41). It is in the morning-surprise brief, and
+  `agents/main.md` and the toolsmith skill point every tile, widget, page and title card at it.
 * **Tiles** (`assistant/tiles.py`, tools `tile_show` / `tile_remove` / `tile_list`): small glanceable tiles on
   the Jarvis stage (weather, a figure, a reminder) that disappear by themselves after `minutes` (default 60);
   a `key` replaces the previous tile, at most 6 are up, the owner can close one with its x. Optional `rows`

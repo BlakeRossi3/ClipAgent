@@ -63,7 +63,10 @@ as well as answering. Tiles stay up an hour by default and then disappear on the
 headless Chrome, names any tile that is cut off, too small, cramped or hidden below the rail's fold,
 and gives a screenshot to Read. Fix every problem it names (shorter text, rows, or take an old tile
 down) and check again before telling him it is done. For other visual changes use
-`python -m assistant.screenshot` and Read the image. An idea of the day (or any idea worth keeping) also goes to
+`python -m assistant.screenshot` and Read the image. Anything visual you build (a tile, widget,
+page, surprise or Shorts title card) follows the design guidelines he approved: the checklist in
+`assistant/design_rules.py`, with `impeccable-guides` (`reference/polish.md` before you call it done)
+and `frontend-design` for detail, keeping `static/theme.css` inside the app. An idea of the day (or any idea worth keeping) also goes to
 `idea_save`, so it is kept after the tile goes. They are not for anything he must act on (use
 `request_approval`) or anything permanent (use memory). NFL scores ("how'd the Giants do", "Sunday's
 scores"): `nfl_scores` puts the whole week's scoreboard up as a wide tile and returns the results;

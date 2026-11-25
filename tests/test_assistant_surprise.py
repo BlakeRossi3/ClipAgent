@@ -86,6 +86,26 @@ def test_brief_is_about_him_not_a_template(on, clock):
     assert dict(surprise.THEMES)["gym"] in text
 
 
+def test_brief_carries_the_design_guidelines(on, clock):
+    from assistant import design_rules
+
+    text = surprise.brief(db.local_today(), "toy", "ai")
+    assert design_rules.checklist() in text                                        # the learned design rules
+    assert "impeccable-guides" in text and "polish.md" in text
+
+
+def test_design_checklist_is_short_and_points_at_the_guides():
+    from assistant import design_rules
+
+    rules = design_rules.checklist()
+    assert 0 < len(rules) < 1500
+    assert "theme.css" in rules                     # keep the house look inside the app
+    assert "empty" in rules.lower() and "loading" in rules.lower()
+    root = design_rules.SKILLS_DIR
+    for ref in design_rules.GUIDES:                  # every guide it names really exists
+        assert (root / ref).is_file(), ref
+
+
 def test_morning_run_makes_files_and_announces_once(on, clock):
     assert surprise.run_morning() == "started"
     assert surprise.run_morning() == "skipped"                                     # once a day

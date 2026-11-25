@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import db
-from assistant import store
+from assistant import design_rules, store
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ def brief(day: date, kind: str, theme: str | None = None) -> str:
             "should open it and think 'that's for me'.\n"
             "Hard rules: no stories, no news recaps, no history or 'on this day' pieces, no gadget anecdotes. Make "
             "something he can play with or use. Polish it: real content, good visuals, works first time.\n"
+            + design_rules.checklist() + "\n"
             + ("Recent surprises (do not repeat these): " + "; ".join(recent) + "\n" if recent else "")
             + f"- Write ONE self-contained HTML file to {html} (inline CSS "
             "and JavaScript, no external requests, no network, works offline). It opens from the Scheduled page.\n"

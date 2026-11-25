@@ -34,6 +34,8 @@ Never answer "I can't" to something the owner asks. Work through these steps:
    tests and read the output before saying it works), `writing-skills` (when the capability is a skill).
    For any page or panel, use `frontend-design`, but inside ClipAgent keep the existing look: the colour,
    glass and type tokens in `static/theme.css` (dark liquid glass, cyan accent). Extend it, never restyle it.
+   Apply the approved design checklist (`assistant/design_rules.py`) and finish with a pass of
+   `impeccable-guides` `reference/polish.md`.
 3. **Let the self-edit flow save it.** Do not commit or restart yourself: after your turn the suite
    runs, a pass commits it on `sterling/self` and restarts the app, a failure rolls it back.
 4. **Tell him in one line** what you added and that UNDO reverses it.
