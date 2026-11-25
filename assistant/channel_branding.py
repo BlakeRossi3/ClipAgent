@@ -1,4 +1,4 @@
-"""YouTube channel branding: read and set the channel description; profile picture steps.
+"""YouTube channel branding: read and set the channel description; profile picture steps; banner.
 
 Tool ``youtube_channel`` (CLI ``python -m assistant.channel_branding [show|describe TEXT]``):
 
@@ -8,6 +8,7 @@ Tool ``youtube_channel`` (CLI ``python -m assistant.channel_branding [show|descr
   values (keywords, country, ...) are read first and sent back unchanged.
 * ``profile_picture`` - the YouTube Data API has no way to set a channel avatar (only banners),
   so this returns the YouTube Studio steps; the owner uploads the image himself.
+* ``banner_options`` / ``set_banner`` - see :mod:`assistant.channel_banner`.
 
 Needs the ``youtube`` (manage) scope, which ``youtube_auth.SCOPES`` already requests.
 """
@@ -96,8 +97,11 @@ def set_description(text: str) -> dict[str, Any]:
     channel = dict((item.get("brandingSettings") or {}).get("channel") or {})
     before = channel.get("description", "")
     channel["description"] = text
+    # The API replaces brandingSettings wholesale: send the banner (image) back too, or it is dropped.
+    branding = {k: v for k, v in (item.get("brandingSettings") or {}).items() if k == "image"}
+    branding["channel"] = channel
     yt.channels().update(part="brandingSettings",
-                         body={"id": item["id"], "brandingSettings": {"channel": channel}}).execute()
+                         body={"id": item["id"], "brandingSettings": branding}).execute()
     youtube_auth.record_quota("channels.update")
     import db
     db.log_event("youtube_channel", "Channel description updated",
@@ -115,8 +119,17 @@ DESCRIPTION = (
     "His YouTube channel's branding. action 'show' reads title, description, keywords and profile picture URL; "
     "'set_description' with 'text' (max 1000 characters, no < or >) replaces the channel description and keeps "
     "the keywords; 'profile_picture' returns the YouTube Studio steps, because the API cannot set a channel avatar "
-    "(make the image yourself, e.g. with Higgsfield, save it under his Pictures, and put the steps on his screen)."
+    "(make the image yourself, e.g. with Higgsfield, save it under his Pictures, and put the steps on his screen). "
+    "'banner_options' renders banner options A, B, C (art only / name / name + tagline; optional 'base' artwork path) "
+    "into Pictures/Channel banner plus ONE sheet choose_banner.png showing each on a TV and a phone: show him the "
+    "sheet and ask 'A, B or C?'. 'set_banner' with 'choice' (a letter or an image path) uploads it as the channel "
+    "banner; that is public, so only after he picks one."
 )
+
+
+def _banner_error() -> type[Exception]:
+    from assistant.channel_banner import BannerError
+    return BannerError
 
 
 def _tool(ctx: Any, a: dict[str, Any]) -> Any:
@@ -128,8 +141,14 @@ def _tool(ctx: Any, a: dict[str, Any]) -> Any:
             return set_description(str(a.get("text") or ""))
         if action == "profile_picture":
             return profile_picture()
+        if action == "banner_options":
+            from assistant import channel_banner
+            return channel_banner.make_options(a.get("base") or None)
+        if action == "set_banner":
+            from assistant import channel_banner
+            return channel_banner.set_banner(str(a.get("choice") or ""))
         return show()
-    except ChannelError as exc:
+    except (ChannelError, _banner_error()) as exc:
         raise ToolError(str(exc)) from None
 
 
@@ -137,8 +156,11 @@ def register_tools(register: Any) -> None:
     from assistant.tools import Tool, _obj
 
     register(Tool("youtube_channel", DESCRIPTION, _obj({
-        "action": {"type": "string", "enum": ["show", "set_description", "profile_picture"]},
+        "action": {"type": "string", "enum": ["show", "set_description", "profile_picture", "banner_options",
+                                              "set_banner"]},
         "text": {"type": "string"},
+        "choice": {"type": "string"},
+        "base": {"type": "string"},
     }), _tool, owner=__name__, side_effects=True), replace=True)
 
 

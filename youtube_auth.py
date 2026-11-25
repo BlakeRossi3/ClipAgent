@@ -78,6 +78,7 @@ QUOTA_COSTS: dict[str, int] = {
     "videos.update": 50,
     "channels.list": 1,
     "channels.update": 50,
+    "channelBanners.insert": 50,
     "playlistItems.list": 1,
     "search.list": 100,
     "thumbnails.set": 50,
