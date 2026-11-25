@@ -382,16 +382,30 @@ def test_split_dictation_is_stitched_into_one_request(env):
     assert [m.body for m in replies] == ["Logged, sir: forty-one hours."]
 
 
-def test_talking_over_a_spoken_answer_merges_but_stop_does_not(env):
-    prompts = []
-    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, lambda p, c: (prompts.append(p), (
-        [f"Sentence number {i}." for i in range(200)] if "long story" in p and "short" not in p
-        else ["Short answer."]))[1], delay=0.01))
-    t1 = brain.ask("tell me a long story")
-    for _ in range(200):
-        if t1.sentences:
-            break
+def _started_speaking(turn, limit=10.0):
+    end = time.monotonic() + limit
+    while not turn.sentences and time.monotonic() < end:
         time.sleep(0.01)
+    assert turn.sentences
+
+
+def test_talking_over_a_spoken_answer_merges_but_stop_does_not(env):
+    import re
+
+    prompts = []
+
+    def reply(p, c):
+        # keyed on what he said, never the whole prompt: the recent history in it repeats earlier turns
+        m = re.search(r"<said[^>]*>\s*(.*?)\s*</said>", p, re.S)
+        said = m.group(1) if m else p
+        prompts.append(p)
+        # the long story must outlast a slow, loaded Windows box (200 x 0.05s = 10s): only an abandon ends it
+        return [f"Sentence number {i}." for i in range(200)] if "long story" in said and "short" not in said \
+            else ["Short answer."]
+
+    brain.set_client_factory(lambda o, t: brain.FakeClient(o, t, reply, delay=0.05))
+    t1 = brain.ask("tell me a long story")
+    _started_speaking(t1)
     assert brain.get_brain().stitch_target("browser") is t1          # still unfinished: new speech replaces it
     t2 = brain.ask("actually, the short version")
     res = t2.wait(10)
@@ -401,10 +415,7 @@ def test_talking_over_a_spoken_answer_merges_but_stop_does_not(env):
     assert t1.wait(1)["status"] == "cancelled" and len(t1.sentences) < 200
     # an explicit stop ("stop", Escape) is not merged into what he says next
     t3 = brain.ask("tell me a long story")
-    for _ in range(200):
-        if t3.sentences:
-            break
-        time.sleep(0.01)
+    _started_speaking(t3)
     assert brain.interrupt()
     t4 = brain.ask("what time is it")
     assert t4.wait(10)["reply"] == "Short answer." and t4.merged_from is None and t4.heard == "what time is it"
