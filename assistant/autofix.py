@@ -15,7 +15,8 @@ there is something to fix):
   (no error of its own) is turned into one by :func:`watch_heartbeat`.
 * A problem is taken on once its first failure is ``ASSISTANT_AUTOFIX_GRACE_MIN`` (3) minutes old - the
   normal retries get their chance first - and not again for :data:`COOLDOWN_HOURS` (sooner,
-  :data:`RETRY_HOURS`, when the repair run itself did not finish). One repair at a time, at most
+  :data:`RETRY_HOURS`, when the repair run itself did not finish; later, :data:`NEEDS_YOU_HOURS`, when
+  only he can fix it, so he is not told the same thing twice a day). One repair at a time, at most
   ``ASSISTANT_AUTOFIX_MAX_PER_DAY`` (6) a day, never while plan usage is tight, Cecil is switched off or
   the assistant is disabled.
 * The repair is a background task (on the rail as "Self-repair") with the self-edit guardrail: a code
@@ -50,6 +51,10 @@ LOG_KEEP = 60
 LOOKBACK_HOURS = 24
 COOLDOWN_HOURS = 12
 RETRY_HOURS = 1
+#: a problem only he can fix (a sign-in, billing) keeps failing until he acts; re-diagnosing it every
+#: COOLDOWN_HOURS burned a repair run and texted him the same thing again (YouTube sign-in, Nov 2026).
+#: It stays on the needs_you list meanwhile; after this long, take one more look.
+NEEDS_YOU_HOURS = 48
 TELL_AFTER_RUN_FAILURES = 2                  # a repair that could not run this many times is texted, once
 QUIET_RUN_STATUSES = ("budget", "stopped")   # plan limit (handoff resumes it) or cancelled: not a fault
 MAX_EVENTS = 400
@@ -394,8 +399,10 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
         return
     res = parse(full)
     if sig:
+        extra = ({"until": db.to_iso(db.utcnow() + timedelta(hours=NEEDS_YOU_HOURS))}
+                 if res["status"] == "needs_you" else {})
         db.kv_update(KV_SIG.format(sig=sig), lambda st: {**(st if isinstance(st, dict) else {}),
-                                                          "status": res["status"], "run_failures": 0}, {})
+                                                          "status": res["status"], "run_failures": 0, **extra}, {})
     _remember({"sig": sig, **res, "task_id": row.get("id"), "code_changed": code_changed,
                "commits": edit.get("commits") or []})
     db.log_event(MODULE, f"repair {res['status']}: {res['what'][:160]}",

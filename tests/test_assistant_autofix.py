@@ -122,6 +122,25 @@ def test_needs_you_and_transient(on, clock):
     assert len(_texts()) == n and autofix.history()[0]["status"] == "transient"
 
 
+def test_a_needs_you_problem_is_not_rediagnosed_or_retexted_while_it_waits_for_him(on, clock):
+    on["reply"]["text"] = ("STATUS: needs_you\nWHAT: YouTube's sign-in expired.\n"
+                           "FIX: Run python youtube_auth.py.")
+    _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+    clock.advance(minutes=4)
+    assert _run(clock)["status"] == "started"
+    n, briefs = len(_texts()), len(on["briefs"])
+    for _ in range(4):                                        # it keeps failing every few hours until he acts
+        clock.advance(hours=6)
+        _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+        assert autofix.tick()["status"] == "nothing"
+    assert len(_texts()) == n and len(on["briefs"]) == briefs  # no second diagnosis, no second text
+    assert autofix.triage()[0]["state"] == "needs_you"       # still shown as waiting on him
+    clock.advance(hours=30)                                   # two days on, still broken: look once more
+    _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+    clock.advance(minutes=4)
+    assert _run(clock)["status"] == "started"
+
+
 def test_its_own_failures_never_start_a_repair(on, clock):
     db.log_event("autofix", "repair started: x", level="error", data={"autofix": True})
     tid = tasks.track("Fix: something", meta={"kind": "autofix"})
