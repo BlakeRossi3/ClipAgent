@@ -3,7 +3,7 @@
 # where a major version is known to break our usage.
 
 anthropic>=2.8,<3            # llm.py is the only importer
-yt-dlp>=2025.1.1             # fetch.py / scout.py
+yt-dlp>=2026.11.23          # fetch.py / scout.py
 faster-whisper>=1.1          # transcribe.py (default backend)
 google-api-python-client>=2.150
 google-auth-oauthlib>=1.2
