@@ -586,6 +586,10 @@ def licence_problems(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str
             doms = [d.lower() for d in entry.get("domains", [])]
             if any(d not in YOUTUBE_DOMAINS for d in doms):
                 hard.append("allowlist[cc_by_youtube] may only list YouTube domains")
+        if st == "public_domain_archive":
+            doms = [d.lower() for d in entry.get("domains", [])]
+            if any(d != "archive.org" for d in doms) or entry.get("channels"):
+                hard.append("allowlist[public_domain_archive] may only list the archive.org domain")
         for c in entry.get("channels", []):
             nm = (c.get("name") or "").casefold()
             if nm in old_block or nm in new_block or any(bad in nm for bad in NEVER_ALLOW):

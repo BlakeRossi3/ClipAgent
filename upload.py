@@ -82,6 +82,7 @@ MARKER_TAG = "clipagent-clip-{clip_id}"
 LICENCE_TEXT = {
     "us_gov_public_domain": "Public domain - work of the US federal government (17 U.S.C. 105).",
     "cc_by": "Creative Commons Attribution (CC BY 3.0) - https://creativecommons.org/licenses/by/3.0/",
+    "public_domain": "Public domain - marked public domain / CC0 on the Internet Archive.",
 }
 
 # Reasons from the Data API error payload (error.errors[].reason).

@@ -143,7 +143,7 @@ _SCHEMA_V1 = """
 CREATE TABLE sources (
     id               INTEGER PRIMARY KEY,
     url              TEXT NOT NULL UNIQUE,
-    source_type      TEXT NOT NULL,              -- nasa | congress | cc_by_youtube | ...
+    source_type      TEXT NOT NULL,              -- nasa | congress | cc_by_youtube | public_domain_archive | ...
     platform         TEXT,                       -- youtube | nasa_images | house_gov | ...
     external_id      TEXT,                       -- e.g. YouTube video id
     channel          TEXT,                       -- channel / publisher display name
@@ -152,7 +152,7 @@ CREATE TABLE sources (
     description      TEXT,
     duration_sec     REAL,
     published_at     TEXT,
-    licence          TEXT,                       -- us_gov_public_domain | cc_by | ...
+    licence          TEXT,                       -- us_gov_public_domain | cc_by | public_domain | ...
     licence_evidence TEXT,                       -- JSON: raw metadata that justified the decision
     topic            TEXT,                       -- strategy topic query that found it
     status           TEXT NOT NULL DEFAULT 'candidate'

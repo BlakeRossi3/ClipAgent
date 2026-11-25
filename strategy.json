@@ -40,6 +40,13 @@
       ],
       "domains": ["house.gov", "senate.gov", "congress.gov", "govinfo.gov"]
     },
+    "public_domain_archive": {
+      "any_channel": true,
+      "channels": [],
+      "domains": [
+        "archive.org"
+      ]
+    },
     "cc_by_youtube": {
       "any_channel": true,
       "channels": [],

@@ -185,7 +185,7 @@ Time: `utcnow()`, `now_iso()`, `to_iso(dt)`, `parse_iso(s)`, `local_tz()`, `loca
   `new_niche` (niche text changed or topic area added), `new_source_type`, `budget_increase`,
   `strategy_change` (any allowlist edit, blocklist addition/removal, source type removed).
   The strategist adds only hard refusals on top (`strategist.licence_problems`).
-- `validate_strategy` rejects `any_channel: true` outside `ANY_CHANNEL_SOURCE_TYPES` ({cc_by_youtube}).
+- `validate_strategy` rejects `any_channel: true` outside `ANY_CHANNEL_SOURCE_TYPES` ({cc_by_youtube, public_domain_archive}).
 - Optional key `max_windows_per_source` (default 40, `Strategy.max_windows_per_source`): Haiku
   windows per source; pick falls back to kv `pick:max_windows` only when the key is absent.
 - `upload_cap(strategy=None) -> int` = min(strategy.uploads_per_day, MAX_UPLOADS_PER_DAY).

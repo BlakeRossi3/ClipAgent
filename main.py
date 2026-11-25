@@ -413,7 +413,8 @@ def run_once(max_sources: int = DEFAULT_MAX_SOURCES) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _HOST_TYPES = (("nasa.gov", "nasa"), ("house.gov", "congress"), ("senate.gov", "congress"),
-               ("congress.gov", "congress"), ("dvidshub.net", "dvids"), ("archives.gov", "nara"))
+               ("congress.gov", "congress"), ("dvidshub.net", "dvids"), ("archives.gov", "nara"),
+               ("archive.org", "public_domain_archive"))
 
 
 def _host_guess(url: str, enabled: list[str]) -> str:

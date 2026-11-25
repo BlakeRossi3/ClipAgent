@@ -61,9 +61,13 @@ MODULE = "fetch"
 
 GOV_SOURCE_TYPES = frozenset({"nasa", "congress", "dvids", "nara", "us_gov_other"})
 CC_BY_SOURCE_TYPES = frozenset({"cc_by_youtube"})
+PD_SOURCE_TYPES = frozenset({"public_domain_archive"})
 
 LICENCE_US_GOV = "us_gov_public_domain"
 LICENCE_CC_BY = "cc_by"
+LICENCE_PUBLIC_DOMAIN = "public_domain"
+
+_ARCHIVE_HOSTS = ("archive.org",)
 
 MAX_DURATION_SEC = 3 * 3600          # longer sources are almost always livestream dumps
 MAX_HEIGHT = 1080
@@ -294,6 +298,21 @@ def _check_cc_by_licence(licence_text: str | None) -> tuple[bool, str]:
     return False, f"licence {licence_text!r} is not Creative Commons Attribution"
 
 
+def _check_public_domain_licence(licence_url: str | None) -> tuple[bool, str]:
+    """An Internet Archive ``licenseurl`` must be a Creative Commons public-domain mark or CC0."""
+    if not licence_url or not str(licence_url).strip():
+        return False, "no public-domain mark on the item (archive.org licenseurl is empty)"
+    u = str(licence_url).strip().casefold()
+    path = re.sub(r"^https?://(www\.)?", "", u)
+    if path.startswith("creativecommons.org/publicdomain/mark/"):
+        return True, f"Public Domain Mark ({licence_url})"
+    if path.startswith("creativecommons.org/publicdomain/zero/"):
+        return True, f"CC0 public-domain dedication ({licence_url})"
+    if path.startswith("creativecommons.org/licenses/publicdomain"):
+        return True, f"Creative Commons public-domain certification ({licence_url})"
+    return False, f"licence {licence_url!r} is not a public-domain mark or CC0"
+
+
 def _allowlist_impostor(strategy: Strategy, source_type: str, info: Mapping[str, Any]) -> str | None:
     """A YouTube channel that matches an allowlisted *name/handle* but not its pinned ``channel_id``."""
     cid = info.get("channel_id")
@@ -355,7 +374,7 @@ def check_licence(info: Mapping[str, Any], strategy: Strategy, source_type: str)
         return reject("URL is a playlist, not a single video")
     if not url or not host:
         return reject("no webpage URL in metadata; cannot verify the publisher")
-    if source_type not in GOV_SOURCE_TYPES | CC_BY_SOURCE_TYPES:
+    if source_type not in GOV_SOURCE_TYPES | CC_BY_SOURCE_TYPES | PD_SOURCE_TYPES:
         return reject(f"unknown source type {source_type!r}")
     if info.get("is_live") or info.get("live_status") in _BLOCKING_LIVE_STATUSES:
         what = _BLOCKING_LIVE_STATUSES.get(info.get("live_status") or "", "a live stream")
@@ -422,6 +441,21 @@ def check_licence(info: Mapping[str, Any], strategy: Strategy, source_type: str)
             return reject("description contradicts CC BY reuse: " + ", ".join(f["flag"] for f in flags))
         return LicenceDecision(True, LICENCE_CC_BY, f"{cc_reason}; {rule}", evidence)
 
+    if source_type in PD_SOURCE_TYPES:
+        if not any(host == h or host.endswith("." + h) for h in _ARCHIVE_HOSTS):
+            return reject(f"{source_type} source is not on the Internet Archive (host {host!r})")
+        pd_ok, pd_reason = _check_public_domain_licence(info.get("license"))
+        if not pd_ok:
+            return reject(pd_reason)
+        flags = _red_flags(description, _CC_RED_FLAGS)
+        evidence["red_flags"] = flags
+        evidence["description_excerpt"] = _description_excerpt(description, flags)
+        if flags:
+            return reject("description contradicts the public-domain mark: "
+                          + ", ".join(f["flag"] for f in flags))
+        return LicenceDecision(True, LICENCE_PUBLIC_DOMAIN,
+                               f"{pd_reason} (uploader-declared on archive.org); {rule}", evidence)
+
     # US federal government work
     if on_youtube:
         if not info.get("channel_id"):
@@ -461,9 +495,15 @@ def licence_info(info: Mapping[str, Any], source: db.Source) -> dict[str, Any]:
         value = meta.get(key)
         if isinstance(value, str) and value.strip() and value.strip() not in own:
             extra.append(f"{key.replace('_', ' ')}: {value.strip()}")
-    if not extra:
-        return dict(info)
-    return {**info, "description": "\n\n".join(([own] if own else []) + extra)}
+    out = dict(info)
+    # The Internet Archive's own licenseurl, recorded by scout from archive.org's search API, fills
+    # in when yt-dlp leaves ``license`` empty; yt-dlp's value always wins.
+    stored = meta.get("licenseurl")
+    if not out.get("license") and isinstance(stored, str) and stored.strip():
+        out["license"] = stored.strip()
+    if extra:
+        out["description"] = "\n\n".join(([own] if own else []) + extra)
+    return out
 
 
 def source_dir(source_id: int) -> Path:

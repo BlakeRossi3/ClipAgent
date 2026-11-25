@@ -263,7 +263,8 @@ def sample_windows(windows: Sequence[Window], k: int) -> list[Window]:
 # ---------------------------------------------------------------------------
 
 _PUBLISHER_BY_TYPE = {"nasa": "NASA", "congress": "U.S. Congress", "dvids": "DVIDS",
-                      "nara": "National Archives", "us_gov_other": "U.S. Government"}
+                      "nara": "National Archives", "us_gov_other": "U.S. Government",
+                      "public_domain_archive": "Internet Archive"}
 
 
 def credit_line(source: db.Source) -> str:
@@ -272,7 +273,7 @@ def credit_line(source: db.Source) -> str:
     who = (source.channel or evidence.get("channel") or evidence.get("uploader")
            or _PUBLISHER_BY_TYPE.get(source.source_type) or source.platform or "source")
     who = re.sub(r"\s+", " ", str(who)).strip()
-    if source.licence == "us_gov_public_domain":
+    if source.licence in ("us_gov_public_domain", "public_domain"):
         return f"Video: {who} (public domain)"
     if source.licence == "cc_by":
         return f"Video: {who} (CC BY)"

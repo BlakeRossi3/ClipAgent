@@ -88,9 +88,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import db
 from config import get_settings
 
-KNOWN_SOURCE_TYPES = frozenset({"nasa", "congress", "cc_by_youtube", "dvids", "nara", "us_gov_other"})
-# Source types whose allowlist may set any_channel (the per-video CC BY licence check is the gate).
-ANY_CHANNEL_SOURCE_TYPES = frozenset({"cc_by_youtube"})
+KNOWN_SOURCE_TYPES = frozenset({"nasa", "congress", "cc_by_youtube", "dvids", "nara", "us_gov_other",
+                                "public_domain_archive"})
+# Source types whose allowlist may set any_channel (the per-item licence check is the gate:
+# CC BY on YouTube, a public-domain mark / CC0 on the Internet Archive).
+ANY_CHANNEL_SOURCE_TYPES = frozenset({"cc_by_youtube", "public_domain_archive"})
 GOV_SOURCE_TYPES = KNOWN_SOURCE_TYPES - ANY_CHANNEL_SOURCE_TYPES
 
 DEFAULT_MAX_WINDOWS_PER_SOURCE = 40

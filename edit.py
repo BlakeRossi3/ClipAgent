@@ -1055,7 +1055,7 @@ def _load_transcript(path: Path) -> dict:
     return data
 
 
-_LICENCE_LABEL = {"us_gov_public_domain": "public domain", "cc_by": "CC BY"}
+_LICENCE_LABEL = {"us_gov_public_domain": "public domain", "public_domain": "public domain", "cc_by": "CC BY"}
 
 
 def credit_for(clip: db.Clip, source: db.Source) -> str:

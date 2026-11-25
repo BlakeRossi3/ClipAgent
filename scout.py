@@ -13,6 +13,9 @@ Searchers (``SEARCHERS``, one per source type; tests replace entries):
   recent uploads of allowlisted channels that have a handle or channel id, filtered to
   allowlisted publishers.
 * ``cc_by_youtube``: YouTube search restricted to Creative Commons videos.
+* ``public_domain_archive``: the Internet Archive's advanced search (``mediatype:movies`` items whose
+  ``licenseurl`` is a public-domain mark or CC0). Free, no key. ``fetch.check_licence`` re-checks the
+  licence and the description before anything is downloaded.
 
   **Choice**: by default this uses yt-dlp on the YouTube results page with the Creative
   Commons filter (``sp=EgIwAQ%3D%3D``). It costs **zero** Data API quota, so it never competes
@@ -59,6 +62,7 @@ NASA_API = "https://images-api.nasa.gov"
 YT_CC_FILTER = "EgIwAQ%3D%3D"     # YouTube results filter "Creative Commons" (url-encoded protobuf)
 YT_DATA_API = "https://www.googleapis.com/youtube/v3"
 CC_API_SEARCH_UNITS = 100
+ARCHIVE_SEARCH_API = "https://archive.org/advancedsearch.php"
 
 _COPYRIGHT_RE = re.compile(r"(©|\(c\)\s*\d{4}|copyright|all rights reserved|licensed music|used with permission)", re.I)
 
@@ -425,6 +429,47 @@ def search_cc_by_youtube(query: str, limit: int, strategy: Strategy) -> list[Can
     return search_cc_youtube(query, limit, strategy)
 
 
+# ---------------------------------------------------------------------------
+# Internet Archive (public domain)
+# ---------------------------------------------------------------------------
+
+_ARCHIVE_PD_PREFIXES = ("creativecommons.org/publicdomain/", "creativecommons.org/licenses/publicdomain")
+
+
+def _first_str(v: Any) -> str:
+    if isinstance(v, list):
+        v = next((x for x in v if isinstance(x, str) and x.strip()), "")
+    return v.strip() if isinstance(v, str) else ""
+
+
+def search_archive_public_domain(query: str, limit: int, strategy: Strategy) -> list[Candidate]:
+    q = f"({query}) AND mediatype:(movies) AND licenseurl:(*publicdomain*)"
+    res = http_get_json(ARCHIVE_SEARCH_API, {
+        "q": q, "fl[]": ["identifier", "title", "licenseurl", "creator", "date", "description"],
+        "rows": max(limit * 3, 10), "page": 1, "output": "json"})
+    docs = (res or {}).get("response", {}).get("docs", []) or []
+    out: list[Candidate] = []
+    for d in docs:
+        if len(out) >= limit:
+            break
+        ident = _first_str(d.get("identifier"))
+        lic = _first_str(d.get("licenseurl"))
+        bare = re.sub(r"^https?://(www\.)?", "", lic.casefold())
+        if not ident or not bare.startswith(_ARCHIVE_PD_PREFIXES) or _is_known("archive_org", ident):
+            continue
+        desc = _first_str(d.get("description"))
+        if _COPYRIGHT_RE.search(desc):
+            continue  # fetch would reject it anyway
+        out.append(Candidate(
+            url=f"https://archive.org/details/{quote(ident)}", source_type="public_domain_archive",
+            platform="archive_org", external_id=ident, channel=_first_str(d.get("creator")) or None,
+            channel_id=None, title=_first_str(d.get("title")) or ident, duration_sec=None,
+            published_at=_norm_iso(_first_str(d.get("date")) or None), topic=query, description=desc[:2000],
+            metadata={"found_via": "archive_org_advancedsearch", "licenseurl": lic, "licence_verified": False},
+        ))
+    return out
+
+
 SEARCHERS: dict[str, Searcher] = {
     "nasa": search_nasa,
     "congress": search_official_youtube("congress"),
@@ -432,6 +477,7 @@ SEARCHERS: dict[str, Searcher] = {
     "nara": search_official_youtube("nara"),
     "us_gov_other": search_official_youtube("us_gov_other"),
     "cc_by_youtube": search_cc_by_youtube,
+    "public_domain_archive": search_archive_public_domain,
 }
 
 

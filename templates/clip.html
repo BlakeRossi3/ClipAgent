@@ -61,7 +61,7 @@
   <div class="card">
     <div class="card-head"><h3>Licence &amp; source (audit)</h3></div>
     <dl class="kv">
-      <dt>Licence</dt><dd>{{ m.pill(clip.licence | replace("_", " "), "good" if clip.licence in ("us_gov_public_domain", "cc_by") else "warning") }}</dd>
+      <dt>Licence</dt><dd>{{ m.pill(clip.licence | replace("_", " "), "good" if clip.licence in ("us_gov_public_domain", "public_domain", "cc_by") else "warning") }}</dd>
       <dt>Credit line</dt><dd>{{ clip.credit_text or "—" }}</dd>
       <dt>Source URL</dt><dd class="break"><a href="{{ clip.source_url | ext_url }}" rel="noopener noreferrer" target="_blank">{{ clip.source_url }}</a></dd>
       {% if source %}
