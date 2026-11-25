@@ -361,7 +361,7 @@ def set_service_factory(fn: Callable[[], tuple[Any, Any]] | None) -> None   # (y
 def collect_stats(day: date | None = None) -> int     # rows upserted into stats
 def refresh_channel_stats() -> None                    # today's channel_stats row
 def check_claims() -> int                              # flags copyright claims / blocked videos; returns count newly flagged
-def refresh_live_counts() -> int                       # hourly Data API lifetime counters (same-day views)
+def refresh_live_counts() -> int                       # every-10-min Data API lifetime counters (same-day views)
 ```
 `day` defaults to local today minus 2 (Analytics lag). Polls `db.live_video_ids()`; DRY_RUN or no
 token -> logs and returns 0.
