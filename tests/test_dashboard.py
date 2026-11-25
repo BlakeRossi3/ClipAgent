@@ -796,3 +796,36 @@ def test_chat_length_is_not_a_practical_limit():
     # The owner asked for no length limit on chat; only a large safety ceiling remains.
     assert home.CHAT_MAX_CHARS >= 100_000
     assert home.IMAGE_MAX_BYTES * home.IMAGE_MAX_COUNT + 65536 > home.CHAT_MAX_CHARS * 4
+
+
+# --------------------------------------------------------------------------- live reload after a change
+
+
+def test_build_fingerprint_matches_page_and_changes_on_template_edit(client, monkeypatch, tmp_path):
+    page = client.get("/dashboard/")
+    m = re.search(r'<html lang="en" data-build="([^"]+)"', page.text)
+    assert m, "base.html must carry data-build for nav.js"
+    r = client.get("/dashboard/api/build")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert r.json()["build"] == m.group(1)
+    monkeypatch.setattr(dashboard, "_templates_version", lambda: "changed")
+    assert client.get("/dashboard/api/build").json()["build"] != m.group(1)
+    monkeypatch.setattr(dashboard, "_BOOT_ID", "restarted")
+    assert client.get("/dashboard/api/build").json()["build"].startswith("restarted.")
+
+
+def test_build_api_needs_auth_when_token_set(monkeypatch):
+    _with_token(monkeypatch)
+    c = TestClient(_app(), base_url="https://agent.example.com")
+    assert c.get("/dashboard/api/build").status_code == 401
+
+
+def test_static_cache_versioned_vs_bare(client):
+    assert client.get("/dashboard/static/nav.js?v=abc").headers["cache-control"] == "public, max-age=3600"
+    assert client.get("/dashboard/static/nav.js").headers["cache-control"] == "no-cache"
+
+
+def test_nav_js_polls_build_and_guards_reload():
+    js = (dashboard.STATIC_DIR / "nav.js").read_text(encoding="utf-8")
+    assert "/dashboard/api/build" in js and "data-build" in js
+    assert "location.reload" in js and "busy()" in js and "dirty" in js

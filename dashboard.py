@@ -638,6 +638,24 @@ def _asset_version() -> str:
     return format(newest // 1_000_000, "x")
 
 
+#: Changes on every start of the process, so an open page notices a restart (a self-edit or update).
+_BOOT_ID = secrets.token_hex(4)
+
+
+def _templates_version() -> str:
+    try:
+        newest = max((f.stat().st_mtime_ns for f in TEMPLATES_DIR.rglob("*") if f.is_file()), default=0)
+    except OSError:
+        newest = 0
+    return format(newest // 1_000_000, "x")
+
+
+def build_fingerprint() -> str:
+    """What the browser compares (``<html data-build>`` vs ``/dashboard/api/build``) to reload itself
+    after a change: the process start (a restart = new code), static files and templates."""
+    return f"{_BOOT_ID}.{_asset_version()}.{_templates_version()}"
+
+
 def _env():
     import jinja2
 
@@ -650,6 +668,7 @@ def _env():
     )
     env.globals["asset_v"] = _asset_version()
     env.globals["build_id"] = _build_id()
+    env.globals["build_fp"] = build_fingerprint()
 
     def agent_name(name: str | None) -> str:
         import home
@@ -2054,12 +2073,13 @@ def _int_arg(request: Request, name: str, default: int, lo: int = 1, hi: int = 1
 
 
 @router.get("/static/{path:path}", include_in_schema=False)
-def static_file(path: str) -> Response:
+def static_file(path: str, request: Request) -> Response:
     target = (STATIC_DIR / path).resolve()
     if not target.is_file() or not target.is_relative_to(STATIC_DIR.resolve()):
         return Response("not found", status_code=404, media_type="text/plain")
     resp = FileResponse(target)
-    resp.headers["Cache-Control"] = "public, max-age=3600"
+    # versioned URLs (?v=, changes with every static edit) may be cached; bare ones revalidate each time
+    resp.headers["Cache-Control"] = "public, max-age=3600" if request.query_params.get("v") else "no-cache"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
@@ -2475,6 +2495,17 @@ def events_page(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 # JSON API
 # ---------------------------------------------------------------------------
+
+@router.get("/api/build")
+def api_build(request: Request) -> Response:
+    """The running build's fingerprint; nav.js polls it and reloads an open page when it changes."""
+    resp, _ = _guard(request, api=True)
+    if resp is not None:
+        return resp
+    out = _json({"build": build_fingerprint()})
+    out.headers["Cache-Control"] = "no-store"
+    return out
+
 
 @router.get("/api/summary")
 def api_summary(request: Request) -> Response:

@@ -634,6 +634,11 @@ UI skill: `skills/frontend-design` from anthropics/skills (Apache-2.0, `LICENSE.
   `surprise` row on `cc_subagent_model` / effort low, waits for the reset when `usage.constrained()`; files
   `Agent/Surprises/<day>.md` + optional `<data>/surprises/<day>.html` (served sandboxed at `/dashboard/surprises/<day>.html`);
   `announcement()` adds one line to the Jarvis boot briefing once (`voice/web.activity`).
+- **Live reload**: `dashboard.build_fingerprint()` (per-process `_BOOT_ID` + static + template mtimes) is on
+  `<html data-build>` (base.html) and `GET /dashboard/api/build` (no-store); nav.js polls it every 10 s and reloads
+  the open page after a restart (self-edit/update) or a template/static edit - not while a field is focused, the
+  voice panel is busy, or a dialog is open; unsaved typing gets an "Updated · Reload" chip instead. Bare
+  `/dashboard/static/*` URLs are `no-cache`; `?v=` ones cache an hour.
 - `updater.py` (repo root): `check()` (git fetch at most every 10 min, kv `app:update:status`; `GET /dashboard/api/update`,
   nav.js shows the "Update available · Update now" chip in base.html), `update_now()` = the launcher's Update-App
   (stash, merge `clipagent.upstream` into `sterling/self`, conflict -> `sterling/backup-<stamp>` + published version;

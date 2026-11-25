@@ -101,6 +101,59 @@
       })
       .catch(function () {});
   }
-  function boot() { init(); checkUpdate(); }
+  /* Live reload after a change: <html data-build> is the build this page was rendered from; the server's
+     /dashboard/api/build changes when the app restarts (a self-edit or update) or a template / static file
+     changes. Then the page reloads itself - but never under his hands: not while a field is focused, a
+     form has unsaved typing, or the voice panel is listening, thinking or speaking. Typed-but-unsent text
+     gets a "Reload" chip instead. A failed poll (the app mid-restart) just tries again. */
+  var dirty = false;
+  document.addEventListener('input', function (e) {
+    var t = e.target;
+    if (t && t.matches && t.matches('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, [contenteditable]')) dirty = true;
+  }, true);
+  document.addEventListener('submit', function () { dirty = false; }, true);
+  function busy() {
+    var a = document.activeElement;
+    if (a && a !== document.body && a.matches && a.matches('input, textarea, select, [contenteditable]')) return true;
+    if (document.querySelector('dialog[open], [data-state="thinking"], [data-state="speaking"], .is-live, .is-down')) return true;
+    return false;
+  }
+  function offerReload() {
+    if (document.querySelector('[data-reload-chip]')) return;
+    var host = document.querySelector('[data-topbar] .topbar-inner') || document.body;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'topbar-chip topbar-chip-update';
+    b.setAttribute('data-reload-chip', '');
+    b.title = 'This page changed: reload to see the new version';
+    b.textContent = 'Updated · Reload';
+    b.addEventListener('click', function () { window.location.reload(); });
+    host.appendChild(b);
+  }
+  function watchBuild() {
+    var mine = document.documentElement.getAttribute('data-build');
+    if (!mine || !window.fetch) return;
+    var changed = false;
+    function tick() {
+      if (changed) {
+        if (dirty) { offerReload(); return; }
+        if (!busy() && document.visibilityState !== 'hidden') { window.location.reload(); return; }
+        setTimeout(tick, 3000);
+        return;
+      }
+      fetch('/dashboard/api/build', { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          if (j && j.build && j.build !== mine) changed = true;
+          setTimeout(tick, changed ? 0 : 10000);
+        })
+        .catch(function () { setTimeout(tick, 5000); });
+    }
+    setTimeout(tick, 10000);
+    document.addEventListener('visibilitychange', function () {
+      if (changed && document.visibilityState === 'visible' && !dirty && !busy()) window.location.reload();
+    });
+  }
+  function boot() { init(); checkUpdate(); watchBuild(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
