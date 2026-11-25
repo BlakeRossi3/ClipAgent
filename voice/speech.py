@@ -256,7 +256,7 @@ def tool_label(name: str, inp: Mapping[str, Any] | None = None) -> str:
     if tool == "Skill":
         return f"Using the {inp.get('skill') or inp.get('name') or ''} skill".replace("the  skill", "a skill")
     labels = {"open_url": lambda: f"Opening {_host(str(inp.get('url') or ''))}" if inp.get("url") else "Opening a page",
-              "memory_search": lambda: "Checking my notes", "memory_read": lambda: "Reading my notes",
+              "memory_search": lambda: "Checking my notes", "weather": lambda: "Checking the weather", "memory_read": lambda: "Reading my notes",
               "memory_remember": lambda: "Noting that down", "journal_append": lambda: "Writing in the journal",
               "settings_set": lambda: f"Changing the {str(inp.get('setting') or 'setting').replace('_', ' ')}",
               "settings_get": lambda: "Checking my settings", "studio_status": lambda: "Checking the Shorts channel",
@@ -296,7 +296,7 @@ EXPECT_SEC = {"WebSearch": 6.0, "WebFetch": 4.0, "web_search": 6.0, "fast_search
               "memory_search": 0.3, "memory_read": 0.2, "memory_remember": 0.3, "studio_status": 0.4,
               "ledger_summary": 0.4, "ledger_log_hours": 0.4, "settings_get": 0.1, "task_list": 0.1,
               "goals_list": 0.2, "usage_status": 0.4, "Read": 0.2, "Grep": 0.3, "Glob": 0.2,
-              "speaking_style_note": 0.2}
+              "speaking_style_note": 0.2, "weather": 1.0}
 DEFAULT_EXPECT_SEC = 2.5
 # Actions he sees or hears happen: if nothing announced it, the step itself is announced at once.
 VISIBLE = frozenset({"open_url", "desktop_mode_run", "settings_set", "show_map", "show_media"})

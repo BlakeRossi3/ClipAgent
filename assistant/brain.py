@@ -159,12 +159,18 @@ How you work:
 # The "current facts" rule: with a search key, fast_search (under a second); without one, straight to WebSearch.
 # Measured here (docs/VOICE_SPEED_RESEARCH.md section 6): a keyless fast_search call only returned a dated
 # query, costing a whole extra model round (about 1.5-2 s) before the WebSearch that does the work.
-FACTS_FAST = """- Current facts (scores, results, news, prices, weather, anything from today): fast_search first, one
+FACTS_FAST = """- Current facts (scores, results, news, prices, anything from today): fast_search first, one
   call, then answer from it and name the source briefly. WebSearch only for deeper research, or when
   fast_search tells you to (then use exactly the query it gives, which carries today's date)."""
-FACTS_WEB = """- Current facts (scores, results, news, prices, weather, anything from today): one WebSearch call
+FACTS_WEB = """- Current facts (scores, results, news, prices, anything from today): one WebSearch call
   with the month and year in the query (the local time is in the context), then answer from the newest
   result and name the source briefly."""
+# Backlog #24: he heard "I couldn't get it" and then watched the page open. Get it on the first try.
+FACTS_FIRST_TRY = """
+- Weather: the weather tool (live, his home by default), never a search. NFL/Islanders: nfl_scores, nhl_games.
+- First try, every time: if a search comes back thin or undated, WebFetch the best source page (the
+  forecast, the league scoreboard) before you answer. Never say it can't be had, and never open a page
+  for him to read, until you have tried reading it yourself."""
 
 STALE_TOOL = ("He spoke again, so this request was replaced by a new one. Do nothing more for it: stop now "
               "without further tool calls.")
@@ -486,7 +492,7 @@ def system_prompt(*, worker: bool = False, chrome: bool | None = None, lean: boo
     if lean and s.chrome and not chrome_on:
         note += ("\n\nClaude in Chrome is set up but switched off to keep you quick: when a request needs you to drive "
                  "his browser (click, fill in, read a signed-in page), call need_tools with kind=browser first.")
-    facts = FACTS_FAST if fast_search_ready() else FACTS_WEB
+    facts = (FACTS_FAST if fast_search_ready() else FACTS_WEB) + FACTS_FIRST_TRY
     style = ""
     if not worker:
         from assistant import speaking_style
@@ -648,7 +654,7 @@ class Brain:
         names: list[str] = []
         for spec in agents.values():
             names += [t.name for t in tools.available(spec.tools) if t.name not in names]
-        for extra in ("settings_get", "settings_set", "fast_search", "speaking_style_note"):
+        for extra in ("settings_get", "settings_set", "fast_search", "speaking_style_note", "weather"):
             if extra not in names and extra in tools.REGISTRY:
                 names.append(extra)
         if not fast_search_ready():       # keyless it only hands back a query: one wasted model round
