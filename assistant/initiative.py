@@ -876,10 +876,30 @@ def status(now: datetime | None = None) -> dict[str, Any]:
             "quiet_for": _when(last, now) if last else "never", "share_used": share,
             "usage_known": bool(share), "fallback": f"at most {FALLBACK_RUNS} runs per "
                                                      f"{int(FALLBACK_SPAN.total_seconds() // 3600)} hours",
-            "running": [{"id": it.id, "title": it.title} for it in running], "counts": counts,
+            "running": [{"id": it.id, "title": it.title, "why": (explain(it.id) or {}).get("why", "")}
+                        for it in running], "counts": counts,
             "last_tick": tick_info if isinstance(tick_info, dict) else None,
             "runs": [{k: r.get(k) for k in ("item_id", "title", "started", "finished", "status", "commits", "edit")}
                      for r in reversed(runs()[-10:])]}
+
+
+def explain(item_id: Any) -> dict[str, Any] | None:
+    """What an initiative run is doing and why, in words he can be told: "are you sure that's not done already?
+    what are you doing?" (``None`` for an unknown item)."""
+    try:
+        it = store.get_backlog(int(item_id))
+    except (TypeError, ValueError):
+        return None
+    if it is None:
+        return None
+    who = "he asked for it" if it.source == "owner" else "Cecil's own improvement"
+    out = {"backlog_item": it.id, "working_on": it.title, "why": f"{who}: {' '.join((it.detail or '').split())[:300]}"
+           .rstrip(": "), "attempt": f"{it.attempts} of {MAX_ATTEMPTS}", "status": it.status,
+           "already_done_check": "each run first checks git log, the code map and a grep, and stops at once if "
+                                 "it is already built"}
+    if it.result:
+        out["last_attempt"] = it.result[:300]
+    return out
 
 
 def item_dict(it: store.BacklogItem) -> dict[str, Any]:

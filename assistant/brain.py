@@ -183,7 +183,10 @@ BRAIN_TOOLS = {
     "start_task": "Start long work in the background (coding, research, several steps; anything over about a minute) "
                   "and return at once. Give a clear, self-contained brief with every fact needed. Then tell him it's "
                   "under way and that you'll report back. You will be told when it finishes.",
-    "task_list": "The background tasks: running ones with their latest step, and recently finished ones with results.",
+    "task_list": ("The background tasks: running ones with their latest step, and recently finished ones with results; "
+                  "initiative runs also say which backlog item, why and which attempt. When he asks what you're "
+                  "doing or whether it's already done, answer from this in a line: what, why, how far along; if he "
+                  "doubts it's still needed, check the git log and backlog before saying either way."),
     "need_tools": "Connect tools this conversation keeps switched off until needed: kind=browser (Claude in Chrome: "
                   "drive his own signed-in Chrome, click, fill, read pages) or kind=my_servers (his own MCP servers, "
                   "named in your instructions). Call it the moment a request needs them, then follow what it says.",
@@ -773,9 +776,20 @@ class Brain:
     def _task_list(self, args: dict[str, Any]) -> tuple[str, bool]:
         from assistant import tasks
 
-        rows = [{"id": t["id"], "task": t["task"], "status": t["status"], "started": t["started"],
-                 "latest_step": (t.get("steps") or [{}])[-1].get("label"), "result": t.get("summary")}
-                for t in tasks.list_tasks()[-8:]]
+        from assistant import initiative
+
+        rows = []
+        for t in tasks.list_tasks()[-8:]:
+            row = {"id": t["id"], "task": t["task"], "status": t["status"], "started": t["started"],
+                   "latest_step": (t.get("steps") or [{}])[-1].get("label"), "result": t.get("summary")}
+            meta = t.get("meta") or {}
+            if meta.get("kind"):
+                row["kind"] = meta["kind"]
+            if meta.get("initiative_id") is not None:
+                info = initiative.explain(meta["initiative_id"])
+                if info:
+                    row["initiative"] = info
+            rows.append(row)
         return json.dumps(rows, ensure_ascii=False), True
 
     def sdk_server(self, table: dict[str, Callable[[dict[str, Any]], tuple[str, bool]]]) -> Any:

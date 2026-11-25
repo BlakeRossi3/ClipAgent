@@ -217,6 +217,30 @@ def test_tick_runs_top_item_and_records_the_result(on, clock, monkeypatch):
     assert db.kv_get(initiative.KV_LAST_TICK)["status"] == "waiting"
 
 
+def test_he_can_ask_what_the_run_is_doing_and_why(on, clock):
+    """"are you sure that isn't done already? what are you doing?" -> task_list and status say what, why, attempt."""
+    from assistant import brain
+
+    db.kv_set(initiative.KV_SEEDED, "x")
+    other = store.add_backlog("Faster replies", detail="", source="cecil")
+    assert store.claim_backlog(other)
+    assert initiative.status()["running"] == [{"id": other, "title": "Faster replies",
+                                               "why": "Cecil's own improvement"}]
+    store.update_backlog(other, status="open")
+    iid = store.add_backlog("Tidy the rail", detail="He said the rail is cluttered.", source="owner", priority=1)
+    _quiet(clock)
+    assert initiative.tick()["status"] == "started"
+    info = initiative.explain(iid)
+    assert info["working_on"] == "Tidy the rail" and info["why"] == "he asked for it: He said the rail is cluttered."
+    assert info["attempt"] == f"1 of {initiative.MAX_ATTEMPTS}" and "already built" in info["already_done_check"]
+    _wait()
+    rows = json.loads(brain.Brain._task_list(None, {})[0])     # type: ignore[arg-type]
+    row = next(r for r in rows if r.get("kind") == "initiative")
+    assert row["initiative"]["backlog_item"] == iid and row["initiative"]["status"] == "done"
+    assert initiative.explain(999_999) is None and initiative.explain("x") is None
+    assert "already done" in brain.BRAIN_TOOLS["task_list"]
+
+
 def test_failures_count_attempts_then_block(on, clock):
     db.kv_set(initiative.KV_SEEDED, "x")
     iid = store.add_backlog("Fix the texting")
