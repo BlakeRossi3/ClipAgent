@@ -103,3 +103,82 @@ def test_render_streams_every_frame_and_logs(tmp_path: Path):
 def test_render_without_voice_is_silent(tmp_path: Path):
     res = ex.render(SCRIPT[:1], tmp_path / "e.mp4", tts=None, runner=lambda c, i: None, width=108, height=192)
     assert res["narrated"] is False
+
+
+# ---------------------------------------------------------------------------
+# second channel (backlog #45): explainers go to their own YouTube account, never Daily Orbit
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+import youtube_auth  # noqa: E402
+
+
+def test_channel_token_path_is_a_sibling_file(settings):
+    base = youtube_auth.token_path()
+    assert youtube_auth.token_path(channel=None) == base
+    assert youtube_auth.token_path(channel="lemo") == base.with_name("youtube_token.lemo.json")
+    for bad in ("../x", "a b", "", "LEMO/1"):
+        with pytest.raises(ValueError):
+            youtube_auth.token_path(channel=bad)
+
+
+def test_missing_second_channel_token_does_not_page_about_main_channel(clock, settings):
+    with pytest.raises(youtube_auth.YouTubeAuthError, match="--channel lemo"):
+        youtube_auth.load_credentials(channel="lemo")
+    assert db.list_notifications() == []          # Daily Orbit is fine; no call about it
+
+
+def test_channel_token_loads_independently(clock, settings):
+    tok = youtube_auth.token_path(channel="lemo")
+    youtube_auth.save_credentials(type("C", (), {"to_json": lambda self: json.dumps({
+        "refresh_token": "r", "client_id": "c", "client_secret": "s", "token": "t",
+        "scopes": list(youtube_auth.SCOPES)})})(), tok)
+    assert youtube_auth.has_token(channel="lemo") and not youtube_auth.has_token()
+    creds = youtube_auth.load_credentials(channel="lemo", refresh=False)
+    assert creds.refresh_token == "r"
+
+
+class _FakeInsert:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def insert(self, **kw):
+        self.calls.append(kw)
+        return type("R", (), {"execute": lambda self: {"id": "vid123", "status": {"privacyStatus": "private"}}})()
+
+
+class _FakeYT:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def videos(self):
+        return _FakeInsert(self.calls)
+
+
+def test_upload_goes_private_to_named_channel(clock, settings, tmp_path, monkeypatch):
+    mp4 = tmp_path / "e.mp4"
+    mp4.write_bytes(b"\0" * 10)
+    yt = _FakeYT()
+    seen: list = []
+    monkeypatch.setattr(ex, "_channel_service", lambda channel: seen.append(channel) or yt)
+    before = youtube_auth.quota_used()
+    res = ex.upload(mp4, title="Why is the sky blue? " + "x" * 120, description="d", tags=["science"])
+    assert seen == [ex.EXPLAINER_CHANNEL] and ex.EXPLAINER_CHANNEL
+    assert res == {"video_id": "vid123", "channel": ex.EXPLAINER_CHANNEL, "privacy": "private",
+                   "url": "https://youtube.com/shorts/vid123"}
+    body = yt.calls[0]["body"]
+    assert body["status"]["privacyStatus"] == "private"
+    assert len(body["snippet"]["title"]) <= 100 and "#Shorts" in body["snippet"]["description"]
+    assert youtube_auth.quota_used() - before == youtube_auth.QUOTA_COSTS["videos.insert"]
+
+
+def test_upload_refuses_main_channel_and_missing_file(settings, tmp_path):
+    mp4 = tmp_path / "e.mp4"
+    mp4.write_bytes(b"\0")
+    with pytest.raises(ex.ExplainerError, match="Daily Orbit"):
+        ex.upload(mp4, title="t", channel="")
+    with pytest.raises(ex.ExplainerError, match="not found"):
+        ex.upload(tmp_path / "nope.mp4", title="t")
+    with pytest.raises(ex.ExplainerError, match="privacy"):
+        ex.upload(mp4, title="t", privacy="public")

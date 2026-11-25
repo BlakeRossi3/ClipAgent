@@ -145,6 +145,11 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   `python -m assistant.channel_branding [show|describe TEXT|picture]`): reads the channel and sets its description
   via `channels.update` (50 units, keeps keywords). The Data API cannot set a channel avatar, so `profile_picture`
   returns the YouTube Studio steps.
+* **Explainer Shorts on a second channel** (`explainer.py`, skill `explainer-shorts`, CLI
+  `python explainer.py [script.json] | upload FILE TITLE`): Lemo Opuscar-genre whiteboard Shorts drawn in code,
+  uploaded with `explainer.upload` to an extra YouTube account (`youtube_auth.token_path(channel="lemo")` =
+  `youtube_token.lemo.json`, signed in with `python youtube_auth.py --channel lemo`), private/unlisted only, never
+  the Daily Orbit token. A missing extra-channel token logs a warning and does not phone him.
 * **Islanders live** (`assistant/nhl.py`, tool `nhl_games`, CLI `python -m assistant.nhl [tick|show|schedule|refresh]`):
   the NHL public API's club season schedule (regular season + playoffs, cached) and, every minute, the game in its
   window: a preview tile 90 min before puck drop, a live wide tile (key `nhl-islanders`) with score, period/clock,

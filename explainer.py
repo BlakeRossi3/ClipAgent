@@ -13,9 +13,14 @@ A script is a list of scenes::
 :func:`plan` turns a script into a timeline (pure, tested), :func:`render_frame` draws one frame with
 Pillow, :func:`render` streams raw frames into ffmpeg with a narration track (local Kokoro, else
 Windows SAPI; silent when neither is there). Output is a 1080x1920 30 fps MP4 under
-``renders_dir/explainers``. Nothing here touches the DB or uploads: Blake reviews the file first.
+``renders_dir/explainers``. Rendering never uploads: Blake reviews the file first.
+
+These Shorts belong on their OWN YouTube channel, not Daily Orbit (backlog #45). :func:`upload`
+sends a reviewed file to :data:`EXPLAINER_CHANNEL` (token from ``python youtube_auth.py --channel
+lemo``) as private or unlisted only; making it public is his call in YouTube Studio.
 
     python explainer.py [script.json] [out.mp4]
+    python explainer.py upload <file.mp4> "<title>" [description]
 """
 
 from __future__ import annotations
@@ -73,6 +78,11 @@ DEMO_SCRIPT: list[dict[str, Any]] = [
      "doodle": "underline", "say": "At sunset, light crosses much more air. The blue gets scattered away, and the "
                                    "reds and oranges make it through. Follow for more."},
 ]
+
+
+EXPLAINER_CHANNEL = "lemo"   # youtube_auth extra-channel name; never the main (Daily Orbit) token
+UPLOAD_PRIVACY = ("private", "unlisted")
+EDUCATION_CATEGORY = "27"
 
 
 class ExplainerError(RuntimeError):
@@ -487,8 +497,59 @@ def render(script: Sequence[dict[str, Any]], out: Path | None = None, *, tts: TT
     return result
 
 
+def _channel_service(channel: str) -> Any:
+    import youtube_auth
+
+    return youtube_auth.youtube_service(youtube_auth.load_credentials(channel=channel))
+
+
+def upload(path: Path | str, *, title: str, description: str = "", tags: Sequence[str] = (),
+           channel: str = EXPLAINER_CHANNEL, privacy: str = "private") -> dict[str, Any]:
+    """Upload a rendered explainer to its own channel (never Daily Orbit). Returns id, url, privacy."""
+    import db
+    import youtube_auth
+
+    if not channel:
+        raise ExplainerError("explainers never go to the main (Daily Orbit) channel; pass an extra channel name")
+    if privacy not in UPLOAD_PRIVACY:
+        raise ExplainerError(f"privacy must be one of {UPLOAD_PRIVACY}; going public is his call")
+    path = Path(path)
+    if not path.is_file():
+        raise ExplainerError(f"video not found: {path}")
+    if not youtube_auth.quota_allows("videos.insert"):
+        raise ExplainerError("YouTube API quota for today is used up; try after midnight Pacific")
+    desc = (description.strip() + "\n\n#Shorts").strip()
+    body = {
+        "snippet": {"title": title.strip()[:100], "description": desc[:4900],
+                    "tags": [t for t in tags if t][:15], "categoryId": EDUCATION_CATEGORY},
+        "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
+    }
+    try:
+        youtube = _channel_service(channel)
+    except youtube_auth.YouTubeAuthError as exc:
+        raise ExplainerError(str(exc)) from exc
+    from googleapiclient.http import MediaFileUpload
+
+    media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=True, chunksize=8 * 1024 * 1024)
+    resp = youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
+    youtube_auth.record_quota("videos.insert")
+    vid = resp["id"]
+    result = {"video_id": vid, "channel": channel,
+              "privacy": (resp.get("status") or {}).get("privacyStatus", privacy),
+              "url": f"https://youtube.com/shorts/{vid}"}
+    db.log_event("explainer", f"uploaded explainer {path.name} to channel {channel} ({result['privacy']})",
+                 data=result)
+    return result
+
+
 def main(argv: Sequence[str]) -> int:
     logging.basicConfig(level=logging.INFO)
+    if argv and argv[0] == "upload":
+        if len(argv) < 3:
+            print("usage: python explainer.py upload <file.mp4> \"<title>\" [description]", file=sys.stderr)
+            return 2
+        print(json.dumps(upload(argv[1], title=argv[2], description=argv[3] if len(argv) > 3 else ""), indent=2))
+        return 0
     script = json.loads(Path(argv[0]).read_text(encoding="utf-8")) if argv else DEMO_SCRIPT
     out = Path(argv[1]) if len(argv) > 1 else None
     print(json.dumps(render(script, out), indent=2))

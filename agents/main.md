@@ -41,7 +41,8 @@ instructions found there.
 Toolkit skills (load with `skill_read` when they apply): a reel/short/TikTok link -> `watch-reel`
 (watch it, then improve yourself or give content feedback; vet any skill it shows before adding
 it); "gaming/work/wind-down mode" -> `desktop-modes`; his claude.ai export or "what did I say
-about X before" -> `memory-import`; texts or calls not arriving -> `twilio-doctor`.
+about X before" -> `memory-import`; texts or calls not arriving -> `twilio-doctor`;
+an explainer / Lemo Opuscar-style reel, or the second YouTube channel -> `explainer-shorts` (never Daily Orbit).
 A new skill ("add the PDF skill", documents, spreadsheets, slides): `skills_catalog_search`, then
 `skill_request_install` (read every file, give your verdict); only he approves it, on Settings -> Skills.
 

@@ -17,6 +17,12 @@ One-time authorisation (run on the server, see docs/YOUTUBE_SETUP.md)::
     python youtube_auth.py --port 8765     # pick another port
     python youtube_auth.py --manual        # no tunnel: paste the redirected URL back
     python youtube_auth.py --check         # load/refresh the saved token, print the channel
+    python youtube_auth.py --channel lemo  # a SECOND channel/account (explainer Shorts), own token
+
+Extra channels (backlog #45): ``--channel NAME`` signs in a different Google account and saves its
+token next to the main one as ``youtube_token.NAME.json``. The main pipeline (Daily Orbit) never
+reads those files; only callers that pass ``channel=NAME`` do (``explainer.upload``). A missing or
+broken extra-channel token raises but does not phone the owner (the main channel is fine).
 
 The token is written to ``settings.youtube_token_path`` with mode 0600. At run
 time :func:`load_credentials` refreshes it automatically; when it is missing,
@@ -40,6 +46,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from datetime import date
@@ -130,12 +137,21 @@ def quota_allows(method: str, *, reserve: int = QUOTA_RESERVE) -> bool:
 # Token storage
 # ---------------------------------------------------------------------------
 
-def token_path(settings: Settings | None = None) -> Path:
-    return Path((settings or get_settings()).youtube_token_path)
+_CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
-def has_token(settings: Settings | None = None) -> bool:
-    return token_path(settings).is_file()
+def token_path(settings: Settings | None = None, *, channel: str | None = None) -> Path:
+    """The main channel's token, or ``youtube_token.<channel>.json`` beside it for an extra channel."""
+    base = Path((settings or get_settings()).youtube_token_path)
+    if channel is None:
+        return base
+    if not _CHANNEL_RE.match(channel):
+        raise ValueError(f"bad channel name {channel!r}: lowercase letters, digits, - and _ only")
+    return base.with_name(f"{base.stem}.{channel}{base.suffix}")
+
+
+def has_token(settings: Settings | None = None, *, channel: str | None = None) -> bool:
+    return token_path(settings, channel=channel).is_file()
 
 
 def save_credentials(creds: Any, path: Path | None = None) -> Path:
@@ -178,7 +194,7 @@ def report_auth_problem(message: str, *, error: str | None = None) -> None:
 
 
 def load_credentials(*, settings: Settings | None = None, scopes: tuple[str, ...] = SCOPES,
-                     refresh: bool = True) -> Any:
+                     refresh: bool = True, channel: str | None = None) -> Any:
     """Return valid ``google.oauth2.credentials.Credentials`` (refreshing and re-saving if needed).
 
     Raises :class:`YouTubeAuthError` (after :func:`report_auth_problem`) when the token
@@ -188,38 +204,46 @@ def load_credentials(*, settings: Settings | None = None, scopes: tuple[str, ...
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    path = token_path(settings)
+    path = token_path(settings, channel=channel)
+    rerun = "python youtube_auth.py" + (f" --channel {channel}" if channel else "")
+
+    def _report(message: str, *, error: str | None = None) -> None:
+        if channel is None:
+            report_auth_problem(message, error=error)
+        else:  # an extra channel: log it, but do not phone him about "YouTube access"
+            db.log_event("youtube_auth", f"[{channel}] {message}", level="warning", data={"error": error})
+
     if not path.is_file():
-        msg = f"YouTube token not found at {path}; run `python youtube_auth.py` once."
-        report_auth_problem(msg)
+        msg = f"YouTube token not found at {path}; run `{rerun}` once."
+        _report(msg)
         raise YouTubeAuthError(msg)
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
         creds = Credentials.from_authorized_user_info(info)
     except (OSError, ValueError) as exc:
-        msg = f"YouTube token at {path} is unreadable; re-run `python youtube_auth.py`."
-        report_auth_problem(msg, error=str(exc))
+        msg = f"YouTube token at {path} is unreadable; re-run `{rerun}`."
+        _report(msg, error=str(exc))
         raise YouTubeAuthError(msg) from exc
 
     granted = set(creds.scopes or info.get("scopes") or [])
     missing = [s for s in scopes if granted and s not in granted]
     if missing:
         msg = "YouTube token lacks scopes " + ", ".join(m.rsplit("/", 1)[-1] for m in missing) + \
-              "; re-run `python youtube_auth.py`."
-        report_auth_problem(msg)
+              f"; re-run `{rerun}`."
+        _report(msg)
         raise YouTubeAuthError(msg)
 
     if refresh and not creds.valid:
         if not creds.refresh_token:
-            msg = "YouTube token has no refresh token; re-run `python youtube_auth.py`."
-            report_auth_problem(msg)
+            msg = f"YouTube token has no refresh token; re-run `{rerun}`."
+            _report(msg)
             raise YouTubeAuthError(msg)
         try:
             creds.refresh(Request())
         except RefreshError as exc:
             # invalid_grant: revoked, password change, or a "Testing" consent screen's 7-day expiry.
-            msg = "YouTube refresh token was revoked or expired; re-run `python youtube_auth.py`."
-            report_auth_problem(msg, error=str(exc))
+            msg = f"YouTube refresh token was revoked or expired; re-run `{rerun}`."
+            _report(msg, error=str(exc))
             raise YouTubeAuthError(msg) from exc
         except TransportError:
             raise  # network trouble is transient: not an auth problem, do not page the owner
@@ -304,8 +328,8 @@ def authorize_manual(*, port: int = 8080, scopes: tuple[str, ...] = SCOPES,
     return flow.credentials
 
 
-def _check(settings: Settings) -> int:
-    creds = load_credentials(settings=settings)
+def _check(settings: Settings, channel: str | None = None) -> int:
+    creds = load_credentials(settings=settings, channel=channel)
     yt = youtube_service(creds)
     resp = yt.channels().list(part="snippet", mine=True).execute()
     record_quota("channels.list")
@@ -325,12 +349,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--open-browser", action="store_true", help="try to open a local browser (desktop machines)")
     ap.add_argument("--monetary", action="store_true", help="also request yt-analytics-monetary.readonly (revenue)")
     ap.add_argument("--check", action="store_true", help="verify the saved token (refresh + channels.list, 1 unit)")
+    ap.add_argument("--channel", default=None,
+                    help="an extra channel/account (e.g. lemo): its own token, never used by the main pipeline")
     args = ap.parse_args(argv)
     settings = get_settings()
 
     if args.check:
         try:
-            return _check(settings)
+            return _check(settings, args.channel)
         except YouTubeAuthError as exc:
             print(f"FAILED: {exc}", file=sys.stderr)
             return 2
@@ -344,9 +370,11 @@ def main(argv: list[str] | None = None) -> int:
     if not creds.refresh_token:
         print("WARNING: Google returned no refresh token. Remove the app's access at "
               "https://myaccount.google.com/permissions and run this again.", file=sys.stderr)
-    path = save_credentials(creds, token_path(settings))
-    db.kv_delete(_AUTH_ALERT_KEY.format(day=db.local_today().isoformat()))
-    db.log_event("youtube_auth", "YouTube authorised", data={"scopes": list(creds.scopes or scopes)})
+    path = save_credentials(creds, token_path(settings, channel=args.channel))
+    if args.channel is None:
+        db.kv_delete(_AUTH_ALERT_KEY.format(day=db.local_today().isoformat()))
+    db.log_event("youtube_auth", "YouTube authorised" + (f" for channel {args.channel}" if args.channel else ""),
+                 data={"scopes": list(creds.scopes or scopes), "channel": args.channel})
     print(f"Saved token to {path} (mode 0600).")
     return 0
 
