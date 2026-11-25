@@ -10,6 +10,8 @@ Giants fan."
 * :func:`build_tile` -> title, his team's result as the big value, up to four lines of stats
   (highest-scoring game, biggest win, closest finish, best passer/rusher/receiver) and one row per game,
   his team's row marked. :func:`show` puts it up as a wide tile (key ``nfl-scores``, replaced on refresh).
+  Shown on a Monday or Tuesday it stays up until Wednesday 00:00 local (:func:`until_wednesday`); other
+  days, or an explicit ``minutes``, the usual lifetime.
 * His team: kv ``nfl:team`` (abbreviation, default ``NYG``); the tool can change it.
 * Scheduled (main.assistant_job_specs): Monday 08:05 (after Sunday) and Monday 23:40 (after Monday night).
 * Tool ``nfl_scores``; CLI ``python -m assistant.nfl [show | print] [--team NYG]``.
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import db
@@ -287,6 +289,15 @@ def spoken(slate: Slate, team: str) -> str:
     return f"{line}{tail}"
 
 
+def until_wednesday(now: datetime | None = None) -> datetime | None:
+    """On Monday or Tuesday (local): the start of Wednesday, when the scoreboard comes down. Else None."""
+    local = (now or db.local_now()).astimezone(db.local_tz())
+    if local.weekday() not in (0, 1):
+        return None
+    day = local.date() + timedelta(days=2 - local.weekday())
+    return datetime(day.year, day.month, day.day, tzinfo=db.local_tz())
+
+
 def show(team: str | None = None, minutes: int | None = None, *, source: str = "nfl") -> dict[str, Any]:
     """Fetch the week, put the scoreboard tile up (replacing the last one) and return a summary."""
     from assistant import tiles
@@ -294,8 +305,9 @@ def show(team: str | None = None, minutes: int | None = None, *, source: str = "
     t = (team or get_team()).upper()
     slate = parse(fetch())
     spec = build_tile(slate, t)
+    end = None if minutes else until_wednesday()
     tile = tiles.show(spec["title"], spec["body"], value=spec["value"], kind=spec["kind"], rows=spec["rows"],
-                      minutes=minutes or DEFAULT_MINUTES, key=TILE_KEY, source=source)
+                      minutes=minutes or DEFAULT_MINUTES, until=end, key=TILE_KEY, source=source)
     db.log_event("assistant", f"nfl scores tile: week {slate.week}, {len(slate.games)} games",
                  data={"tile_id": tile.id, "team": t})
     return {"tile_id": tile.id, "week": slate.week, "team": t, "headline": spec["value"], "summary": spoken(slate, t),

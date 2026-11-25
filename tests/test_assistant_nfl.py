@@ -106,6 +106,38 @@ def test_show_puts_one_wide_tile_up_and_refresh_replaces_it(env):
     assert "dtile-wide" in html and 'class="is-mark"' in html and "WSH 24 @ NYG 21" in html
 
 
+def test_monday_tile_stays_up_until_wednesday_starts(env, clock):
+    from datetime import datetime, timezone
+
+    clock.set(datetime(2026, 11, 16, 13, 5, tzinfo=timezone.utc))   # Mon 08:05 New York
+    nfl.show(source="schedule")
+    exp = db.parse_iso(tiles.live()[0].expires_at).astimezone(db.local_tz())
+    assert (exp.year, exp.month, exp.day, exp.hour, exp.minute) == (2026, 11, 18, 0, 0)  # Wed 00:00 local
+    clock.set(datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc))   # Tue 17:00: still up
+    assert len(tiles.live()) == 1
+    clock.set(datetime(2026, 11, 18, 5, 1, tzinfo=timezone.utc))    # Wed 00:01: gone
+    assert tiles.live() == []
+    clock.set(datetime(2026, 11, 17, 4, 40, tzinfo=timezone.utc))   # Mon 23:40 refresh keeps the same end
+    nfl.show(source="schedule")
+    exp = db.parse_iso(tiles.live()[0].expires_at).astimezone(db.local_tz())
+    assert (exp.day, exp.hour) == (18, 0)
+    clock.set(datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc))   # Thu on request: the usual lifetime
+    nfl.show()
+    live = tiles.live()
+    assert (db.parse_iso(live[0].expires_at) - db.utcnow()).total_seconds() == nfl.DEFAULT_MINUTES * 60
+    nfl.show(minutes=30)                                             # an explicit ask wins
+    assert (db.parse_iso(tiles.live()[0].expires_at) - db.utcnow()).total_seconds() == 30 * 60
+
+
+def test_tile_until_is_clamped(env, clock):
+    from datetime import timedelta
+
+    with pytest.raises(tiles.TileError):
+        tiles.show("x", until=db.utcnow() - timedelta(minutes=5))
+    t = tiles.show("x", until=db.utcnow() + timedelta(days=30))
+    assert (db.parse_iso(t.expires_at) - db.utcnow()) == timedelta(days=tiles.MAX_UNTIL_DAYS)
+
+
 def test_tool_and_team_preference(env):
     tools.load_extensions()
     from assistant import registry

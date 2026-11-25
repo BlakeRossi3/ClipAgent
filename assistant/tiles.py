@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import db
@@ -32,6 +32,7 @@ from assistant import store
 DEFAULT_MINUTES = 60
 MIN_MINUTES = 1
 MAX_MINUTES = 24 * 60
+MAX_UNTIL_DAYS = 3   # ``show(until=...)`` from code may outlast a day, never more than this
 MAX_LIVE = 6
 KEEP_DAYS = 7
 TITLE_MAX = 60
@@ -101,9 +102,11 @@ def _rows(rows: Any) -> list[dict[str, Any]]:
 
 def show(title: str, body: str = "", *, value: str | None = None, kind: str = "info",
          minutes: Any = None, key: str | None = None, source: str = "assistant",
-         rows: list[Any] | None = None) -> store.Tile:
+         rows: list[Any] | None = None, until: datetime | None = None) -> store.Tile:
     """Put a tile up for ``minutes`` (default an hour). Same ``key`` replaces the live tile.
-    ``rows`` (optional, a scoreboard or short list) makes it a wide tile spanning the stage."""
+    ``rows`` (optional, a scoreboard or short list) makes it a wide tile spanning the stage.
+    ``until`` (code only, not the tool) is an exact end time instead, at most :data:`MAX_UNTIL_DAYS` away
+    (the NFL scoreboard stays up Monday to Tuesday)."""
     t = _line(title, TITLE_MAX)
     if not t:
         raise TileError("a tile needs a title")
@@ -114,7 +117,13 @@ def show(title: str, body: str = "", *, value: str | None = None, kind: str = "i
     k = _key(key)
     rs = _rows(rows)
     now = db.utcnow()
-    expires = db.to_iso(now + timedelta(minutes=_minutes(minutes)))
+    if until is not None:
+        end = until if until.tzinfo else until.replace(tzinfo=db.local_tz())
+        if end <= now:
+            raise TileError("until must be in the future")
+        expires = db.to_iso(min(end, now + timedelta(days=MAX_UNTIL_DAYS)))
+    else:
+        expires = db.to_iso(now + timedelta(minutes=_minutes(minutes)))
     with store.transaction() as c:
         if k:
             for old in store.list_live_tiles(tile_key=k, conn=c):
