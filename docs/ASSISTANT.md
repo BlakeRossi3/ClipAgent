@@ -138,6 +138,10 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   public scoreboard JSON -> a wide tile (key `nfl-scores`, 16 h) with every game of the week, his team first
   and marked (kv `nfl:team`, default NYG), and stats (team star, shootout, rout, nail-biters, top passer).
   Jobs `assistant_nfl_monday` (Mon 08:05) and `assistant_nfl_mnf` (Mon 23:40). Tests: `nfl.set_http`.
+* **YouTube channel branding** (`assistant/channel_branding.py`, tool `youtube_channel`, CLI
+  `python -m assistant.channel_branding [show|describe TEXT|picture]`): reads the channel and sets its description
+  via `channels.update` (50 units, keeps keywords). The Data API cannot set a channel avatar, so `profile_picture`
+  returns the YouTube Studio steps.
 * **Islanders live** (`assistant/nhl.py`, tool `nhl_games`, CLI `python -m assistant.nhl [tick|show|schedule|refresh]`):
   the NHL public API's club season schedule (regular season + playoffs, cached) and, every minute, the game in its
   window: a preview tile 90 min before puck drop, a live wide tile (key `nhl-islanders`) with score, period/clock,
