@@ -462,6 +462,19 @@ def test_page_needs_auth_and_csrf(client, env):
     assert r.status_code == 200 and "Cecil is reading it now" in r.text and env["summaries"]
 
 
+def test_page_lists_every_skill_not_only_third_party(client, env):
+    """Backlog #54: built-in and learned skills appear on the page, not just the third-party installs."""
+    d = sv.skills_dir() / "watch-reel"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text("---\nname: watch-reel\ndescription: Watch a reel and learn from it.\n---\n\nDo it.\n",
+                                encoding="utf-8")
+    rows = sc.all_skills()
+    row = next(r for r in rows if r["name"] == "watch-reel")
+    assert row["kind"] == "built-in" and row["description"] == "Watch a reel and learn from it."
+    page = client.get("/dashboard/skills", headers=H).text
+    assert "All skills" in page and "watch-reel" in page and "Watch a reel and learn from it." in page
+
+
 def test_page_review_install_promote_uninstall(client, env):
     r = client.post("/dashboard/skills/review", data={"name": "doc-coauthoring"}, headers=H)
     assert r.status_code == 200 and "Waiting for Cecil" in r.text

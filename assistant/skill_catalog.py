@@ -421,6 +421,21 @@ def installed() -> list[dict[str, Any]]:
     return out
 
 
+def all_skills() -> list[dict[str, Any]]:
+    """Every skill in ``skills/`` (built-in, self-made and third-party), name + one-line description + kind."""
+    from assistant import registry
+
+    manifest = sv.read_manifest().get("skills", {})
+    out = []
+    for name, s in sorted(registry.load_skills(sv.skills_dir(), strict=False).items()):
+        third = name in manifest
+        out.append({"name": name, "description": s.description,
+                    "kind": "third-party" if third else "built-in",
+                    "restricted": is_restricted(name) if third else False,
+                    "files": 1 + len(s.resources)})
+    return out
+
+
 def promote(name: str, *, via: str, confirm: bool) -> dict[str, Any]:
     """Lift a third-party skill's restrictions (owner only, explicit confirm). Bound to its current files."""
     if not confirm:

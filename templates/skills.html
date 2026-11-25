@@ -67,6 +67,19 @@
 {% endif %}
 </section>
 
+<section class="card" aria-labelledby="sk-all"><h2 class="sec-title" id="sk-all">All skills ({{ all_skills | length }})</h2>
+  <p class="f-help">Everything Cecil can use right now: built-in skills, ones he wrote or learned from reels, and third-party installs.</p>
+{% if all_skills %}
+  <ul class="plain">{% for s in all_skills %}<li style="margin-bottom:8px">
+    <strong>{{ s.name }}</strong>
+    {% if s.kind == "third-party" %}<span class="pill {{ 'pill-warning' if s.restricted else 'pill-info' }}">third-party{{ ", restricted" if s.restricted }}</span>{% else %}<span class="pill pill-good">built-in</span>{% endif %}
+    <br><span class="muted">{{ s.description }}</span>
+  </li>{% endfor %}</ul>
+{% else %}
+  <p class="muted">None found in <code>skills/</code>.</p>
+{% endif %}
+</section>
+
 <section class="card" aria-labelledby="sk-installed"><h2 class="sec-title" id="sk-installed">Installed third-party skills</h2>
 {% if installed %}
   <ul class="plain">{% for s in installed %}<li style="margin-bottom:10px">

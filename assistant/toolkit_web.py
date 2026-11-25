@@ -297,6 +297,7 @@ def _skills_ctx(q: str = "", *, refresh: bool = False, **extra: Any) -> dict[str
                if all(w in f"{e['name']} {e['description']} {e.get('collection', '')}".lower() for w in words)]
     reviews = [sc.card(r) for r in sc.list_reviews()]
     return {"repos": cat["repos"], "entries": entries, "q": q, "installed": sc.installed(),
+            "all_skills": sc.all_skills(),
             "open_reviews": [r for r in reviews if r["status"] in sc.OPEN_STATUSES or r["status"] == "refused"
                              and not r.get("resolved_at")],
             "past_reviews": [r for r in reviews if r["status"] in ("installed", "rejected", "failed")][:8],
