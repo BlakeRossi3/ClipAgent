@@ -104,6 +104,9 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
   `ASSISTANT_CHROME=true` also passes `--chrome` (Claude in Chrome extension; one-time setup: install
   the extension in Chrome, sign it in to the same Claude account, restart Chrome). Whether `--chrome`
   connects in `-p` mode is not verified; `open_url` works either way.
+* **File Explorer**: `open_in_explorer` shows a local file or folder on his screen (a file opens its
+  folder with it selected; `~`/`%VARS%` expanded, must exist, no network shares). Like `open_url`,
+  background work never pops a window: it returns the path for the report instead.
 * **Plan usage** (`assistant/usage.py`, skill `usage-aware`): Claude Code's stream-json output carries
   `rate_limit_event` lines (`status`, `utilization`, `resetsAt`, `rateLimitType` five_hour / seven_day...)
   when the limit state changes; they are recorded and shown by `usage_status` and on the dashboard.

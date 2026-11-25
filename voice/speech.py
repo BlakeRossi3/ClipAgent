@@ -256,6 +256,7 @@ def tool_label(name: str, inp: Mapping[str, Any] | None = None) -> str:
     if tool == "Skill":
         return f"Using the {inp.get('skill') or inp.get('name') or ''} skill".replace("the  skill", "a skill")
     labels = {"open_url": lambda: f"Opening {_host(str(inp.get('url') or ''))}" if inp.get("url") else "Opening a page",
+              "open_in_explorer": lambda: "Opening it in File Explorer",
               "memory_search": lambda: "Checking my notes", "weather": lambda: "Checking the weather", "memory_read": lambda: "Reading my notes",
               "memory_remember": lambda: "Noting that down", "journal_append": lambda: "Writing in the journal",
               "settings_set": lambda: f"Changing the {str(inp.get('setting') or 'setting').replace('_', ' ')}",
@@ -291,7 +292,7 @@ QUIET_SEC = 2.0
 MAX_LINES = 3
 # Seeds for how long a step takes (seconds); learned from what actually happens (Narrator.learn).
 EXPECT_SEC = {"WebSearch": 6.0, "WebFetch": 4.0, "web_search": 6.0, "fast_search": 1.2, "Bash": 4.0,
-              "PowerShell": 4.0, "Agent": 30.0, "Task": 30.0, "start_task": 0.8, "open_url": 0.8,
+              "PowerShell": 4.0, "Agent": 30.0, "Task": 30.0, "start_task": 0.8, "open_url": 0.8, "open_in_explorer": 0.8,
               "desktop_mode_run": 1.5, "settings_set": 0.5, "show_map": 1.0, "show_media": 1.0,
               "memory_search": 0.3, "memory_read": 0.2, "memory_remember": 0.3, "studio_status": 0.4,
               "ledger_summary": 0.4, "ledger_log_hours": 0.4, "settings_get": 0.1, "task_list": 0.1,
@@ -299,13 +300,13 @@ EXPECT_SEC = {"WebSearch": 6.0, "WebFetch": 4.0, "web_search": 6.0, "fast_search
               "speaking_style_note": 0.2, "weather": 1.0}
 DEFAULT_EXPECT_SEC = 2.5
 # Actions he sees or hears happen: if nothing announced it, the step itself is announced at once.
-VISIBLE = frozenset({"open_url", "desktop_mode_run", "settings_set", "show_map", "show_media"})
+VISIBLE = frozenset({"open_url", "open_in_explorer", "desktop_mode_run", "settings_set", "show_map", "show_media"})
 
 
 def step_line(name: str, label: str, honorific: str = "sir") -> str:
     """A short spoken line for a step (when the model said nothing about it)."""
     lab = (label or "").split(":")[0].strip()
-    if name in ("open_url", "settings_set", "desktop_mode_run") and lab:
+    if name in ("open_url", "open_in_explorer", "settings_set", "desktop_mode_run") and lab:
         return f"{lab}, {honorific}."
     if name == "show_map":
         return "Bringing up the map."

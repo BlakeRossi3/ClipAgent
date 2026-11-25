@@ -219,6 +219,51 @@ def test_background_work_never_opens_tabs_on_his_screen(cc, ctx):
     assert any(e.message == "kept a page off the owner's screen (background work)" for e in db.list_events(limit=20))
 
 
+def test_open_in_explorer_opens_folders_and_selects_files(cc, tmp_path):
+    folder = tmp_path / "Reports"
+    folder.mkdir()
+    f = folder / "resume.pdf"
+    f.write_text("x")
+    calls = []
+    tools.set_explorer_opener(lambda argv: calls.append(argv) or True)
+    try:
+        ctx = tools.ToolContext(agent="main")
+        a = tools.dispatch("open_in_explorer", {"path": str(folder)}, ctx, allowed={"open_in_explorer"})
+        b = tools.dispatch("open_in_explorer", {"path": f'"{f}"'}, ctx, allowed={"open_in_explorer"})
+        assert a.ok and b.ok and '"kind": "file"' in b.content
+        assert calls == [["explorer.exe", str(folder)], ["explorer.exe", f"/select,{f}"]]
+        for bad in ({"path": str(tmp_path / "nope")}, {"path": "https://x.com/a"}, {"path": "\\\\server\\share"},
+                    {"path": ""}):
+            res = tools.dispatch("open_in_explorer", bad, ctx, allowed={"open_in_explorer"})
+            assert not res.ok, bad
+        assert len(calls) == 2
+        bg = tools.ToolContext(channel="voice-task", agent="main", source="voice")
+        res = tools.dispatch("open_in_explorer", {"path": str(folder)}, bg, allowed={"open_in_explorer"})
+        assert res.ok and '"opened": false' in res.content and len(calls) == 2
+    finally:
+        tools.set_explorer_opener(None)
+
+
+def test_open_in_explorer_never_opens_a_real_window_in_fake_mode(cc, tmp_path, monkeypatch):
+    import subprocess
+
+    from assistant import settings as aset
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("must not launch explorer"))
+    monkeypatch.setattr(aset, "_override", aset.get_assistant_settings().replace(fake=True))  # restored after
+    res = tools.dispatch("open_in_explorer", {"path": str(tmp_path)}, tools.ToolContext(agent="main"),
+                         allowed={"open_in_explorer"})
+    assert res.ok and '"opened": false' in res.content
+
+
+def test_main_agent_and_voice_prompt_offer_open_in_explorer(cc):
+    from assistant import brain, registry
+
+    assert "open_in_explorer" in brain.system_prompt(worker=False)
+    agents = registry.load_agents(skills=registry.load_skills(), known_tools=tools.known_tool_names())
+    assert "open_in_explorer" in agents["main"].tools
+
+
 def test_background_worker_prompt_says_not_to_open_pages(cc):
     from assistant import brain
 

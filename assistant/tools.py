@@ -185,7 +185,7 @@ APPROVAL_HANDLERS: dict[str, Callable[[db.Decision, dict[str, Any]], bool]] = {}
 # out (texts, calls, approval calls, browser, web search, maps), reads or changes configuration, or installs
 # more code. Promoting the skill on Settings -> Skills lifts this for that skill.
 RESTRICTED_SKILL_BLOCKED = frozenset({
-    "message_owner", "request_approval", "open_url", "fast_search", "show_map", "show_media", "twilio_diagnose",
+    "message_owner", "request_approval", "open_url", "open_in_explorer", "fast_search", "show_map", "show_media", "twilio_diagnose",
     "twilio_fix", "config_get", "config_set", "settings_get", "settings_set", "app_update", "app_delete",
     "desktop_mode_run", "schedule_prompt", "reel_watch", "skill_vet", "skill_install", "skill_request_install",
     "history_import_from_manifest", "selfcheck_run", "page_act",
@@ -644,6 +644,63 @@ def _open_url(ctx: ToolContext, a: dict[str, Any]) -> Any:
     return {"opened": ok, "url": url}
 
 
+def explorer_argv(path: str, is_file: bool) -> list[str]:
+    """File Explorer command: a folder opens itself, a file opens its folder with the file selected."""
+    return ["explorer.exe", f"/select,{path}"] if is_file else ["explorer.exe", path]
+
+
+def _default_explorer_opener(argv: list[str]) -> bool:
+    import subprocess
+
+    subprocess.Popen(argv, close_fds=True)  # noqa: S603 - fixed program, path checked to exist
+    return True
+
+
+_explorer_opener: Callable[[list[str]], bool] = _default_explorer_opener
+
+
+def set_explorer_opener(fn: Callable[[list[str]], bool] | None) -> None:
+    """Tests: replace the File Explorer launcher (``None`` restores the real one)."""
+    global _explorer_opener
+    _explorer_opener = fn or _default_explorer_opener
+
+
+def resolve_local_path(raw: str) -> str:
+    """Expand ``~`` / ``%VARS%`` and make absolute; refuses network shares and non-existent paths."""
+    p = str(raw or "").strip().strip('"').strip("'")
+    if not p or len(p) > 1000 or "\n" in p or "\x00" in p:
+        raise ToolError("give one local file or folder path")
+    if re.match(r"^[a-z][a-z0-9+.-]+://", p, re.I):
+        raise ToolError("that is a link, not a file: use open_url for web pages")
+    p = os.path.abspath(os.path.expandvars(os.path.expanduser(p)))
+    if p.startswith(("\\\\", "//")):
+        raise ToolError("network shares are not opened, only paths on this laptop")
+    if not os.path.exists(p):
+        raise ToolError(f"nothing exists at {p}: find the right path first (Glob or the shell), then try again")
+    return p
+
+
+def _open_in_explorer(ctx: ToolContext, a: dict[str, Any]) -> Any:
+    path = resolve_local_path(str(a.get("path") or ""))
+    is_file = os.path.isfile(path)
+    argv = explorer_argv(path, is_file)
+    out = {"path": path, "kind": "file" if is_file else "folder"}
+    if is_background(ctx):   # like open_url: background work never pops windows on his screen
+        db.log_event("assistant", "kept a File Explorer window off the owner's screen (background work)",
+                     data={"path": path[:300], "agent": ctx.agent, "channel": ctx.channel})
+        return {**out, "opened": False,
+                "note": "background work never opens windows on his screen: put this path in your report instead"}
+    if _explorer_opener is _default_explorer_opener and (get_assistant_settings().fake or sys.platform != "win32"):
+        # Fake mode = tests, evals, self-edit runs; and File Explorer only exists on Windows.
+        return {**out, "opened": False, "note": "fake mode or not Windows: nothing was opened"}
+    try:
+        ok = bool(_explorer_opener(argv))
+    except Exception as exc:
+        raise ToolError(f"could not open File Explorer: {type(exc).__name__}") from exc
+    db.log_event("assistant", "opened File Explorer for the owner", data={"path": path[:300], "agent": ctx.agent})
+    return {**out, "opened": ok}
+
+
 # ---------------------------------------------------------------------------
 # built-in registry
 # ---------------------------------------------------------------------------
@@ -706,6 +763,10 @@ def _builtin() -> list[Tool]:
         Tool("open_url", "Open a web page (e.g. a YouTube video, a claude.ai export link) in a new tab of the "
                          "owner's own default browser on his laptop, signed in as him.",
              _obj({"url": {"type": "string"}}, ["url"]), _open_url, side_effects=True),
+        Tool("open_in_explorer", "Show a file or folder on this laptop in File Explorer on his screen: a folder "
+                                 "opens, a file opens its folder with the file selected. path is a local path "
+                                 "(~ and %VARS% expanded); it must exist, so find it first if unsure.",
+             _obj({"path": {"type": "string"}}, ["path"]), _open_in_explorer, side_effects=True),
         Tool("message_owner", "Send the owner a separate proactive text message (not for replying: your reply is "
                               "delivered automatically). Quiet hours apply.",
              _obj({"text": {"type": "string"}, "kind": {"type": "string"}}, ["text"]), _message_owner,
