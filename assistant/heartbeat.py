@@ -68,9 +68,12 @@ Rules:
 - tasks: real work for your full self (checking the weather, fixing a failing eval, investigating a
   failure). Each task is a clear, self-contained brief; why says which checklist item it serves.
   Never propose tasks that publish, pay, delete or message anyone but him.
+- Failures listed under "self_repair_has_these" belong to self-repair: it is fixing them or has already
+  told him exactly what to do, so never notify about them and never start tasks for them. If a note
+  would be about one, leave it out (if you still write it, set "problem" to that failure's id).
 - If nothing applies, return nothing=true with empty lists. That is the usual answer.
 {quiet}
-Answer with JSON only: {{"notify": [{{"text": "...", "urgency": "low|normal|urgent"}}],
+Answer with JSON only: {{"notify": [{{"text": "...", "urgency": "low|normal|urgent", "problem": ""}}],
 "tasks": [{{"task": "...", "why": "..."}}], "nothing": false}}"""
 
 QUIET_NOTE = "- It is his quiet hours: only urgent notifications will be sent and no tasks will start.\n"
@@ -280,6 +283,32 @@ def _is_repeat(text: str, recent: dict[str, dict[str, str]]) -> bool:
                for v in recent.values())
 
 
+def remember_told(text: str, *, source: str = AGENT) -> None:
+    """Record something Cecil already told him (self-repair calls this too), so the heartbeat never
+    texts the same problem again in its own words (backlog #65: the YouTube sign-in was texted twice)."""
+    text = " ".join(str(text or "").split())[:300]
+    if not text:
+        return
+    entry = {"text": text, "at": db.now_iso(), "source": source}
+    cutoff = db.utcnow() - timedelta(hours=DEDUP_HOURS)
+    db.kv_update(KV_SENT, lambda cur: {k: v for k, v in {**(cur if isinstance(cur, dict) else {}),
+                                                          _key(text): entry}.items()
+                                       if isinstance(v, dict) and db.parse_iso(v["at"]) > cutoff}, {})
+
+
+def self_repair_rows() -> list[dict[str, str]]:
+    """Failures self-repair owns (autofix.triage state fixing or needs_you): the heartbeat stays off them."""
+    try:
+        from assistant import autofix
+
+        rows = autofix.triage()
+    except Exception as exc:
+        log.debug("self-repair triage unavailable: %s", exc)
+        return []
+    return [{"id": r["sig"], "state": r["state"], "message": " ".join(str(r["message"]).split())[:200],
+             "why": r["why"][:200]} for r in rows if r["state"] in ("fixing", "needs_you")]
+
+
 def tasks_today() -> int:
     return int(db.kv_get(KV_TASKS_DAY.format(day=db.local_today().isoformat()), 0) or 0)
 
@@ -312,14 +341,15 @@ def _parse(text: str) -> dict[str, Any]:
     for n in data.get("notify") or []:
         if isinstance(n, dict) and str(n.get("text") or "").strip():
             urg = str(n.get("urgency") or "normal").lower()
-            notes.append({"text": " ".join(str(n["text"]).split())[:300], "urgency": urg if urg in URGENCIES else "normal"})
+            notes.append({"text": " ".join(str(n["text"]).split())[:300], "urgency": urg if urg in URGENCIES else "normal",
+                          "problem": str(n.get("problem") or "").strip()[:40]})
     tasks = [{"task": " ".join(str(x["task"]).split())[:1000], "why": " ".join(str(x.get("why") or "").split())[:200]}
              for x in data.get("tasks") or [] if isinstance(x, dict) and str(x.get("task") or "").strip()]
     return {"notify": notes[:MAX_NOTIFY], "tasks": tasks[:2], "nothing": bool(data.get("nothing")) or not (notes or tasks)}
 
 
 def build_request(checklist: str, snapshot: str, due: list[tuple[str, str]], recent: dict[str, dict[str, str]],
-                  *, quiet: bool) -> Any:
+                  *, quiet: bool, repair: list[dict[str, str]] | None = None) -> Any:
     from assistant import persona, runtime
 
     s = get_assistant_settings()
@@ -327,9 +357,12 @@ def build_request(checklist: str, snapshot: str, due: list[tuple[str, str]], rec
                                    quiet=QUIET_NOTE if quiet else "")]
     told = "\n".join(f"- {v['text']}" for v in recent.values()) or "- nothing"
     due_txt = "\n".join(f"- {item}" for _k, item in due) or "- nothing timed"
+    owned = "\n".join(f"- id {r['id']} ({r['state']}): {r['message']}" + (f" - {r['why']}" if r.get("why") else "")
+                      for r in repair or []) or "- nothing"
     user = (runtime.wrap_untrusted("checklist", checklist.strip() or "(empty)") + "\n\n"
             + runtime.wrap_untrusted("status", snapshot) + "\n\n"
             + f"<due_now>\n{persona.escape_untrusted(due_txt)}\n</due_now>\n\n"
+            + runtime.wrap_untrusted("self_repair_has_these", owned) + "\n\n"
             + f"<already_told_him>\n{persona.escape_untrusted(told)}\n</already_told_him>")
     return runtime.ModelRequest(AGENT, s.quick_model, system, [{"role": "user", "content": user}], [],
                                 MAX_TOKENS, "low")
@@ -378,7 +411,9 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     except Exception as exc:
         snapshot = f"(status unavailable: {type(exc).__name__})"
     recent = _recent_sent()
-    req = build_request(checklist, snapshot, due, recent, quiet=quiet)
+    repair = self_repair_rows()
+    owned = {r["id"] for r in repair}
+    req = build_request(checklist, snapshot, due, recent, quiet=quiet, repair=repair)
     backend = quick.get_backend()
     try:
         runtime.check_budget(runtime.estimate_cost(req), runtime._TurnBudget(s.max_turn_usd), s)
@@ -398,6 +433,9 @@ def tick(*, force: bool = False) -> dict[str, Any]:
     sent_now: dict[str, Any] = {}
     for n in plan["notify"]:
         if _is_repeat(n["text"], recent):
+            continue
+        if n["problem"] and n["problem"] in owned:   # self-repair tells him about its own problems
+            db.log_event(AGENT, "heartbeat note left to self-repair", data={"text": n["text"], "sig": n["problem"]})
             continue
         urgent = n["urgency"] == "urgent"
         if quiet and not urgent:

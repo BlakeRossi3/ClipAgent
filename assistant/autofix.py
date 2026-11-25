@@ -421,6 +421,12 @@ def tell(text: str, *, urgent: bool = False) -> None:
         tools.send_to_owner(text, kind="autofix", urgent=urgent)
     except Exception as exc:   # cap reached or texting is what broke: the page still says it
         db.log_event(MODULE, "repair report not texted", level="warning", data={"autofix": True, "error": str(exc)[:200]})
+    try:   # the heartbeat must not text the same problem again in its own words (backlog #65)
+        from assistant import heartbeat
+
+        heartbeat.remember_told(text, source=MODULE)
+    except Exception as exc:
+        log.warning("repair report not shared with the heartbeat: %s", exc)
     try:
         tasks.say(text, origin="any", task="Self-repair")
     except Exception as exc:
