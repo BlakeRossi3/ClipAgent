@@ -341,10 +341,10 @@ def _text_failed_now(notification_id: int, kind: str, exc: Exception, route: Any
     """A WhatsApp send refused at once (63016 window / 63015 not joined): hold it. True = handled."""
     from assistant import messaging
 
-    try:
-        code = int(getattr(exc, "code", None) or 0)
-    except (TypeError, ValueError):
-        code = 0
+    code = _error_code(exc)
+    if code in SEND_LIMIT_CODES or getattr(exc, "status", None) == 429:
+        _hit_send_limit(notification_id, code or 429)
+        return True
     if route.transport == "whatsapp" and code in messaging.WA_WINDOW_CODES | messaging.WA_NOT_JOINED_CODES:
         messaging.record_whatsapp_error(code)
         if code in messaging.WA_WINDOW_CODES:   # our window clock was wrong: treat it as closed
@@ -354,6 +354,91 @@ def _text_failed_now(notification_id: int, kind: str, exc: Exception, route: Any
     if route.transport == "sms" and code in messaging.SMS_BLOCK_CODES:
         messaging.record_sms_error(code)
     return False
+
+
+# ---------------------------------------------------------------------------
+# Delivery check + send limits: Twilio accepting a text is not the text arriving
+# ---------------------------------------------------------------------------
+
+# Twilio errors meaning "too many messages right now/today": the text never went; resend later.
+# 20429 too many requests, 14107 SMS rate limit, 30001 queue overflow, 30022 10DLC rate limit,
+# 30023 10DLC daily cap, 30027 T-Mobile daily limit, 63038 account daily messages limit.
+SEND_LIMIT_CODES = frozenset({20429, 14107, 30001, 30022, 30023, 30027, 63038})
+SEND_LIMIT_BACKOFF_MIN = 30
+RESEND_MAX_HOURS = 48
+DELIVERY_CHECK_HOURS = 24
+DELIVERY_CHECK_BATCH = 20
+LIMIT_NOTE = "not delivered: Twilio send limit"
+K_LIMIT_UNTIL = "notify:send_limit_until"
+K_DELIVERED = "notify:delivered:{nid}"
+
+
+def _error_code(exc: Any) -> int:
+    try:
+        return int(getattr(exc, "code", None) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _hit_send_limit(notification_id: int, code: int) -> None:
+    """A text bounced off a send limit: put it back in the queue and pause texting for a while."""
+    until = db.to_iso(db.utcnow() + timedelta(minutes=SEND_LIMIT_BACKOFF_MIN))
+    db.kv_update(K_LIMIT_UNTIL, lambda cur: max(str(cur or ""), until))
+    db.kv_delete(f"notify:claim:{notification_id}")
+    db.update_notification(notification_id, status="queued",
+                           error=f"{LIMIT_NOTE} (error {code}); resends when sending works again")
+    db.log_event(MODULE, f"text hit the Twilio send limit (error {code}); will resend", level="warning",
+                 data={"notification_id": notification_id, "code": code})
+
+
+def send_limited() -> bool:
+    """True while texts are paused after a send-limit error."""
+    raw = db.kv_get(K_LIMIT_UNTIL)
+    return bool(raw) and db.parse_iso(str(raw)) > db.utcnow()
+
+
+def _fetch_message(client: Any, sid: str) -> Any:
+    return client.messages(sid).fetch()
+
+
+def check_text_delivery() -> int:
+    """Ask Twilio what became of recent texts still marked ``sent``. Returns how many were not delivered.
+
+    Delivered ones are remembered and not asked about again; undelivered ones go through
+    :func:`_text_outcome` (send limit -> requeued, otherwise -> ``failed``), so no text that
+    never arrived stays shown as sent. Works without a public status-callback URL.
+    """
+    s = config.get_settings()
+    if s.dry_run or not s.twilio_configured:
+        return 0
+    cutoff = db.utcnow() - timedelta(hours=DELIVERY_CHECK_HOURS)
+    todo = [r for r in db.list_notifications("sent", limit=200)
+            if r.channel == "sms" and r.sid and db.parse_iso(r.ts) > cutoff
+            and not db.kv_get(K_DELIVERED.format(nid=r.id))][:DELIVERY_CHECK_BATCH]
+    if not todo:
+        return 0
+    from assistant import messaging
+
+    client, bad = _get_client(s), 0
+    for r in todo:
+        try:
+            m = _fetch_message(client, r.sid or "")
+        except Exception:
+            log.warning("could not fetch delivery status for %s", r.sid, exc_info=True)
+            continue
+        status = str(getattr(m, "status", "") or "").lower()
+        try:
+            code = int(getattr(m, "error_code", None) or 0)
+        except (TypeError, ValueError):
+            code = 0
+        if status in ("undelivered", "failed"):
+            bad += 1
+        _text_outcome(r, status, code, via_wa=messaging.transport_of(r.id) == "whatsapp", sid=r.sid)
+    return bad
+
+
+def _limit_queued(row: db.Notification) -> bool:
+    return row.channel == "sms" and (row.error or "").startswith(LIMIT_NOTE)
 
 
 def call(text: str, *, kind: str = "call", decision_id: int | None = None) -> int:
@@ -572,12 +657,26 @@ def send_queued() -> int:
     Quiet hours hold back everything except calls of :data:`URGENT_KINDS` (which are
     de-duplicated: a repeat within the window is texted instead). Rows tied to a decision
     that is no longer pending are marked ``skipped``. Returns rows delivered (sent or dry run).
+    Texts that bounced off a Twilio send limit (found by :func:`check_text_delivery`, run first)
+    wait until the limit pause ends, then go again; after :data:`RESEND_MAX_HOURS` they are failed.
     """
+    try:
+        check_text_delivery()
+    except Exception:  # the delivery check must never stop the queue
+        log.exception("text delivery check failed")
     delivered = 0
     quiet = in_quiet_hours()
+    limited = send_limited()
     for row in db.list_notifications("queued", limit=None):
+        if _limit_queued(row) and db.utcnow() - db.parse_iso(row.ts) > timedelta(hours=RESEND_MAX_HOURS):
+            if _claim(row.id):
+                db.update_notification(row.id, status="failed",
+                                       error=f"never delivered: Twilio send limit for {RESEND_MAX_HOURS} h")
+            continue
         urgent_call = row.channel == "call" and row.kind in URGENT_KINDS
         if quiet and not urgent_call:
+            continue
+        if row.channel == "sms" and limited:
             continue
         if row.channel == "sms" and _still_held(row):
             continue
@@ -1040,27 +1139,41 @@ async def message_status_webhook(request: Request, notification_id: int | None =
     n = db.get_notification(notification_id) if notification_id is not None else None
     if n is None and p.get("MessageSid"):
         n = db.get_notification_by_sid(p["MessageSid"])
+    _text_outcome(n, status, code, via_wa=via_wa, sid=p.get("MessageSid"))
+    return Response(status_code=204)
+
+
+def _text_outcome(n: db.Notification | None, status: str, code: int, *, via_wa: bool, sid: str | None) -> None:
+    """Act on a text's final Twilio status (status callback or :func:`check_text_delivery`)."""
     from assistant import messaging
 
-    if status == "delivered":
+    if status in ("delivered", "read"):
+        if n is not None:
+            db.kv_set_if_absent(K_DELIVERED.format(nid=n.id), db.now_iso())
         if not via_wa:
             messaging.record_sms_ok()
-    elif status in ("undelivered", "failed"):
-        db.log_event(MODULE, f"{'WhatsApp' if via_wa else 'SMS'} {status} (error {code or '?'})", level="warning",
-                     data={"notification_id": n.id if n else None, "code": code, "sid": p.get("MessageSid")})
-        if via_wa and code in messaging.WA_WINDOW_CODES | messaging.WA_NOT_JOINED_CODES:
-            messaging.record_whatsapp_error(code, sid=p.get("MessageSid"))
-            if code in messaging.WA_WINDOW_CODES:
-                db.kv_delete(messaging.K_WA_LAST_IN)
-            if n is not None:
-                messaging.requeue_once(n.id, f"WhatsApp error {code}; resent after your next WhatsApp message")
-        elif not via_wa and code in messaging.SMS_BLOCK_CODES:
-            messaging.record_sms_error(code, sid=p.get("MessageSid"))
-            if n is not None and messaging.whatsapp_configured():
-                messaging.requeue_once(n.id, f"SMS blocked (error {code}); resending by WhatsApp")
-        elif n is not None:
+        return
+    if status not in ("undelivered", "failed"):
+        return
+    db.log_event(MODULE, f"{'WhatsApp' if via_wa else 'SMS'} {status} (error {code or '?'})", level="warning",
+                 data={"notification_id": n.id if n else None, "code": code, "sid": sid})
+    if n is not None and (n.status != "sent" or (sid and n.sid and n.sid != sid)):
+        return            # already handled (callback and poll both saw it) or about an earlier send of a resent row
+    if via_wa and code in messaging.WA_WINDOW_CODES | messaging.WA_NOT_JOINED_CODES:
+        messaging.record_whatsapp_error(code, sid=sid)
+        if code in messaging.WA_WINDOW_CODES:
+            db.kv_delete(messaging.K_WA_LAST_IN)
+        if n is not None:
+            messaging.requeue_once(n.id, f"WhatsApp error {code}; resent after your next WhatsApp message")
+    elif not via_wa and code in messaging.SMS_BLOCK_CODES:
+        messaging.record_sms_error(code, sid=sid)
+        if n is not None and not (messaging.whatsapp_configured()
+                                  and messaging.requeue_once(n.id, f"SMS blocked (error {code}); resending by WhatsApp")):
             db.update_notification(n.id, status="failed", sid=n.sid, error=f"{status} (error {code})")
-    return Response(status_code=204)
+    elif code in SEND_LIMIT_CODES and n is not None:
+        _hit_send_limit(n.id, code)
+    elif n is not None:
+        db.update_notification(n.id, status="failed", sid=n.sid, error=f"{status} (error {code})")
 
 
 _ALWAYS_RE = re.compile(r"^\s*(?:(?:yes|y|approve)\s+)?always\b[\s#:.,-]*([0-9]{1,9})?\s*[.!]?\s*$",

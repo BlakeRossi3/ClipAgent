@@ -674,3 +674,92 @@ def test_daily_summary_quiet_day_and_problems(clock, make_clip, make_upload, fak
     assert "No shorts were posted today." in text
     assert "1 failed upload" in text and "AI spending is paused" in text
     assert "http" not in text
+
+
+# ---------------------------------------------------------------------------
+# delivery check: a text Twilio accepted is not "sent" until it is delivered
+# ---------------------------------------------------------------------------
+
+class _Fetched:
+    def __init__(self, status: str, code: int | None = None) -> None:
+        self.status, self.error_code = status, code
+
+
+class _LimitError(Exception):
+    def __init__(self, code: int) -> None:
+        super().__init__(f"HTTP 429 error {code}: daily message limit")
+        self.code, self.status = code, 429
+
+
+@pytest.fixture
+def statuses(live, monkeypatch) -> dict[str, _Fetched]:
+    """sid -> what Twilio reports when the message is fetched."""
+    found: dict[str, _Fetched] = {}
+    fetched: list[str] = []
+
+    def fetch(client: Any, sid: str) -> _Fetched:
+        fetched.append(sid)
+        return found.get(sid) or _Fetched("sent")
+    monkeypatch.setattr(notify, "_fetch_message", fetch)
+    found["_fetched"] = fetched  # type: ignore[assignment]
+    return found
+
+
+def test_limit_undelivered_text_is_requeued_and_resent_once_sending_works(live, statuses, clock):
+    nid = notify.sms("Your hours are logged", transport="sms")
+    assert db.get_notification(nid).status == "sent"
+    statuses["SM0001"] = _Fetched("undelivered", 63038)
+    notify.send_queued()                                   # checks delivery first
+    row = db.get_notification(nid)
+    assert row.status == "queued" and "send limit" in row.error and "63038" in row.error
+    assert notify.send_limited() and len(live.messages.created) == 1     # not hammered while limited
+    clock.advance(minutes=notify.SEND_LIMIT_BACKOFF_MIN + 1)
+    assert not notify.send_limited()
+    assert notify.send_queued() == 1
+    assert len(live.messages.created) == 2 and live.messages.created[-1]["body"] == "Your hours are logged"
+    assert db.get_notification(nid).status == "sent" and db.get_notification(nid).sid == "SM0002"
+
+
+def test_other_undelivered_text_is_failed_not_sent(live, statuses):
+    nid = notify.sms("Hello", transport="sms")
+    statuses["SM0001"] = _Fetched("undelivered", 30003)
+    notify.check_text_delivery()
+    row = db.get_notification(nid)
+    assert row.status == "failed" and "undelivered" in row.error and "30003" in row.error
+
+
+def test_delivered_text_is_checked_only_once(live, statuses):
+    notify.sms("Hello", transport="sms")
+    statuses["SM0001"] = _Fetched("delivered")
+    notify.check_text_delivery()
+    notify.check_text_delivery()
+    assert statuses["_fetched"] == ["SM0001"]
+
+
+def test_send_limit_at_create_queues_instead_of_failing(live, statuses, clock):
+    live.messages.error = _LimitError(63038)
+    nid = notify.sms("Pay summary", transport="sms")
+    row = db.get_notification(nid)
+    assert row.status == "queued" and "send limit" in row.error
+    live.messages.error = None
+    assert notify.send_queued() == 0                       # still backing off
+    clock.advance(minutes=notify.SEND_LIMIT_BACKOFF_MIN + 1)
+    assert notify.send_queued() == 1 and db.get_notification(nid).status == "sent"
+
+
+def test_limit_status_callback_requeues(live, client, statuses, clock):
+    nid = notify.sms("Hi", transport="sms")
+    r = post(client, f"/twilio/message-status?notification_id={nid}",
+             {"MessageSid": "SM0001", "MessageStatus": "failed", "ErrorCode": "30023", "To": OWNER, "From": FROM})
+    assert r.status_code == 204
+    assert db.get_notification(nid).status == "queued" and notify.send_limited()
+
+
+def test_limit_queued_text_gives_up_after_two_days(live, statuses, clock):
+    live.messages.error = _LimitError(63038)
+    nid = notify.sms("Old", transport="sms")
+    live.messages.error = None
+    clock.advance(hours=notify.RESEND_MAX_HOURS + 1)
+    assert notify.send_queued() == 0
+    row = db.get_notification(nid)
+    assert row.status == "failed" and "never delivered" in row.error and live.messages.created == []

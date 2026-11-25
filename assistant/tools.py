@@ -586,7 +586,12 @@ def send_to_owner(text: str, *, kind: str = "update", agent: str = "main", reply
     channel = "call" if n is not None and n.channel == "call" else "sms"
     mid = store.add_message("out", channel, body, kind=kind, agent=agent, cost_usd=cost_usd, reply_to=reply_to,
                             meta={"notification_id": nid})
-    return {"message_id": mid, "notification_id": nid, "status": n.status if n else "unknown"}
+    out: dict[str, Any] = {"message_id": mid, "notification_id": nid, "status": n.status if n else "unknown"}
+    if n is not None and n.status == "sent" and channel == "sms":
+        out["delivery"] = "accepted by Twilio; delivery is checked every few minutes and undelivered texts are resent"
+    elif n is not None and n.error:
+        out["note"] = n.error          # e.g. held by the send limit: do not tell him it was sent
+    return out
 
 
 def _message_owner(ctx: ToolContext, a: dict[str, Any]) -> Any:
