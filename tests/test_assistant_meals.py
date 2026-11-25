@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from assistant import meals, runtime, store, vault
@@ -30,3 +32,46 @@ def test_feedback_learns(clock):
     assert "beef" in vault.read_note(meals.NOTE).body.lower()
     assert meals._allowed("Beef tacos", meals.avoid_words(meals.preferences())) is False
     assert meals._allowed("Low-calorie weight loss bowl", set()) is False
+
+
+def _sent_photo(name="wa-abc.jpg", data=b"\xff\xd8food"):
+    from assistant import claude_code
+
+    p = claude_code.uploads_dir() / name
+    p.write_bytes(data)
+    return p
+
+
+def test_food_photo_is_kept_for_good_and_logged_as_a_meal(clock):
+    src = _sent_photo()
+    res = meals.log_photo(src, "Chicken burrito bowl", slot="lunch")
+    kept = Path(res["photo"])
+    assert kept.is_relative_to(meals.food_photos_dir().resolve())
+    assert kept.is_file() and kept.read_bytes() == b"\xff\xd8food"
+    src.unlink()                                              # uploads clean-up cannot lose it
+    assert kept.is_file()
+    m = store.get_meal(res["meal_id"])
+    assert (m.slot, m.suggestion, m.status, m.photo) == ("lunch", "Chicken burrito bowl", "eaten", res["photo"])
+    assert [x.id for x in meals.photos()] == [m.id]
+
+
+def test_food_photo_attaches_to_an_existing_meal_and_refuses_strangers(clock, tmp_path):
+    mid = store.add_meal("dinner", "Beef tacos")
+    res = meals.log_photo(_sent_photo("x.png"), meal_id=mid)
+    assert res["meal_id"] == mid and store.get_meal(mid).photo == res["photo"]
+    assert len(store.list_meals()) == 1
+    outside = tmp_path / "secret.jpg"
+    outside.write_bytes(b"x")
+    with pytest.raises(ValueError):
+        meals.log_photo(outside)
+    with pytest.raises(ValueError):
+        meals.log_photo(_sent_photo("notes.txt"))
+
+
+def test_meals_log_photo_tool_is_registered(clock):
+    from assistant import tools
+
+    tools.load_extensions()
+    t = tools.REGISTRY["meals_log_photo"]
+    out = t.fn(None, {"path": str(_sent_photo("t.jpg")), "description": "Pancakes", "slot": "breakfast"})
+    assert store.get_meal(out["meal_id"]).photo == out["photo"]

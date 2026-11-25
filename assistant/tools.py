@@ -113,6 +113,7 @@ PLANNED_TOOLS: dict[str, str] = {
     "ledger_summary": "assistant.ledger",
     "meals_suggest": "assistant.meals",
     "meals_record_feedback": "assistant.meals",
+    "meals_log_photo": "assistant.meals",
     "improvement_propose": "assistant.improve",
     "eval_results": "assistant.improve",
     "improvement_read": "assistant.improve",

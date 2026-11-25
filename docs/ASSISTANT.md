@@ -96,6 +96,8 @@ real Claude Code on the laptop (`assistant/claude_code.py`, `ASSISTANT_CC_FULL=t
 * **Images**: the dashboard chat takes uploads and pasted images (PNG/JPEG/WebP/GIF by content,
   8 MB, 4 per message) into `<data>/assistant/uploads/`; the turn gets their paths and opens them
   with the Read tool (Claude Code returns images as visual content). Thumbnails are served owner-only.
+  Food photos (dashboard or text) are kept for good by `meals_log_photo`: copied to
+  `<data>/assistant/food_photos/YYYY-MM/` and linked to a meal row (`as_meals.photo`).
 * **Long tasks**: chat turns run in the background (`POST /dashboard/chat` with `async=1`, then
   `GET /dashboard/chat/job/<id>`); a run may take `ASSISTANT_CC_TASK_TIMEOUT_SEC` (900) and
   `ASSISTANT_CC_MAX_TURNS` (40) tool rounds. The daily run cap and plan-limit backoff still apply.

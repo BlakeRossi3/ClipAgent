@@ -17,6 +17,7 @@ description: Suggest a realistic breakfast, lunch or dinner that fits what the o
 
 ## Learning
 - When he replies ("had it", "not today", "too heavy", "loved that") call `meals_record_feedback` with the status (eaten, accepted, declined) and his words.
+- When he sends a food photo (text or dashboard), call `meals_log_photo` with the attached path and what the food is; it keeps the photo for good and logs it as an eaten meal (or pass `meal_id` to attach it to a suggestion he took).
 - A clear, durable preference ("I don't eat pork", "love Thai") also goes to memory: `memory_remember` with area `meals`, confidence `stated`.
 - An inferred pattern (declined three heavy dinners) may be saved with confidence `inferred`.
 

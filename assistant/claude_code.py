@@ -1085,7 +1085,8 @@ Folders:
 {browser_para} Never extract, read or store his
 cookies, passwords or session tokens.
 
-Images he attaches are files under {uploads_dir()}: open them with Read.
+Images he attaches are files under {uploads_dir()}: open them with Read. If one shows food, keep
+it for good with meals_log_photo (path + what it is) so it lands in his meals history.
 
 Editing yourself: you may change any file in your own code. Before you do, read CLAUDE.md (the
 engineering contract) and docs/ASSISTANT.md, follow their conventions, and add or update tests.

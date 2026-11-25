@@ -11,14 +11,20 @@
   :data:`AVOID_REPEAT_DAYS` days are not repeated; anything touching his stated dislikes or
   allergies is filtered out.
 * Never medical, calorie or weight-loss advice: lines that mention it are discarded.
+* Food photos he sends (SMS/WhatsApp or the dashboard) are copied for good into
+  ``<data>/assistant/food_photos/YYYY-MM/`` by :func:`log_photo` (tool ``meals_log_photo``) and
+  linked to a meal row (``as_meals.photo``), so they survive any clean-up of the uploads folder.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
+import config
 import db
 from assistant import store
 
@@ -234,6 +240,82 @@ def record_feedback(text: str = "", *, meal_id: int | None = None, status: str |
 
 
 # ---------------------------------------------------------------------------
+# food photos
+# ---------------------------------------------------------------------------
+
+PHOTO_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif")
+
+
+def food_photos_dir() -> Path:
+    """Permanent home of his food photos (never cleaned up)."""
+    p = config.get_settings().data_dir / "assistant" / "food_photos"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _allowed_sources() -> list[Path]:
+    data = config.get_settings().data_dir.resolve()
+    return [data / "assistant" / "uploads", data / "assistant" / "food_photos"]
+
+
+def keep_photo(src: str | Path, *, day: date | None = None) -> Path:
+    """Copy an attached image into :func:`food_photos_dir` (``YYYY-MM/<day>-<name>``) and return
+    the permanent path. Only images from the uploads folder (or already kept) are accepted."""
+    path = Path(src).resolve()
+    if not any(path.is_relative_to(root) for root in _allowed_sources()):
+        raise ValueError("photo must be one he sent (under data/assistant/uploads)")
+    if path.suffix.lower() not in PHOTO_EXTS:
+        raise ValueError(f"not a photo: {path.name}")
+    if not path.is_file():
+        raise ValueError(f"no such photo: {path.name}")
+    root = food_photos_dir().resolve()
+    if path.is_relative_to(root):
+        return path
+    d = day or db.local_today()
+    dest_dir = root / d.strftime("%Y-%m")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{d.isoformat()}-{path.name}"
+    if not dest.is_file():
+        shutil.copy2(path, dest)
+    return dest
+
+
+def _slot_now() -> str:
+    from datetime import datetime
+
+    h = datetime.now(db.local_tz()).hour
+    return "breakfast" if h < 11 else ("lunch" if h < 16 else "dinner")
+
+
+def log_photo(src: str | Path, description: str = "", *, slot: str | None = None, meal_id: int | None = None,
+              day: date | None = None, source: str = "sms") -> dict[str, Any]:
+    """Keep a food photo for good and link it to his meals history: attached to ``meal_id`` if
+    given, otherwise a new 'eaten' meal (slot guessed from the time of day if not given)."""
+    kept = keep_photo(src, day=day)
+    desc = " ".join((description or "").split())[:160] or "Food photo"
+    if meal_id is not None:
+        if store.get_meal(meal_id) is None:
+            raise ValueError(f"no meal #{meal_id}")
+        store.update_meal(meal_id, photo=str(kept))
+    else:
+        slot = slot or _slot_now()
+        if slot not in store.MEAL_SLOTS:
+            raise ValueError(f"slot must be one of {store.MEAL_SLOTS}")
+        meal_id = store.add_meal(slot, desc, day=day, status="eaten", photo=str(kept))
+    try:
+        _vault().append_journal(f"Food photo ({desc}) kept: {kept.name}", source=source)
+    except Exception as exc:  # the journal is a record, not a dependency
+        db.log_event("assistant", "food photo journal entry failed", level="warning", data={"error": str(exc)[:200]})
+    db.log_event("assistant", "food photo kept", data={"meal_id": meal_id, "file": kept.name})
+    return {"meal_id": meal_id, "photo": str(kept)}
+
+
+def photos(limit: int = 50) -> list[store.Meal]:
+    """Meals that carry a food photo, newest first."""
+    return [m for m in store.list_meals(limit=max(limit * 4, 200)) if m.photo][:limit]
+
+
+# ---------------------------------------------------------------------------
 # tools
 # ---------------------------------------------------------------------------
 
@@ -276,8 +358,28 @@ def _tool_feedback(ctx: Any, a: dict[str, Any]) -> Any:
         raise ToolError(str(exc)) from None
 
 
+def _tool_photo(ctx: Any, a: dict[str, Any]) -> Any:
+    from assistant.tools import ToolError
+
+    try:
+        return log_photo(a.get("path") or "", a.get("description") or "", slot=a.get("slot"),
+                         meal_id=a.get("meal_id"), source=getattr(ctx, "source", "assistant") or "assistant")
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
+
+
 def register_tools(register: Callable[..., None]) -> None:
     from assistant.tools import Tool, _obj
+
+    register(Tool("meals_log_photo",
+                  "Keep a food photo he sent for good and add it to his meals history. Call it for EVERY food "
+                  "photo he attaches (text or dashboard): path = the attached image, description = what the food "
+                  "is, slot = breakfast/lunch/dinner (guessed from the time if omitted), meal_id = attach to an "
+                  "existing meal instead of logging a new eaten one.",
+                  _obj({"path": {"type": "string"}, "description": {"type": "string"},
+                        "slot": {"type": "string", "enum": list(store.MEAL_SLOTS)},
+                        "meal_id": {"type": "integer"}}, ["path"]),
+                  _tool_photo, owner="assistant.meals", side_effects=True))
 
     register(Tool("meals_suggest",
                   "Meal-suggestion context: his preferences from Health/Meals.md, meals suggested in the last "

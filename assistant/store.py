@@ -203,6 +203,9 @@ MIGRATIONS: list[list[str]] = [
     [   # v9: a tile may carry a short list of rows (a scoreboard) - JSON list of {text, note, mark}
         "ALTER TABLE as_tiles ADD COLUMN rows TEXT",
     ],
+    [   # v10: a meal may carry the food photo he sent (permanent copy under data/assistant/food_photos)
+        "ALTER TABLE as_meals ADD COLUMN photo TEXT",
+    ],
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -417,6 +420,7 @@ class Meal(_Row):
     feedback: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    photo: str | None = None
 
 
 @dataclass(slots=True)
@@ -726,24 +730,27 @@ def income_total(start_day: date | str | None = None, end_day: date | str | None
 # meals
 # ---------------------------------------------------------------------------
 
-def add_meal(slot: str, suggestion: str, *, day: date | str | None = None,
-             conn: sqlite3.Connection | None = None) -> int:
+def add_meal(slot: str, suggestion: str, *, day: date | str | None = None, status: str = "suggested",
+             photo: str | None = None, conn: sqlite3.Connection | None = None) -> int:
     _check(slot, MEAL_SLOTS, "slot")
+    _check(status, MEAL_STATUSES, "status")
     now = db.now_iso()
     with transaction(conn) as c:
         return _insert(c, "as_meals", {"day": _day(day), "slot": slot, "suggestion": suggestion,
-                                       "status": "suggested", "created_at": now, "updated_at": now})
+                                       "status": status, "photo": photo, "created_at": now, "updated_at": now})
 
 
 def update_meal(meal_id: int, *, status: str | None = None, feedback: str | None = None,
-                conn: sqlite3.Connection | None = None) -> None:
+                photo: str | None = None, conn: sqlite3.Connection | None = None) -> None:
     vals: dict[str, Any] = {}
     if status is not None:
         vals["status"] = _check(status, MEAL_STATUSES, "status")
     if feedback is not None:
         vals["feedback"] = feedback
+    if photo is not None:
+        vals["photo"] = photo
     with transaction(conn) as c:
-        _update(c, "as_meals", meal_id, vals, {"status", "feedback"})
+        _update(c, "as_meals", meal_id, vals, {"status", "feedback", "photo"})
 
 
 def get_meal(meal_id: int, *, conn: sqlite3.Connection | None = None) -> Meal | None:
