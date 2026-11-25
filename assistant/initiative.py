@@ -239,6 +239,12 @@ def _save_run(run: dict[str, Any]) -> None:
                                        + [run])[-RUNS_KEEP:], [])
 
 
+def _merge_run(rid: str, **fields: Any) -> None:
+    """Set fields on a stored run in place (never re-saves a stale copy over a run that already finished)."""
+    db.kv_update(KV_RUNS, lambda cur: [dict(r, **fields) if r.get("id") == rid else r
+                                       for r in (cur if isinstance(cur, list) else [])], [])
+
+
 def windows() -> dict[str, dict[str, Any]]:
     """Known, current plan windows: {kind: {util, resets_at, seen_at}} (from assistant/usage.py)."""
     from assistant import usage
@@ -475,8 +481,7 @@ def start_item(item: store.BacklogItem) -> str | None:
                       meta={"initiative_id": item.id, "kind": "initiative"}, self_edit=True,
                       on_finish=lambda row, full, status, iid=item.id, r=rid: on_finished(iid, r, row, full, status))
     store.merge_backlog_meta(item.id, task_id=tid, run_id=rid)   # atomic: on_finished may already have run
-    run["task_id"] = tid
-    _save_run(run)
+    _merge_run(rid, task_id=tid)              # on_finished may already have marked the run done
     db.log_event(MODULE, f"Working on: {item.title}"[:200], data={"id": item.id, "task_id": tid,
                                                                   "attempt": item.attempts})
     return tid

@@ -101,6 +101,16 @@ def test_persona_spec_has_the_prompt_core_sections():
     assert "casual" in body.lower() and "Two sentences is the ceiling" in body
 
 
+def test_infers_intent_instead_of_making_him_spell_it_out():
+    """He wants Cecil to work out what he means and act, asking only when a wrong guess is costly."""
+    body = persona.registry.load_skills()["persona"].body
+    assert "## Intent" in body and "never have to spell things out" in body
+    assert "costly or can't be undone" in body and "best guess" in body
+    assert "Prefer asking one good question over several" not in body
+    for ch in ("sms", "voice", "dashboard"):
+        assert "never have to spell things out" in "\n".join(persona.system_blocks(ch)), ch
+
+
 def test_sir_only_once_every_few_replies(monkeypatch):
     from assistant import persona as p
     monkeypatch.setattr(p, "HONORIFIC_EVERY", 4)
