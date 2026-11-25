@@ -345,6 +345,16 @@ def test_check_claims_detects_private_lock(clock, live, make_upload, services):
     assert len([n for n in db.list_notifications() if n.kind == "youtube_private_lock"]) == 1
 
 
+def test_check_claims_detects_private_lock_on_immediate_public_upload(clock, live, make_upload, services):
+    uid = make_upload(video_id="vNow")                     # no publish_at: meant to go public at once
+    db.update_upload(uid, privacy="public")
+    services["data"].items = {"vNow": {"status": {"uploadStatus": "processed", "privacyStatus": "private"},
+                                        "contentDetails": {}}}
+    clock.advance(hours=3)
+    analytics.check_claims()
+    assert len([n for n in db.list_notifications() if n.kind == "youtube_private_lock"]) == 1
+
+
 def test_check_claims_list_failure_flags_nothing(clock, live, videos, services):
     services["data"].videos_error = http_error(500, "backendError")
     assert analytics.check_claims() == 0

@@ -21,7 +21,10 @@ Behaviour summary
 * **Scheduling**: ``publish_at`` in the future -> ``privacyStatus=private`` + ``publishAt``.
   ``publish_at=None`` -> first free slot from :func:`next_publish_slots` (at least
   :data:`MIN_LEAD` from now). ``immediate=True`` -> no ``publishAt``; privacy =
-  ``settings.youtube_default_privacy``.
+  ``"public"`` (the pipeline and manual runs always pass ``immediate=True``: the owner wants
+  every finished Short public at once). A public upload that YouTube returns ``private`` is
+  logged and notified once a day (``youtube_private_lock``); ``analytics.check_claims``
+  re-checks later.
 * **Licence field**: always ``status.license = "youtube"`` (standard). We never mark a
   Short ``creativeCommon``: for public-domain sources a CC licence would assert rights
   nobody holds, and for CC BY sources the obligation is *attribution* (title, author,
@@ -739,4 +742,19 @@ def _upload_live(clip: db.Clip, upload_id: int, path: Path | None, body: dict, s
             "publish_at": db.to_iso(slot) if slot else None, "privacy": body["status"]["privacyStatus"],
             "returned_privacy": returned.get("privacyStatus"), "quota_tally": youtube_auth.quota_used()}
     db.log_event(MODULE, f"uploaded clip {clip_id} as {video_id}", data=data)
+    _check_went_public(video_id, body["status"]["privacyStatus"], returned.get("privacyStatus"))
     return upload_id
+
+
+def _check_went_public(video_id: str, wanted: str, returned: str | None) -> None:
+    """He wants every finished Short public at once: say so (once a day) if YouTube kept one private."""
+    if wanted != "public" or returned != "private":
+        return
+    db.log_event(MODULE, f"video {video_id} was sent public but came back private", level="warning",
+                 data={"video_id": video_id,
+                       "hint": "unaudited API project or missing scope: YouTube locks such uploads private"})
+    if db.kv_set_if_absent(f"upload:private_lock:{db.local_today().isoformat()}", video_id):
+        db.add_notification(
+            "youtube_private_lock",
+            "A new Short was uploaded public but YouTube kept it private. Unaudited API projects get "
+            "uploads locked private; publish it in YouTube Studio and submit the API audit form.", "sms")

@@ -477,17 +477,18 @@ def check_claims() -> int:
                 db.log_event(MODULE, f"video {vid} reports licensedContent=true", level="info",
                              data={"video_id": vid})
         st = item.get("status") or {}
-        if (up.publish_at and st.get("privacyStatus") == "private" and not st.get("publishAt")
-                and now - db.parse_iso(up.publish_at) > NOT_PUBLIC_GRACE):
+        meant_public_at = up.publish_at or (up.uploaded_at if up.privacy == "public" else None)
+        if (meant_public_at and st.get("privacyStatus") == "private" and not st.get("publishAt")
+                and now - db.parse_iso(meant_public_at) > NOT_PUBLIC_GRACE):
             stuck_private.append(vid)
 
     if stuck_private and db.kv_set_if_absent(f"analytics:stuck_private:{db.local_today().isoformat()}", stuck_private):
-        db.log_event(MODULE, f"{len(stuck_private)} scheduled Shorts are still private after their publish time",
+        db.log_event(MODULE, f"{len(stuck_private)} Shorts are still private after they should have gone public",
                      level="warning", data={"video_ids": stuck_private,
                                             "hint": "API project probably not audited: uploads are locked private"})
         db.add_notification(
             "youtube_private_lock",
-            f"{len(stuck_private)} scheduled Shorts stayed private after their publish time. YouTube locks "
+            f"{len(stuck_private)} Shorts stayed private after they should have gone public. YouTube locks "
             f"videos uploaded by unaudited API projects to private; publish them in YouTube Studio and "
             f"submit the API audit form.", "sms")
     db.log_event(MODULE, f"claims check: {newly} newly flagged of {len(ids)}",

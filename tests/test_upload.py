@@ -361,6 +361,28 @@ def test_live_upload_immediate_goes_public(clock, live, fake_yt, rendered_clip):
     body = fake_yt.insert_calls[0]["body"]
     assert body["status"]["privacyStatus"] == "public" and "publishAt" not in body["status"]
     assert db.get_upload(uid).publish_at is None
+    assert not [n for n in db.list_notifications() if n.kind == "youtube_private_lock"]
+
+
+def test_pipeline_batch_uploads_public(clock, live, fake_yt, rendered_clip):
+    """Owner wants every finished Short public straight away, not scheduled/private."""
+    import main
+
+    rendered_clip()
+    main.upload_ready()
+    body = fake_yt.insert_calls[0]["body"]
+    assert body["status"]["privacyStatus"] == "public" and "publishAt" not in body["status"]
+
+
+def test_public_upload_returned_private_is_flagged_once(clock, live, rendered_clip):
+    yt = FakeYouTube([(None, {"id": "vA", "status": {"privacyStatus": "private"}}),
+                      (None, {"id": "vB", "status": {"privacyStatus": "private"}})])
+    upload.set_service_factory(lambda: yt)
+    upload.upload_clip(rendered_clip(), immediate=True)
+    upload.upload_clip(rendered_clip(), immediate=True)
+    notes = [n for n in db.list_notifications() if n.kind == "youtube_private_lock"]
+    assert len(notes) == 1 and "private" in notes[0].body
+    assert any(e for e in db.list_events() if "came back private" in e.message)
 
 
 def test_explicit_publish_at_and_too_soon(clock, live, fake_yt, rendered_clip):
