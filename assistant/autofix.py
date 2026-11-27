@@ -337,8 +337,13 @@ def start_repair(p: dict[str, Any]) -> str:
     key = KV_SIG.format(sig=p["sig"])
     fresh = {"at": db.now_iso(), "task_id": None, "status": "running", "message": p["message"][:300],
              "until": db.to_iso(db.utcnow() + timedelta(hours=COOLDOWN_HOURS))}
-    db.kv_update(key, lambda st: {"run_failures": int((st if isinstance(st, dict) else {}).get("run_failures") or 0),
-                                  **fresh}, {})
+    def _start(st: Any) -> dict[str, Any]:
+        st = st if isinstance(st, dict) else {}
+        # what the last finished look concluded, so a second look that agrees is not told twice
+        told = st.get("told") if str(st.get("status") or "").startswith(("running", "run_")) else st.get("status")
+        return {"run_failures": int(st.get("run_failures") or 0), "told": told, **fresh}
+
+    db.kv_update(key, _start, {})
     tid = tasks.start(title, brief=brief(p), announce=False, self_edit=True, usage_share=USAGE_SHARE,
                       meta={"kind": "autofix", "label": "Self-repair", "sig": p["sig"], "module": p["module"],
                             "failures": p["count"]},
@@ -398,6 +403,8 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
                    "code_changed": code_changed})
         return
     res = parse(full)
+    # a second look (after NEEDS_YOU_HOURS) that still needs him: he already has it, stay quiet
+    repeat = bool(sig) and res["status"] == "needs_you" and (_state(sig) or {}).get("told") == "needs_you"
     if sig:
         extra = ({"until": db.to_iso(db.utcnow() + timedelta(hours=NEEDS_YOU_HOURS))}
                  if res["status"] == "needs_you" else {})
@@ -408,7 +415,7 @@ def on_finished(row: dict[str, Any], full: str, status: str) -> None:
     db.log_event(MODULE, f"repair {res['status']}: {res['what'][:160]}",
                  level="info" if res["status"] in ("fixed", "transient") else "warning",
                  data={"autofix": True, "task_id": row.get("id"), **res})
-    text = message_for(res, code_changed=code_changed)
+    text = None if repeat else message_for(res, code_changed=code_changed)
     if text:
         tell(text, urgent=res["status"] == "needs_you")
 

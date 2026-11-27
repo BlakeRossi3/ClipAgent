@@ -141,6 +141,30 @@ def test_a_needs_you_problem_is_not_rediagnosed_or_retexted_while_it_waits_for_h
     assert _run(clock)["status"] == "started"
 
 
+def test_a_second_look_that_still_needs_him_is_not_texted_again(on, clock):
+    """Nov 2026: the 48-hour re-check of the dead YouTube sign-in texted him the same alert again."""
+    on["reply"]["text"] = ("STATUS: needs_you\nWHAT: YouTube's sign-in expired.\n"
+                           "FIX: Run python youtube_auth.py.")
+    _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+    clock.advance(minutes=4)
+    _run(clock)
+    n = len(_texts())
+    assert n >= 1
+    clock.advance(hours=49)
+    _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+    clock.advance(minutes=4)
+    assert _run(clock)["status"] == "started"               # it does take a second look ...
+    assert len(_texts()) == n                                # ... but says nothing new
+    assert autofix.history()[0]["status"] == "needs_you"
+    assert autofix.triage()[0]["state"] == "needs_you"      # still on his list
+    on["reply"]["text"] = "STATUS: fixed\nWHAT: Sign-in works again.\nFIX: Re-ran the upload."
+    clock.advance(hours=49)
+    _fail("YouTube refresh token was revoked or expired", module="youtube_auth")
+    clock.advance(minutes=4)
+    _run(clock)
+    assert len(_texts()) == n + 1                            # a different outcome is still told
+
+
 def test_its_own_failures_never_start_a_repair(on, clock):
     db.log_event("autofix", "repair started: x", level="error", data={"autofix": True})
     tid = tasks.track("Fix: something", meta={"kind": "autofix"})
