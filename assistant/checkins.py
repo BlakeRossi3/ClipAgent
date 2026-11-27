@@ -222,8 +222,13 @@ def _open_questions() -> list[Gap]:
         return []
     out = []
     for f in facts:
+        # Only real questions are asked. Memory curation also files third-person statements here
+        # ("Has a Twilio number blocked by carriers; he is not interested..."); bolting a "?" onto
+        # those produced nonsense texts, so statements stay as notes and are never sent.
+        q = f.strip()
+        if not q.endswith("?"):
+            continue
         key = "open:" + hashlib.sha1(f.encode()).hexdigest()[:10]
-        q = f if f.rstrip().endswith("?") else f"{f.rstrip('.')}?"
         out.append(Gap(key, "A question for you, {h}: " + q, lambda: True))
     return out
 

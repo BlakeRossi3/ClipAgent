@@ -13,7 +13,7 @@ description: Keep the owner's vault accurate and tidy - file new facts in the ri
 
 ## Weekly tidy (archivist)
 1. `memory_list` the Inbox; file each item with `memory_remember`, then `memory_forget` the inbox copy.
-2. Look for contradictions between notes (e.g. two different job titles). Keep the newest stated fact; turn the conflict into an Open Questions entry if unclear.
+2. Look for contradictions between notes (e.g. two different job titles). Keep the newest stated fact; turn the conflict into an Open Questions entry if unclear. Write every Open Questions entry as a direct question to him ending in "?" ("Which Daily Orbit handle is right, dailyorbit.shorts or DailyOrbit-t5n?"); only those get asked, and statements filed there are never sent.
 3. Do not rewrite notes he edited by hand. If a note looks messy, append a short "Suggested tidy" section instead of restructuring it.
 4. Journal a one-line summary of what you changed.
 

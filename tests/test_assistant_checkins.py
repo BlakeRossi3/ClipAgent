@@ -93,3 +93,15 @@ def test_pay_answers_given_by_voice_are_not_asked_again(clock):
     assert checkins.next_gap().key == "pay_schedule"
     ledger.set_job(pay_schedule="weekly")
     assert checkins.next_gap() is None or checkins.next_gap().key not in ("pay_rate", "tax", "pay_schedule")
+
+
+def test_open_questions_only_asks_real_questions(clock):
+    """Statements filed in Open Questions (third-person facts) must not be texted as '...?'."""
+    vault.ensure_vault()
+    vault.remember("Has a Twilio number blocked by carriers; he is not interested in fixing it.",
+                   area="open_questions", source="test")
+    vault.remember("Which Daily Orbit handle is correct, dailyorbit.shorts or DailyOrbit-t5n?",
+                   area="open_questions", source="test")
+    qs = [g.question for g in checkins._open_questions()]
+    assert len(qs) == 1 and qs[0].endswith("DailyOrbit-t5n?")
+    assert not any("Twilio" in q for q in qs)
