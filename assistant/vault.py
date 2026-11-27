@@ -538,6 +538,10 @@ def remember(fact: str, *, area: str, source: str, confidence: str = "stated") -
     if len(clean) > MAX_FACT_CHARS:
         clean = clean[:MAX_FACT_CHARS - 1].rstrip() + "…"
     rel, ntype = note_for_area(area)
+    if rel == AREAS["open_questions"][0] and not clean.endswith("?"):
+        # Only direct questions in Open Questions ever get asked (checkins._open_questions); a statement
+        # filed there just sits unasked, so it goes to the Inbox for curation instead.
+        rel, ntype = AREAS["inbox"]
     src = re.sub(r"[_\n]", " ", source).strip() or "unknown"
     with _lock:
         if note_exists(rel):

@@ -126,6 +126,15 @@ def test_list_and_backlinks(root):
     assert "Home.md" in vault.backlinks("About")
 
 
+def test_open_questions_only_takes_questions(root):
+    """Statements sent to open_questions can never be asked, so they land in the Inbox instead."""
+    r = vault.remember("Is considering a career question about nursing.", area="open_questions", source="sms")
+    assert r.added and r.path == vault.AREAS["inbox"][0]
+    q = vault.remember("Are you still weighing a move into nursing?", area="open_questions", source="sms")
+    assert q.added and q.path == "Profile/Open Questions.md"
+    assert vault.facts_in(vault.read_note(q.path).body)[-1] == "Are you still weighing a move into nursing?"
+
+
 def test_remember_dedupes_and_files_with_provenance(root):
     r1 = vault.remember("Works at the warehouse on weekdays.", area="work", source="sms")
     assert r1.added and r1.path == "Profile/Work.md"
