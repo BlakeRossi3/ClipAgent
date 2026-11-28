@@ -91,6 +91,41 @@ def test_conflicting_branch_is_backed_up_then_recovered_by_hand_list(repo):
     assert not selfedit.changed_files()                          # nothing half-merged left behind
 
 
+def test_startup_skips_a_backup_that_already_conflicted_until_it_changes(repo, monkeypatch):
+    r, _state, _restarts = repo
+    _git(r, "checkout", "-q", "-b", "sterling/backup-old")
+    (r / "app.py").write_text("VERSION = 'old'\n")
+    _git(r, "commit", "-qam", "Sterling: old edit")
+    _git(r, "checkout", "-q", "main")
+    (r / "app.py").write_text("VERSION = 9\n")
+    _git(r, "commit", "-qam", "update")
+    monkeypatch.setattr(selfedit.time, "sleep", lambda s: None)
+    import types as _types
+    monkeypatch.setattr(selfedit, "threading", _types.SimpleNamespace(
+        Thread=lambda target, **kw: type("T", (), {"start": lambda self: target()})()))
+    merges = []
+    real_git = selfedit.git
+    monkeypatch.setattr(selfedit, "git", lambda *a, **k: (merges.append(a) if "merge" in a and "--abort" not in a
+                                                          else None) or real_git(*a, **k))
+
+    def warnings():
+        return sum(e.message.startswith("startup: set-aside") for e in db.list_events(module="assistant"))
+
+    selfedit.startup_recover()                                   # first start: tries it, conflicts, says so once
+    assert len(merges) == 1 and warnings() == 1
+    assert db.kv_get(selfedit.KV_RECOVER_CONFLICTS)["sterling/backup-old"]
+    selfedit.startup_recover()                                   # next starts: same tip, left alone, no warning
+    assert len(merges) == 1 and warnings() == 1
+    assert len(selfedit.recover(restart=False)["conflicts"]) == 1   # asking by hand still tries it
+    _git(r, "checkout", "-q", "sterling/backup-old")             # the backup moves: worth one more try
+    (r / "extra.py").write_text("z = 1\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "Sterling: more")
+    _git(r, "checkout", "-q", "main")
+    selfedit.startup_recover()
+    assert len(merges) == 3 and warnings() == 2
+
+
 def test_recover_brings_back_backups_and_stashes(repo):
     r, state, restarts = repo
     _git(r, "checkout", "-q", "-b", "sterling/backup-manual-2")

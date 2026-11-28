@@ -47,6 +47,9 @@ TRAILER = "Sterling-Self-Edit: yes"
 KV_PENDING = "assistant:selfedit:pending"     # {"commit", "prev", "at"} until /healthz confirms
 KV_LAST = "assistant:selfedit:last"           # last outcome, for the Settings page
 KV_DIRTY_NOTED = "assistant:selfedit:dirty_noted"   # set once a dirty tree was reported; cleared when clean
+#: {backup branch: tip sha} that conflicted when merged back; start-up skips them until the tip moves
+#: (a Nov 16 backup whose work was rebuilt since was re-merged, aborted and warned on every restart)
+KV_RECOVER_CONFLICTS = "assistant:selfedit:recover_conflicts"
 UPSTREAM_KEY = "clipagent.upstream"           # git config: the branch the launcher merges in
 GIT_ID = ["-c", "user.name=Sterling", "-c", "user.email=sterling@clipagent.local"]
 MAX_SUMMARY = 600
@@ -627,9 +630,27 @@ def set_aside() -> dict[str, list[dict[str, Any]]]:
     return {"branches": branches, "stashes": stashes}
 
 
-def recover(*, restart: bool = True) -> dict[str, Any]:
+def _known_conflict(branch: dict[str, Any]) -> bool:
+    """True when this backup branch already failed to merge at its current tip."""
+    known = db.kv_get(KV_RECOVER_CONFLICTS) or {}
+    return bool(known) and known.get(branch["name"]) == _out("rev-parse", branch["name"])
+
+
+def _note_conflict(name: str, conflicted: bool) -> None:
+    def upd(st: Any) -> dict[str, Any]:
+        st = dict(st) if isinstance(st, dict) else {}
+        if conflicted:
+            st[name] = _out("rev-parse", name)
+        else:
+            st.pop(name, None)
+        return st
+    db.kv_update(KV_RECOVER_CONFLICTS, upd, {})
+
+
+def recover(*, restart: bool = True, skip_known: bool = False) -> dict[str, Any]:
     """Merge every set-aside edit back into the running version, test, keep (and restart) or undo.
     Conflicting pieces are skipped and listed so Cecil (or the owner) can merge them by hand.
+    ``skip_known`` (start-up) leaves out backup branches that already conflicted at the same tip.
     {ok, message, merged, conflicts}."""
     if not is_repo():
         return {"ok": False, "message": "This app folder is not a git checkout.", "merged": [], "conflicts": []}
@@ -637,6 +658,8 @@ def recover(*, restart: bool = True) -> dict[str, Any]:
         return {"ok": False, "message": "The app folder has uncommitted changes; commit or discard them first.",
                 "merged": [], "conflicts": []}
     found = set_aside()
+    if skip_known:
+        found["branches"] = [b for b in found["branches"] if not _known_conflict(b)]
     if not found["branches"] and not found["stashes"]:
         return {"ok": True, "message": "Nothing was set aside; every edit is already in the running version.",
                 "merged": [], "conflicts": []}
@@ -648,10 +671,12 @@ def recover(*, restart: bool = True) -> dict[str, Any]:
         r = git(*GIT_ID, "merge", "--no-edit", "-m", f"Sterling: bring back edits from {b['name']}", b["name"])
         if r.returncode == 0:
             merged.append(b["name"])
+            _note_conflict(b["name"], False)
         else:
             files = _out("diff", "--name-only", "--diff-filter=U").splitlines()
             git("merge", "--abort")
             conflicts.append({"what": b["name"], "files": files[:20]})
+            _note_conflict(b["name"], True)
     applied: list[str] = []
     for st in reversed(found["stashes"]):            # oldest first; refs shift as stashes are dropped
         ref = st["ref"]
@@ -714,6 +739,7 @@ def startup_recover(delay: float = 45.0) -> None:
             if not is_repo() or in_flight():
                 return
             found = set_aside()
+            found["branches"] = [b for b in found["branches"] if not _known_conflict(b)]   # told once already
             target = get_assistant_settings().self_edit_branch
             own_ahead = (current_branch() != target
                          and git("rev-parse", "--verify", "--quiet", f"refs/heads/{target}").returncode == 0
@@ -730,7 +756,7 @@ def startup_recover(delay: float = 45.0) -> None:
                     _publish("start-up merge")
                     schedule_restart()
                 return
-            res = recover(restart=True)
+            res = recover(restart=True, skip_known=True)
             db.log_event("assistant", "startup: set-aside edits " + ("brought back" if res.get("merged") else "checked"),
                          level="info" if res.get("ok") else "warning", data=res)
         except Exception as exc:   # never break startup
